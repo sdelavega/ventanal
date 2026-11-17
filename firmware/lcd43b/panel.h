@@ -84,6 +84,12 @@ public:
                                                    pixels) == ESP_OK;
     }
 
+    // Packed regional source, exclusive end coordinates (same contract as blit).
+    bool blitRegion(int x, int y, int w, int h, const uint16_t* pixels) {
+        if(x<0 || y<0 || w<=0 || h<=0 || x+w>WIDTH || y+h>HEIGHT) return false;
+        return panel_ && esp_lcd_panel_draw_bitmap(panel_,x,y,x+w,y+h,pixels)==ESP_OK;
+    }
+
     void clear(uint16_t colour) {
         if (!panel_) return;
         void* buffer = nullptr;

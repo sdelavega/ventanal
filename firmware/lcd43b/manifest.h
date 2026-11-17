@@ -16,6 +16,7 @@
 #include <cstring>
 
 #include "frame.h"
+#include "clock.h"
 
 namespace lcd {
 
@@ -32,6 +33,7 @@ struct DeviceManifest {
     FrameInfo screens[3];       // art, weather, solar
     FrameInfo spares[SPARE_SLOTS];
     uint8_t spareCount = 0;
+    bool clock24h = true;
     int quietStart = -1;         // minutes of local day; <0 disables quiet
     int quietEnd = -1;
     bool quietValid() const { return quietStart >= 0 && quietEnd >= 0; }
@@ -77,6 +79,7 @@ inline bool parseDeviceManifest(const char* body, DeviceManifest& out) {
     JsonDocument doc;
     if (deserializeJson(doc, body) || (doc["version"] | 0) != 1) return false;
     DeviceManifest parsed;
+    parsed.clock24h = doc["clock_24h"] | true;
     if (!parseFrameInfo(doc["screens"]["art"], parsed.screens[0])) return false;
     if (!parseFrameInfo(doc["screens"]["weather"], parsed.screens[1])) return false;
     if (!doc["screens"]["solar"].isNull()
@@ -111,7 +114,7 @@ inline bool inQuietMinutes(int minuteOfDay, int start, int end) {
 // the panel at nonsense times. Until the clock is valid the backlight
 // stays on — defined, safe behaviour for a USB-powered display (pinned by
 // test_lcd43b_manifest and test_lcd43b_persist).
-constexpr int MIN_VALID_YEAR = 2023;
+
 
 // True when the (possibly persisted) quiet window darkens the panel right
 // now: the window must be valid and the clock trustworthy.

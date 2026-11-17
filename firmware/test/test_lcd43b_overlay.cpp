@@ -6,6 +6,7 @@
 
 #include "../lcd43b/overlay.h"
 #include <cassert>
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -134,6 +135,44 @@ int main() {
                                  "DOWNLOAD FAILED"})
             assert(lcd::textWidth(Antonio_Regular18pt7b, text) < lcd::WIDTH - 32);
     }
+    for (bool lcars : {false,true}) {
+        std::fill(screen,screen+PIXELS,0xffff);
+        uint16_t art[250*80]; std::fill(art,art+250*80,0xffff);
+        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
+        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
+        int changed=0;
+        for(int y=0;y<lcd::HEIGHT;++y) for(int x=0;x<lcd::WIDTH;++x) {
+            bool inside=lcars ? (x>=548 && x<752 && y<26) : (x>=550 && y<80);
+            if(screen[y*lcd::WIDTH+x]!=0xffff) { assert(inside); ++changed; }
+        }
+        assert(changed>0);
+        uint16_t before[PIXELS]; memcpy(before,screen,sizeof screen);
+        // None always omits percentage, regardless of its numeric input.
+        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::None);
+        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::None);
+        assert(!memcmp(before,screen,sizeof screen));
+        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::Ok);
+        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::Ok);
+        assert(memcmp(before,screen,sizeof screen));
+    }
+    {
+        uint16_t art[250*80], region[250*80];
+        std::fill(art,art+250*80,0xffff);
+        lcd::renderReadout(region,art,false,"","",-1,lcd::BatteryLevel::None);
+        assert(!memcmp(art,region,sizeof art)); // invalid clock leaves art untouched
+        lcd::renderReadout(region,nullptr,true,"","",-1,lcd::BatteryLevel::None);
+        for(int i=0;i<204*26;++i) assert(region[i]==0); // no invalid date or glyph
+        lcd::renderReadout(region,art,false,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::Ok);
+        uint16_t without[250*80]; memcpy(without,region,sizeof without);
+        lcd::renderReadout(region,art,false,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
+        assert(!memcmp(without,region,sizeof without));
+        assert(region[0]==0xffff && region[79*250+249]==0xffff); // feather reaches clear edges
+        assert(region[249]!=0xffff); // shade exists at top right
+        // Worst-case strings and optional percent fit without touching each other.
+        assert(6+lcd::textWidth(ClockTime,"12:59 PM")+6
+               <204-6-lcd::textWidth(ClockDate,"WED 30 NOV")-7-lcd::textWidth(ClockDate,"100%"));
+    }
+    assert(!lcd::isLcarsSlot(0) && lcd::isLcarsSlot(1) && lcd::isLcarsSlot(2) && !lcd::isLcarsSlot(3));
     puts("lcd43b overlay: RGB565, OFFLINE mark, waiting screen, clipping,"
          " refresh label passed");
     return 0;

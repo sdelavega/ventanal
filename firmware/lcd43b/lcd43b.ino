@@ -25,6 +25,9 @@
 #include <esp_task_wdt.h>
 #include <cstdio>
 #include <ctime>
+#include <sys/time.h>
+#include <atomic>
+#include "clock.h"
 
 #ifdef VENTANAL_LCD_CONFIG
 #include VENTANAL_LCD_CONFIG
@@ -252,6 +255,55 @@ int screenSlot(int index) {
 
 void storeScreenIndex() { lcd::saveSelection(prefs, screenIndex, spareCursor); }
 
+// Only loop() owns these packed buffers. The worker never reads or writes
+// them; minute ticks perform no filesystem I/O and no full-frame blits.
+uint16_t* clockBackground = nullptr;
+uint16_t* clockPixels = nullptr;
+int clockSlot = -1;
+time_t drawnMinute = -1;
+std::atomic<bool> ntpRtcPending{false};
+void onNtpSync(timeval*) { ntpRtcPending.store(true); }
+
+bool renderClock() {
+    tm local{}; const time_t now=time(nullptr); localtime_r(&now,&local);
+    char timeText[16], dateText[24];
+    const bool valid=lcd::formatClock(local,state.manifest.clock24h,timeText,sizeof timeText,dateText,sizeof dateText);
+    int mv=-1, percent=-1;
+    // This board has no voltage path. No ADC reads or invented percentage.
+    if constexpr(lcd::BATTERY_ADC_AVAILABLE) percent=lcd::batteryPercent(mv,4200);
+    lcd::renderReadout(clockPixels,clockBackground,lcd::isLcarsSlot(clockSlot),
+                       timeText,dateText,percent,lcd::batteryLevel(mv,percent));
+    lcd::log("readout valid=%d time=%s date=%s h24=%d battery=none\n",
+             valid,timeText,dateText,state.manifest.clock24h);
+    drawnMinute=now/60;
+    return valid;
+}
+void tickClock() {
+    if(clockSlot<0 || !state.drawn || time(nullptr)/60==drawnMinute) return;
+    const bool valid=renderClock(); const auto r=lcd::readoutRect(clockSlot);
+    const bool ok=panel.blitRegion(r.x,r.y,r.w,r.h,clockPixels);
+    lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d battery=none\n",
+             valid,lcd::SLOT_NAMES[clockSlot],r.x,r.y,r.w,r.h,ok);
+}
+void seedRtc() {
+    if constexpr(lcd::RTC_PCF85063) {
+        tm utc{};
+        if(lcd::readRtc(Wire,utc)) {
+            timeval value{lcd::rtcEpoch(utc),0}; settimeofday(&value,nullptr);
+            lcd::log("rtc seed=valid utc=1\n");
+        } else lcd::log("rtc seed=skipped invalid-or-OS\n");
+    }
+}
+void saveRtcAfterNtp() {
+    if constexpr(lcd::RTC_PCF85063) {
+        const time_t now=time(nullptr); tm utc{}; gmtime_r(&now,&utc);
+        const bool written=lcd::writeRtc(Wire,utc);
+        tm check{}; const bool verified=written && lcd::readRtc(Wire,check)
+                            && std::abs(double(lcd::rtcEpoch(check)-now))<=1;
+        lcd::log("rtc ntp-write=%d verified=%d OS-clear=%d\n",written,verified,verified);
+    }
+}
+
 // Blit a cached frame (plus overlays) to the panel through a PSRAM buffer.
 bool show(int index) {
     const int slot = screenSlot(index);
@@ -293,9 +345,19 @@ bool show(int index) {
         lcd::drawRefreshLabel(pixels, lcd::WIDTH, lcd::HEIGHT, text,
                               red ? lcd::RGB565_RED : lcd::RGB565_WHITE);
     }
+    clockSlot = -1;
+    if(ok && clockBackground && clockPixels) {
+        clockSlot=slot;
+        const auto r=lcd::readoutRect(slot);
+        for(int y=0;y<r.h;++y)
+            memcpy(clockBackground+y*r.w,pixels+(r.y+y)*lcd::WIDTH+r.x,size_t(r.w)*2);
+        renderClock();
+        lcd::pasteReadout(pixels,clockPixels,r);
+    }
     panel.blit(pixels);
     free(pixels);
     state.drawn = ok;
+    if(ok) lcd::log("photo-ready slot=%s clock=board region-only-minute-redraw battery=none\n",lcd::SLOT_NAMES[slot]);
     lcd::log("blit screen=%s id=%.16s cache=%s offline=%d ms=%lu\n",
              lcd::SLOT_NAMES[slot], state.cachedIds[slot],
              ok ? "frame" : "waiting", state.offline,
@@ -608,6 +670,11 @@ void setup() {
     lcd::hwProbeBegin();
     return;  // no network worker or private configuration values in probe logs
 #endif
+    sntp_set_time_sync_notification_cb(onNtpSync);
+    seedRtc(); // after GT911 reset sequence; never reconfigure the shared bus
+    clockBackground=static_cast<uint16_t*>(ps_malloc(250*80*2));
+    clockPixels=static_cast<uint16_t*>(ps_malloc(250*80*2));
+    if(!clockBackground || !clockPixels) lcd::log("clock error=allocation\n");
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
@@ -630,6 +697,8 @@ void loop() {
     delay(2);
     return;
 #endif
+    if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
+    tickClock();
     pollTouch(now);
     backlightRefresh();
     // The label hold (~2 s) expires here: redraw the cached frame clean.

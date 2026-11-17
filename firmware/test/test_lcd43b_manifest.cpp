@@ -8,6 +8,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 namespace {
 
@@ -34,6 +35,15 @@ const char VALID[] = R"({
 }  // namespace
 
 int main() {
+    {
+        lcd::DeviceManifest m;
+        assert(lcd::parseDeviceManifest(VALID,m) && m.clock24h);
+        std::string body=VALID; body.insert(1,"\"clock_24h\":false,");
+        assert(lcd::parseDeviceManifest(body.c_str(),m) && !m.clock24h);
+        body=VALID; body.insert(1,"\"clock_24h\":true,");
+        assert(lcd::parseDeviceManifest(body.c_str(),m) && m.clock24h);
+    }
+
     {   // A complete manifest parses with every entry copied exactly.
         lcd::DeviceManifest parsed;
         assert(lcd::parseDeviceManifest(VALID, parsed));

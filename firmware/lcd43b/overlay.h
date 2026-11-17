@@ -12,6 +12,11 @@
 
 #include "frame.h"
 #include "gfxfont.h"
+#include "battery_lcd.h"
+#include "readout_fonts.h"
+#include <cstdio>
+#include <cmath>
+#include <cctype>
 #include "../ventanal/fonts/Antonio-Regular.h"
 #include "../ventanal/fonts/Inter-Medium.h"
 
@@ -64,6 +69,72 @@ inline void drawText(uint16_t* pixels, int width, int height, const GFXfont& f,
     }
 }
 
+// Shared with native server geometry. Region buffers are packed, never
+// panel-stride slices: clipping makes writes outside these rectangles impossible.
+struct ReadoutRect { int x,y,w,h; };
+constexpr int TOPBAR_H = 26;
+constexpr ReadoutRect CLOCK_GAP{548,0,204,26};
+constexpr ReadoutRect ART_CORNER{550,0,250,80};
+inline bool isLcarsSlot(int slot) { return slot==1 || slot==2; }
+inline ReadoutRect readoutRect(int slot) { return isLcarsSlot(slot)?CLOCK_GAP:ART_CORNER; }
+inline uint16_t batteryColour(BatteryLevel lvl) {
+    return lvl==BatteryLevel::Ok ? rgb565(95,174,79)
+         : lvl==BatteryLevel::Low ? rgb565(255,170,0) : rgb565(221,68,68);
+}
+inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcars,
+                          const char* time, const char* date, int percent, BatteryLevel lvl) {
+    const int w=lcars?204:250, h=lcars?26:80;
+    if(lcars) memset(region,0,size_t(w)*h*2);
+    else memcpy(region,artRegion,size_t(w)*h*2);
+    if(!*time) return; // no shade, date or fake 1970 clock while invalid
+    const bool battery=percent>=0 && lvl!=BatteryLevel::None;
+    char pct[8]="";
+    if(battery) snprintf(pct,sizeof pct,"%d%%",percent);
+    if(lcars) {
+        const int pw=battery?textWidth(ClockDate,pct)+7:0;
+        const int dw=textWidth(ClockDate,date);
+        drawText(region,w,h,ClockTime,time,6,20,rgb565(255,170,0));
+        drawText(region,w,h,ClockDate,date,w-6-pw-dw,18,rgb565(153,150,186));
+        if(battery) drawText(region,w,h,ClockDate,pct,w-6-textWidth(ClockDate,pct),18,batteryColour(lvl));
+    } else {
+        // Elliptical radial feather: 62% black at top-right, fully clear
+        // at the left/bottom edge; RGB565 channels darken independently.
+        for(int y=0;y<h;++y) for(int x=0;x<w;++x) {
+            float radius=std::sqrt(float((w-1-x)*(w-1-x))/(w*w)+float(y*y)/(h*h));
+            float shade=radius<0.72f ? 0.62f*(1-radius/0.72f) : 0;
+            uint16_t c=region[y*w+x];
+            region[y*w+x]=(int(((c>>11)&31)*(1-shade))<<11)
+                         |(int(((c>>5)&63)*(1-shade))<<5)|int((c&31)*(1-shade));
+        }
+        char mixed[24]; snprintf(mixed,sizeof mixed,"%s",date);
+        for(size_t i=0;mixed[i];++i)
+            if(i && mixed[i-1]!=' ' && mixed[i]>='A' && mixed[i]<='Z') mixed[i]=char(std::tolower(mixed[i]));
+        char line[40]; snprintf(line,sizeof line,"%s%s%s",mixed,battery?"   ":"",pct);
+        drawText(region,w,h,ArtTime,time,w-14-textWidth(ArtTime,time),29,RGB565_WHITE);
+        drawText(region,w,h,ArtDate,line,w-14-textWidth(ArtDate,line),46,RGB565_WHITE);
+        if(battery) { // middle dot, outside the ASCII font table
+            int dot=w-14-textWidth(ArtDate,pct)-5;
+            setPixel(region,w,h,dot,42,RGB565_WHITE);
+            setPixel(region,w,h,dot,43,RGB565_WHITE);
+        }
+    }
+}
+inline void pasteReadout(uint16_t* px, const uint16_t* region, ReadoutRect r) {
+    for(int y=0;y<r.h;++y) memcpy(px+(r.y+y)*WIDTH+r.x,region+y*r.w,size_t(r.w)*2);
+}
+inline void drawTopBarClock(uint16_t* px, const char* time, const char* date,
+                            int percent, BatteryLevel lvl) {
+    uint16_t region[204*26];
+    renderReadout(region,nullptr,true,time,date,percent,lvl);
+    pasteReadout(px,region,CLOCK_GAP);
+}
+inline void drawArtCorner(uint16_t* px, const uint16_t* artRegion, const char* time,
+                          const char* date, int percent, BatteryLevel lvl) {
+    uint16_t region[250*80];
+    renderReadout(region,artRegion,false,time,date,percent,lvl);
+    pasteReadout(px,region,ART_CORNER);
+}
+
 // Small OFFLINE mark, top-left, mirroring the e-paper readout wording.
 inline void drawOfflineMark(uint16_t* pixels, int width, int height) {
     const int left = 8;
@@ -110,7 +181,7 @@ inline const char* refreshLabelText(RefreshLabel label) {
 }
 
 // One label badge, bottom-left overlay corner (the OFFLINE mark owns the
-// top-left; the updated readout owns the top-right).
+// top-left; the live clock owns the top-right).
 inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
                              const char* text, uint16_t colour) {
     const int extent = textWidth(Antonio_Regular18pt7b, text);

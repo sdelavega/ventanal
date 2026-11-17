@@ -158,6 +158,16 @@ int main() {
         assert(lastConfig.flags.fb_in_psram == 1);
     }
 
+    {
+        Panel panel; assert(panel.begin([](bool) { return true; }));
+        std::fill(fb,fb+FB_W*FB_H,0x1234);
+        std::vector<uint16_t> region(250*80,0xabcd);
+        assert(panel.blitRegion(550,0,250,80,region.data()));
+        assert(calls.back().x_start==550 && calls.back().x_end==800 && calls.back().y_end==80);
+        for(int y=0;y<FB_H;++y) for(int x=0;x<FB_W;++x)
+            assert(fb[y*FB_W+x]==(x>=550 && y<80?0xabcd:0x1234));
+        auto n=calls.size(); assert(!panel.blitRegion(550,0,251,80,region.data())); assert(calls.size()==n);
+    }
     puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover,"
          " anti-flicker bounce config passed");
     return 0;
