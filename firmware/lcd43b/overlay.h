@@ -80,6 +80,79 @@ inline void drawOfflineMark(uint16_t* pixels, int width, int height) {
     }
 }
 
+// --- Refresh feedback label ---------------------------------------------
+//
+// Long-press feedback: a refresh gesture shows a small, legible label in
+// the overlay corner immediately (a refresh used to look like it did
+// nothing when the server had nothing new). Same overlay font/style as
+// the OFFLINE mark; removed by redrawing the cached frame.
+
+enum class RefreshLabel : uint8_t {
+    None,        // no label
+    Refreshing,  // gesture accepted: fetching now
+    UpToDate,    // fetch finished, nothing changed (held ~2 s)
+    Offline,     // fetch failed (held ~2 s, red like the OFFLINE mark)
+};
+
+constexpr uint32_t REFRESH_LABEL_HOLD_MS = 2000;   // ~2 s
+
+inline const char* refreshLabelText(RefreshLabel label) {
+    switch (label) {
+    case RefreshLabel::Refreshing: return "REFRESHING...";
+    case RefreshLabel::UpToDate: return "UP TO DATE";
+    case RefreshLabel::Offline: return "OFFLINE";
+    default: break;
+    }
+    return nullptr;
+}
+
+// One label badge, bottom-left overlay corner (the OFFLINE mark owns the
+// top-left; the updated readout owns the top-right).
+inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
+                             const char* text, uint16_t colour) {
+    const int extent = textWidth(Antonio_Regular18pt7b, text);
+    const int left = 8;
+    const int baseline = height - 14;   // corner margin + descender room
+    for (int y = baseline - 32; y <= baseline + 5; ++y)
+        for (int x = left - 6; x < left + extent + 6; ++x)
+            setPixel(pixels, width, height, x, y, RGB565_BLACK);
+    drawText(pixels, width, height, Antonio_Regular18pt7b, text, left, baseline,
+             colour);
+}
+
+// Label state machine (host-pinned by test_lcd43b_overlay): begin() on the
+// gesture, finish() when the refresh worker's pass is applied, tick() in
+// loop() expires the ~2 s hold so the caller redraws the cached frame clean.
+class RefreshLabelState {
+public:
+    void begin(uint32_t nowMs) {
+        label_ = RefreshLabel::Refreshing;
+        sinceMs_ = nowMs;
+    }
+    // offline: the fetch failed -> OFFLINE styling. changed: new content
+    // simply redraws, no label. Otherwise: UP TO DATE for the hold.
+    void finish(uint32_t nowMs, bool offline, bool changed) {
+        label_ = offline ? RefreshLabel::Offline
+                : changed ? RefreshLabel::None
+                          : RefreshLabel::UpToDate;
+        sinceMs_ = nowMs;
+    }
+    void clear() { label_ = RefreshLabel::None; }
+    // True when the hold expired this tick (the caller redraws clean).
+    bool tick(uint32_t nowMs) {
+        if (label_ != RefreshLabel::UpToDate && label_ != RefreshLabel::Offline)
+            return false;
+        if (nowMs - sinceMs_ < REFRESH_LABEL_HOLD_MS) return false;
+        label_ = RefreshLabel::None;
+        return true;
+    }
+    RefreshLabel label() const { return label_; }
+
+private:
+    RefreshLabel label_ = RefreshLabel::None;
+    uint32_t sinceMs_ = 0;
+};
+
 // Boot waiting screen: black panel with the host URL, like the e-paper's.
 inline void drawWaiting(uint16_t* pixels, int width, int height, const char* url) {
     memset(pixels, 0, size_t(width) * height * 2);

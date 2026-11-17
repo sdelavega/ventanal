@@ -47,6 +47,7 @@
 #include "screens.h"
 #include "sync.h"
 #include "touch.h"
+#include <esp_sntp.h>
 #ifdef VENTANAL_LCD_DIAG_GESTURES
 #include "diag.h"
 #endif
@@ -86,6 +87,11 @@ Preferences prefs;
 lcd::RefreshState state;   // manifest, cache ids, offline flag
 int screenIndex = 0;       // current screen within the screen list
 int spareCursor = 0;       // next spare shown by a double tap
+
+// Long-press feedback (host-pinned in overlay.h): REFRESHING shows on the
+// gesture, UP TO DATE ~2 s when nothing changed, OFFLINE styling when the
+// fetch failed; expiry redraws the cached frame clean.
+lcd::RefreshLabelState refreshLabel;
 
 bool backlightState = false;
 uint32_t touchUntilMs = 0;
@@ -274,6 +280,12 @@ bool show(int index) {
     } else if (state.offline) {
         lcd::drawOfflineMark(pixels, lcd::WIDTH, lcd::HEIGHT);
     }
+    if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
+        lcd::drawRefreshLabel(pixels, lcd::WIDTH, lcd::HEIGHT, text,
+                              refreshLabel.label() == lcd::RefreshLabel::Offline
+                                  ? lcd::RGB565_RED
+                                  : lcd::RGB565_WHITE);
+    }
     panel.blit(pixels);
     free(pixels);
     state.drawn = ok;
@@ -289,6 +301,12 @@ void setBacklight(bool on) {
     backlightState = on;
     expander.setBacklight(on);
     lcd::log("backlight on=%d\n", on);
+}
+
+// Log every label transition so captures prove the feedback cycle.
+void logRefreshLabel() {
+    const char* text = lcd::refreshLabelText(refreshLabel.label());
+    lcd::log("label=%s\n", text ? text : "none");
 }
 
 // The quiet window comes from the live manifest (persisted at boot, then
@@ -370,16 +388,37 @@ bool startRefresh(bool redraw) {
 // Apply a finished worker pass (single writer: loop()).
 void applyFinishedRefresh() {
     const int previousIndex = screenIndex;
+    // Did anything the screen shows change? frameOk slots that merely
+    // re-stage the current id (skipped=unchanged) are not new content.
+    bool changed = false;
+    if (refreshStaging.manifestOk) {
+        for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
+            if (refreshStaging.dropSlot[slot]
+                || (refreshStaging.frameOk[slot]
+                    && strcmp(refreshStaging.frameIds[slot],
+                              state.cachedIds[slot]))) {
+                changed = true;
+                break;
+            }
+        }
+    }
     const bool redraw = lcd::applyRefresh(state, screenIndex, spareCursor,
                                           prefs, refreshStaging,
                                           refreshRequested);
     xSemaphoreGive(refreshCopied);
     refreshBusy = false;
+    if (refreshRequested)
+        refreshLabel.finish(millis(), !refreshStaging.manifestOk, changed);
+    else if (redraw)
+        refreshLabel.clear();   // a scheduled redraw replaces the held label
+    logRefreshLabel();
     lcd::log("refresh fetch=%lu ok=%d offline=%d\n", fetchCounter++,
              refreshStaging.manifestOk, state.offline);
     if (screenIndex != previousIndex)   // normalised to a shrunk list
         lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
     if (redraw) show(screenIndex);
+    else if (refreshLabel.label() != lcd::RefreshLabel::None)
+        show(screenIndex);   // redraw the cached frame with the label
     backlightRefresh();
 }
 
@@ -412,8 +451,17 @@ void handleGesture(Gesture gesture, int x, int y) {
         }
         break;
     case Gesture::Refresh:
-        // Non-blocking: the worker refreshes while touch keeps working.
-        if (!startRefresh(true)) lcd::log("refresh busy=1\n");
+        // Non-blocking: the worker refreshes while touch keeps working,
+        // and the label shows immediately that the gesture registered.
+        refreshLabel.begin(millis());
+        logRefreshLabel();
+        if (!startRefresh(true)) {
+            if (refreshBusy)
+                refreshRequested = true;   // adopt the in-flight pass
+            else
+                refreshLabel.clear();       // nothing will finish it
+        }
+        show(screenIndex);             // redraw the frame with the label
         break;
     default:
         break;
@@ -503,6 +551,10 @@ void setup() {
     lcd::loadPublishShape(prefs, state.manifest);
     lcd::normalizeSelection(screenIndex, spareCursor, solarPublished(),
                             spareCount());
+    // Initialise the configured timezone BEFORE any refresh (and independent
+    // of connectivity): an offline reboot with retained RTC time evaluates
+    // the persisted LOCAL quiet window in the configured zone, not UTC.
+    lcd::configureTimezone();
     if (!expander.begin()) lcd::log("error=ch422g-begin\n");
     expander.setBacklight(false);
     if (!panel.begin(setLcdResetLine)) lcd::log("error=panel-begin\n");
@@ -551,6 +603,11 @@ void loop() {
     const uint32_t now = millis();
     pollTouch(now);
     backlightRefresh();
+    // The label hold (~2 s) expires here: redraw the cached frame clean.
+    if (refreshLabel.tick(now)) {
+        logRefreshLabel();
+        show(screenIndex);
+    }
 #ifdef VENTANAL_LCD_DIAG_PANEL
     panelVsyncReport(now);
 #endif
