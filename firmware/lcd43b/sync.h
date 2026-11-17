@@ -37,6 +37,10 @@ constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
 constexpr uint32_t NTP_TIMEOUT_MS = 10000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 10000;
 constexpr uint32_t TRANSFER_BUDGET_MS = 60000;
+// Bounded completion check for the connection-close framing below: how long
+// a fully received frame waits for the server to hang up before the body
+// is treated as incomplete (fail closed).
+constexpr uint32_t FRAME_CLOSE_GRACE_MS = 1000;
 constexpr size_t CHUNK_BYTES = 32768;
 constexpr uint32_t WATCHDOG_TIMEOUT_MS = 30000;
 
@@ -85,12 +89,24 @@ inline bool redrawNeeded(bool requested, bool newContent, bool drawn,
     return requested || newContent || !drawn || offlineChanged;
 }
 
+// Initialise the configured timezone (configTzTime) so local time — and
+// therefore the persisted quiet window — is evaluated in the configured
+// zone from boot, independently of connectivity. setup() calls this
+// before the first refresh: an offline reboot with retained RTC time used
+// to evaluate the persisted LOCAL quiet hours in UTC, keeping the panel
+// lit through the night (pinned by test_lcd43b_sync).
+void configureTimezone();
+
 // Download one frame into buffer (FRAME_BYTES; PSRAM on the board) with
 // every read bounded by the frame bytes still missing, then hash-verify
-// it and stage-commit it to /<slotName>.vnr via .tmp+rename. A response
-// that keeps sending past the advertised frame length is rejected
-// (excess) — the buffer can never overflow and a longer body can never be
-// accepted as its own prefix. Failures leave the previous cache alone.
+// it and stage-commit it to /<slotName>.vnr via .tmp+rename. The body is
+// framed by the connection close: the frame is only committed after the
+// server hangs up with exactly the advertised bytes, waiting a bounded
+// grace for that hang-up. Bytes past the frame reject the download
+// whenever they arrive — a hash-matching frame followed by a trailing
+// packet is malformed, not verified — and a connection that neither
+// delivers nor closes within the grace window is treated as incomplete
+// (fail closed; the previous cache entry stays).
 bool downloadFrame(const char* hostUrl, const FrameInfo& info,
                    const char* slotName, uint8_t* buffer, Watchdog& watchdog);
 

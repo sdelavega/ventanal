@@ -11,18 +11,24 @@
 //    frames, and the redraw decision after offline changes.
 
 #include "../lcd43b/sync.h"
+// The host build always compiles sync.cpp against the public example
+// configuration (VENTANAL_HOST_TEST), so the test asserts the same macro.
+#include "../lcd43b/config.example.h"
 
 #include "Arduino.h"
 #include "esp_sntp.h"
 #include "HTTPClient.h"
 #include "LittleFS.h"
 #include "Preferences.h"
+#include "WiFi.h"
 
 #include <cassert>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <string>
 #include <vector>
+#include <ctime>
 
 namespace {
 
@@ -100,6 +106,10 @@ void resetFakes() {
     readBytesCalls = 0;
     fakeClock = 0;
     fakeSyncStatus = SNTP_SYNC_STATUS_COMPLETED;
+    delayedFrom = 0;
+    delayedUntilMs = 0;
+    holdConnection = false;
+    fakeTz.clear();
 }
 
 }  // namespace
@@ -122,6 +132,48 @@ int main() {
         assert(largestRead <= lcd::CHUNK_BYTES);   // chunk cap held
         for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
             assert(buffer[i] == 0);                // guard band never written
+    }
+    {   // Delayed excess: a correct, hash-matching frame arrives, and only
+        // then (300 ms later) the server sends a trailing packet. The
+        // single available() check used to miss bytes that had not arrived
+        // yet; connection-close framing must reject the frame and keep the
+        // previous cache entry.
+        resetFakes();
+        const std::vector<uint8_t> frame = solidFrame(0xF800);
+        const std::vector<uint8_t> previous = solidFrame(0x07E0);
+        Entry art = makeEntry("art", frame);
+        files["/art.vnr"] = previous;            // the cache entry to preserve
+        response = frame;
+        response.insert(response.end(), 4096, 0xAB);   // trailing packet...
+        advertisedSize = int(lcd::FRAME_BYTES);
+        delayedFrom = frame.size();              // ...arrives after 300 ms
+        delayedUntilMs = 300;
+        CountingWatchdog watchdog;
+        std::vector<uint8_t> buffer(lcd::FRAME_BYTES + 4096, 0);   // guard band
+        assert(!lcd::downloadFrame("http://host", art.info, "art",
+                                   buffer.data(), watchdog));
+        assert(strstr(Serial.output.c_str(), "excess=1"));
+        assert(files["/art.vnr"] == previous);   // previous cache preserved
+        for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
+            assert(buffer[i] == 0);              // guard band never written
+    }
+    {   // Frame delivered but the server never hangs up: a connection that
+        // neither delivers nor closes within the grace window cannot frame
+        // the body, so the download fails closed and keeps the cache.
+        resetFakes();
+        const std::vector<uint8_t> frame = solidFrame(0x001F);
+        const std::vector<uint8_t> previous = solidFrame(0x07E0);
+        Entry art = makeEntry("art", frame);
+        files["/art.vnr"] = previous;
+        response = frame;
+        advertisedSize = int(lcd::FRAME_BYTES);
+        holdConnection = true;                 // no hang-up, no extra bytes
+        CountingWatchdog watchdog;
+        std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
+        assert(!lcd::downloadFrame("http://host", art.info, "art",
+                                   buffer.data(), watchdog));
+        assert(!strstr(Serial.output.c_str(), "excess=1"));
+        assert(files["/art.vnr"] == previous);  // previous cache preserved
     }
     {   // Mid-stream disconnect: the download fails without committing a
         // partial frame to the cache.
@@ -311,6 +363,46 @@ int main() {
         assert(lcd::redrawNeeded(false, true, true, false));    // new content
         assert(lcd::redrawNeeded(true, false, true, false));    // requested
         assert(!lcd::redrawNeeded(false, false, true, false));  // nothing new
+    }
+    {   // Offline reboot with retained RTC time: the timezone is
+        // initialised in setup (connectivity-independent), so the persisted
+        // LOCAL quiet window evaluates in the configured zone, not UTC.
+        resetFakes();
+        Preferences prefs;
+        assert(prefs.begin("ventanal", false));
+        lcd::DeviceManifest published;         // what the last online sync stored
+        published.quietStart = 1380;            // 23:00 local
+        published.quietEnd = 360;               // 06:00 local
+        lcd::saveQuiet(prefs, published);
+        lcd::DeviceManifest rebooted;           // fresh boot: NVS only, no network
+        assert(lcd::loadQuiet(prefs, rebooted));
+        // setup() initialises the configured timezone before any refresh.
+        lcd::configureTimezone();
+        assert(fakeTz == VENTANAL_TZ);
+        // Retained RTC: 2026-11-17 06:30 UTC, synced before the reboot.
+        std::tm utc{};
+        utc.tm_year = 2026 - 1900;
+        utc.tm_mon = 10;
+        utc.tm_mday = 17;
+        utc.tm_hour = 6;
+        utc.tm_min = 30;
+        const time_t instant = timegm(&utc);
+        setenv("TZ", fakeTz.c_str(), 1);       // MST (UTC-7) in November
+        tzset();
+        std::tm local{};
+        localtime_r(&instant, &local);
+        const int localMinutes = local.tm_hour * 60 + local.tm_min;
+        assert(localMinutes == 23 * 60 + 30);  // 23:30 local, inside the window
+        assert(lcd::quietApplies(local.tm_year + 1900, localMinutes, rebooted));
+        // The old bug — timezone configured only after Wi-Fi connected, so
+        // an offline reboot evaluated the LOCAL window in UTC — keeps the
+        // panel lit through the night.
+        unsetenv("TZ");
+        tzset();
+        std::tm utcTm{};
+        gmtime_r(&instant, &utcTm);
+        assert(!lcd::quietApplies(utcTm.tm_year + 1900,
+                                   utcTm.tm_hour * 60 + utcTm.tm_min, rebooted));
     }
     puts("lcd43b sync: bounded reads, excess rejection, stall budgets,"
          " watchdog feeds, staged results, redraw rules passed");

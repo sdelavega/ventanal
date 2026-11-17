@@ -121,6 +121,13 @@ bool commitFrame(const uint8_t* buffer, const char* slotName) {
 
 }  // namespace
 
+void configureTimezone() {
+    // setup() runs this before the first refresh so the persisted local
+    // quiet window evaluates in the configured zone even when the board
+    // never reaches Wi-Fi (offline reboot with retained RTC time).
+    configTzTime(VENTANAL_TZ, "pool.ntp.org", "time.nist.gov");
+}
+
 bool downloadFrame(const char* hostUrl, const FrameInfo& info,
                    const char* slotName, uint8_t* buffer, Watchdog& watchdog) {
     const String url = String(hostUrl) + info.url;
@@ -154,10 +161,31 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
                 delay(2);
             }
         }
-        // A body longer than the advertised frame is malformed: reject it
-        // instead of accepting the hash-verified prefix.
-        excess = got == FRAME_BYTES && stream->available() > 0;
-        ok = !excess && got == FRAME_BYTES
+        // Connection-close framing with a bounded completion check: the
+        // frame is only committed after the server hangs up with exactly
+        // the advertised bytes. Trailing bytes reject the download
+        // whenever they arrive — a delayed packet after a hash-matching
+        // frame is malformed, not verified — and a connection that
+        // neither delivers nor closes within the grace window is
+        // incomplete: fail closed, keep the previous cache entry.
+        bool closed = false;
+        if (got == FRAME_BYTES) {
+            const uint32_t closeStarted = millis();
+            while (true) {
+                watchdog.feed();
+                if (stream->available() > 0) {
+                    excess = true;
+                    break;
+                }
+                if (!http.connected()) {
+                    closed = true;
+                    break;
+                }
+                if (millis() - closeStarted >= FRAME_CLOSE_GRACE_MS) break;
+                delay(2);
+            }
+        }
+        ok = closed && !excess
           && frameVerified(buffer, FRAME_BYTES, info.sha256);
         log("download slot=%s id=%.16s bytes=%u verified=%d excess=%d"
             " ms=%lu\n",

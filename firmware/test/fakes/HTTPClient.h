@@ -20,15 +20,27 @@ inline size_t readBytesCalls = 0;
 inline std::map<std::string,std::vector<uint8_t>> urlResponses; // per-URL body
 inline bool sizeFromResponse = false;  // getSize() reports the body size
 inline bool stallBody = false;         // connected, but no bytes ever arrive
+inline size_t delayedFrom = 0;          // bytes at/after this index only arrive
+inline unsigned delayedUntilMs = 0;     // once fakeClock passes this mark
+inline bool holdConnection = false;     // connected() stays true (no hang-up)
 class WiFiClient {
     size_t pos = 0;
 public:
     void resetResponse() { pos=0; }
     void setTimeout(unsigned ms) { streamTimeout=ms; }
-    int available() { if (stallBody) return 0; return std::min(size_t(1460),response.size()-pos); }
+    int available() {
+        if (stallBody) return 0;
+        const size_t remaining = response.size() - pos;
+        if (!remaining) return 0;
+        // A trailing packet that shows up late (after the frame) models the
+        // delayed-excess case: nothing to read yet, connection still open.
+        if (delayedUntilMs && pos >= delayedFrom && fakeClock < delayedUntilMs)
+            return 0;
+        return std::min(size_t(1460), remaining);
+    }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
     int read(uint8_t* b, size_t n) { fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
-    bool connected() { if (stallBody) return true; return pos < response.size(); }
+    bool connected() { if (stallBody || holdConnection) return true; return pos < response.size(); }
 };
 class HTTPClient {
     WiFiClient* client = nullptr;

@@ -16,4 +16,7 @@ struct FakeWiFi {
     int status() { return WL_CONNECTED; }
 };
 inline FakeWiFi WiFi;
-inline void configTzTime(const char*, const char*, const char*) {}
+// Records the configured POSIX TZ string so host tests can prove the
+// timezone is initialised in setup, independent of connectivity.
+inline std::string fakeTz;
+inline void configTzTime(const char* tz, const char*, const char*) { fakeTz = tz; }
