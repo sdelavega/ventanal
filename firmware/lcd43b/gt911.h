@@ -5,8 +5,10 @@
 // Minimal GT911 capacitive-touch reader for the 4.3B panel. The controller
 // sits on the shared I2C bus with its interrupt on GPIO4 and reset driven
 // through the CH422G expander (EXIO1). The reset sequence selects the bus
-// address: INT released while RST rises gives 0x5D (the board's fitted
-// default, as Waveshare's I2C scan shows), INT low gives 0x14; we probe both.
+// address: INT driven LOW while RST rises latches 0x5D — the address
+// Waveshare's and Espressif's board support bring this panel up at — and
+// INT HIGH (or released to its pull-up, the state at power-up) latches
+// 0x14, the address this board's controller was observed answering at.
 
 #include <Arduino.h>
 #include <Wire.h>
@@ -33,19 +35,38 @@ public:
 
     explicit Gt911(TwoWire& bus) : bus_(&bus) {}
 
-    // Reset the controller via the CH422G EXIO1 line and pick its address.
-    // GT911 needs tens of milliseconds after reset before answering probes.
+    // Bring the controller up with the reference sequence for this board
+    // (ESP32_Display_Panel's 4.3B touch pre-begin plus esp_lcd_touch_
+    // gt911): INT is driven LOW 10 ms before TP_RST is pulled low, stays
+    // low while RST rises and for 200 ms afterwards, then is released to
+    // a plain floating input (the GT911 drives INT from then on; a
+    // pull-up would fight it). Longer/alternate sequences are tried only
+    // while the previous one finds no controller with a non-blank
+    // configuration (config version 0):
+    //   1. reference sequence, TP_RST low 100 ms;
+    //   2. power-cycle-equivalent sequence, TP_RST low 200 ms, in case
+    //      rapid earlier resets left the controller wedged;
+    //   3. INT-high sequence (latches 0x14), TP_RST low 200 ms.
+    // GT911 needs tens of milliseconds after reset before answering
+    // probes; every cycle waits >= 60 ms after INT is released before the
+    // first register access.
     bool begin(int irqPin, bool (*setReset)(bool)) {
         irqPin_ = irqPin;
-        pinMode(irqPin, INPUT_PULLUP);
-        delay(20);
-        // INT released while RST rises selects 0x5D.
-        if (resetAndProbe(setReset, true)) return finish();
-        // INT driven low while RST rises selects 0x14.
-        if (resetAndProbe(setReset, false)) return finish();
-        // Give a slow controller one more chance to finish booting.
-        delay(200);
-        if (resetAndProbe(setReset, true)) return finish();
+        cycles_ = 0;
+        const struct { bool intHigh; uint16_t rstLowMs; } steps[] = {
+            {false, 100}, {false, 200}, {true, 200},
+        };
+        for (size_t i = 0; i < sizeof steps / sizeof steps[0]; ++i) {
+            ++cycles_;
+            if (!resetAndProbe(setReset, steps[i].intHigh, steps[i].rstLowMs))
+                continue;
+            uint8_t version = 0;
+            if (peek(0x8047, &version, 1) && version != 0) return finish();
+            if (i + 1 == sizeof steps / sizeof steps[0])
+                return finish();   // last resort: accept what answers
+            // Blank configuration: retry with the next, longer reset.
+        }
+        pinMode(irqPin_, INPUT);   // nothing answered: leave INT floating
         return false;
     }
 
@@ -79,22 +100,31 @@ public:
 
     uint8_t address() const { return address_; }
 
+    // Reset cycles the last begin() used before a controller answered
+    // (1 = the reference sequence), 0 when none did.
+    uint8_t cycles() const { return cycles_; }
+
+    // Raw 16-bit-register read for diagnostics/tests: the same protocol as
+    // the report path (big-endian register address, repeated start,
+    // requestFrom of exactly `length` bytes).
+    bool peek(uint16_t reg, uint8_t* data, size_t length) {
+        return readRegister(reg, data, length);
+    }
+
 private:
-    // released: the INT pin floats to its pull-up through the reset rise
-    // (selecting 0x5D); otherwise it is driven low (selecting 0x14).
-    bool resetAndProbe(bool (*setReset)(bool), bool released) {
-        if (released) {
-            pinMode(irqPin_, INPUT_PULLUP);
-        } else {
-            pinMode(irqPin_, OUTPUT);
-            digitalWrite(irqPin_, LOW);
-        }
-        delay(20);
-        setReset(true);     // assert reset: EXIO1 low
-        delay(20);
-        setReset(false);    // release; INT level while it rises picks the address
-        delay(100);
-        if (released) pinMode(irqPin_, INPUT_PULLUP);
+    // One reset/address-selection cycle. intHigh picks the level INT is
+    // driven at while RST rises: LOW latches 0x5D (the reference), HIGH
+    // latches 0x14. rstLowMs is how long TP_RST is held low.
+    bool resetAndProbe(bool (*setReset)(bool), bool intHigh, uint16_t rstLowMs) {
+        pinMode(irqPin_, OUTPUT);
+        digitalWrite(irqPin_, intHigh ? HIGH : LOW);
+        delay(10);              // INT settles before reset is asserted
+        setReset(true);         // assert reset: EXIO1 low
+        delay(rstLowMs);
+        setReset(false);        // release; INT level while it rises latches
+        delay(200);             // keep INT driven through the latch window
+        pinMode(irqPin_, INPUT);   // release INT: plain floating input
+        delay(60);              // >= 50 ms before the first register access
         for (uint8_t candidate : {PRIMARY, SECONDARY}) {
             if (probe(candidate)) {
                 address_ = candidate;
@@ -105,7 +135,6 @@ private:
     }
 
     bool finish() {
-        pinMode(irqPin_, INPUT_PULLUP);
         uint8_t clear = 0;
         return writeRegister(0x814E, &clear, 1);
     }
@@ -136,4 +165,5 @@ private:
     TwoWire* bus_;
     int irqPin_ = 4;
     uint8_t address_ = PRIMARY;
+    uint8_t cycles_ = 0;
 };

@@ -26,10 +26,20 @@ struct SerialFake {
 };
 inline SerialFake Serial;
 
-constexpr int HIGH=1, LOW=0, OUTPUT=1, INPUT_PULLUP=2;
+constexpr int HIGH=1, LOW=0, INPUT=0, OUTPUT=1, INPUT_PULLUP=2;
 inline int fakeBusy=1;
 inline std::function<int(int)> digitalReader;
 inline int digitalRead(int pin) { return digitalReader?digitalReader(pin):(pin==18?HIGH:fakeBusy); }
 inline int panelPower=1;
-inline void pinMode(int,int) {}
-inline void digitalWrite(int pin,int level) { if(pin==21) panelPower=level; }
+// Per-pin mode/level tracking so tests can model pins the way silicon
+// samples them (e.g. the GT911 samples its INT pin level while RST
+// rises). Modes/levels default to INPUT/LOW like a reset ESP32 GPIO.
+inline int fakePinModes[64] = {};
+inline int fakePinLevels[64] = {};
+inline int fakePinMode(int pin) { return pin>=0&&pin<64 ? fakePinModes[pin] : INPUT; }
+inline int fakePinLevel(int pin) { return pin>=0&&pin<64 ? fakePinLevels[pin] : LOW; }
+inline void pinMode(int pin,int mode) { if(pin>=0&&pin<64) fakePinModes[pin]=mode; }
+inline void digitalWrite(int pin,int level) {
+    if(pin==21) panelPower=level;
+    if(pin>=0&&pin<64) fakePinLevels[pin]=level;
+}

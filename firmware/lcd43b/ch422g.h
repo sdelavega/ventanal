@@ -44,6 +44,9 @@ public:
     // Current backlight state as last written.
     bool backlightOn() const { return outputs_ & DISP; }
 
+    // Shadow of the IO0-7 output byte as last written (diagnostics).
+    uint8_t outputs() const { return outputs_; }
+
 private:
     bool setBit(uint8_t bit, bool high) {
         outputs_ = high ? uint8_t(outputs_ | bit) : uint8_t(outputs_ & ~bit);

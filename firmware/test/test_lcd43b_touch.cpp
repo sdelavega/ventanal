@@ -18,7 +18,51 @@
 
 namespace {
 
-bool setReset(bool asserted) { (void)asserted; return true; }
+// Models the GT911 address latch the datasheet (and Waveshare's/Espressif's
+// 4.3B board support) describe: the controller samples its INT pin while
+// RST rises — driven LOW selects 0x5D, driven HIGH or released to a
+// pull-up selects 0x14 (the level this board's controller was observed
+// answering at) — and the config version register only reads back nonzero
+// once the controller booted its stored configuration. gt911BlankCycles
+// lets a test emulate a controller that comes up blank for the first
+// bring-up cycles (rapid-reset wedged state).
+int gt911RisingEdges = 0;
+int gt911BlankCycles = 0;
+int firstRstLowMs = -1;
+int intModeAtRise = -1;
+int intLevelAtRise = -1;
+int rstAssertedAtMs = -1;
+
+bool setReset(bool asserted) {
+    if (asserted) {
+        if (rstAssertedAtMs < 0) rstAssertedAtMs = int(fakeClock);
+    } else {
+        ++gt911RisingEdges;
+        intModeAtRise = fakePinMode(4);
+        intLevelAtRise = fakePinLevel(4);
+        gt911Address = intModeAtRise == OUTPUT && intLevelAtRise == LOW
+                           ? Gt911::PRIMARY
+                           : Gt911::SECONDARY;
+        gt911ConfigVersion =
+            gt911RisingEdges > gt911BlankCycles ? uint8_t(0x20) : uint8_t(0);
+        if (firstRstLowMs < 0 && rstAssertedAtMs >= 0)
+            firstRstLowMs = int(fakeClock) - rstAssertedAtMs;
+    }
+    return true;
+}
+
+void resetBringUpFake() {
+    gt911RisingEdges = 0;
+    gt911BlankCycles = 0;
+    firstRstLowMs = -1;
+    intModeAtRise = -1;
+    intLevelAtRise = -1;
+    rstAssertedAtMs = -1;
+    gt911Address = 0x14;
+    gt911ConfigVersion = 0x20;
+    gt911Device.pending.clear();
+    gt911Device.i2cFailure = false;
+}
 
 // Drives the poll loop exactly like the sketch: 10 ms cadence, one
 // TouchPoller poll per tick, collecting completed gestures.
@@ -30,6 +74,7 @@ struct PollLoop {
     std::vector<lcd::TouchSample> samples;   // every poll's retained state
 
     PollLoop() {
+        resetBringUpFake();
         device.begin(4, setReset);
         gt911Device.acks = 0;
     }
@@ -76,6 +121,33 @@ void holdFinger(uint16_t x, uint16_t y, uint32_t forMs, uint32_t fromMs) {
 }  // namespace
 
 int main() {
+    {   // The reference bring-up (Waveshare 4.3B board file + Espressif's
+        // esp_lcd_touch_gt911) latches 0x5D: INT is driven LOW while RST
+        // rises, TP_RST is held low for the full reference reset (100 ms,
+        // the datasheet asks >= 10), and INT is released to a plain
+        // floating input afterwards (the GT911 drives the line; a pull-up
+        // would fight it).
+        resetBringUpFake();
+        Gt911 device{Wire};
+        assert(device.begin(4, setReset));
+        assert(device.address() == Gt911::PRIMARY);
+        assert(device.cycles() == 1);
+        assert(intModeAtRise == OUTPUT && intLevelAtRise == LOW);
+        assert(firstRstLowMs >= 100);
+        assert(fakePinMode(4) == INPUT);
+    }
+    {   // A controller that comes up with a blank configuration through
+        // the reference cycle (config version 0, the observed wedged
+        // state) is recovered by the power-cycle-equivalent long reset;
+        // the accepted address is still the reference 0x5D.
+        resetBringUpFake();
+        gt911BlankCycles = 1;   // blank through the first bring-up cycle
+        Gt911 device{Wire};
+        assert(device.begin(4, setReset));
+        assert(device.address() == Gt911::PRIMARY);
+        assert(device.cycles() == 2);
+        assert(intModeAtRise == OUTPUT && intLevelAtRise == LOW);
+    }
     {   // A 1.8 s hold with 10-15 ms report spacing still refreshes: the
         // polls between reports keep the contact alive (the failing old
         // behaviour treated every empty buffer status as a release).

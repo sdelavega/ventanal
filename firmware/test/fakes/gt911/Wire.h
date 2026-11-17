@@ -55,7 +55,14 @@ struct FakeGt911State {
 };
 
 inline FakeGt911State gt911Device;
-inline uint8_t gt911Address = 0x14;   // the address this board answers at
+// The address the controller currently answers at. The GT911 latches it
+// from the INT pin level while RST rises (driven low -> 0x5D, high or
+// released to a pull-up -> 0x14); host tests re-assign this from their
+// reset callback to model that latch.
+inline uint8_t gt911Address = 0x14;
+// Config version register 0x8047: nonzero on a healthy controller, 0 on
+// one that came up with a blank configuration.
+inline uint8_t gt911ConfigVersion = 0x20;
 
 class TwoWire {
 public:
@@ -103,6 +110,7 @@ public:
         --readLeft_;
         const uint16_t reg = readRegister_++;
         if (reg == 0x814E) return gt911Device.status();
+        if (reg == 0x8047) return gt911ConfigVersion;
         if (reg >= 0x814F && reg <= 0x8154) {
             uint8_t point[6];
             gt911Device.pointBytes(point);

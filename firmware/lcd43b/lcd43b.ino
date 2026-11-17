@@ -100,6 +100,66 @@ uint32_t lastRawLogMs = 0;
 lcd::TouchSample lastRawSample{};
 #endif
 
+#ifdef VENTANAL_LCD_DIAG_TOUCH
+// Boot diagnostics for touch bring-up (diagnostic builds only): which bus
+// addresses answer, the bring-up cycle the driver accepted, the GT911
+// identity registers, the full configuration block 0x8047-0x80FF plus
+// the fresh flag at 0x8100, the INT line level and the CH422G output
+// shadow. The GT911 datasheet expects ASCII "911" at 0x8140 and a
+// published configuration (nonzero version byte, X/Y resolution,
+// touch number, module switch); an all-zero block means the controller
+// came up blank or wedged.
+void touchBootDiag() {
+    Wire.beginTransmission(Gt911::PRIMARY);
+    const bool primary = Wire.endTransmission() == 0;
+    Wire.beginTransmission(Gt911::SECONDARY);
+    const bool secondary = Wire.endTransmission() == 0;
+    lcd::log("diag probe 0x%02x=%d 0x%02x=%d addr=0x%02x cycles=%d int=%d"
+             " ch422g_io=0x%02x\n",
+             Gt911::PRIMARY, primary, Gt911::SECONDARY, secondary,
+             touch.address(), int(touch.cycles()), digitalRead(4),
+             expander.outputs());
+    uint8_t pid[3] = {}, fw[2] = {};
+    const bool pidOk = touch.peek(0x8140, pid, sizeof pid);
+    const bool fwOk = touch.peek(0x8144, fw, sizeof fw);
+    lcd::log("diag gt911 product=%c%c%c ok=%d fw=0x%02x%02x ok=%d\n",
+             pid[0], pid[1], pid[2], pidOk, fw[0], fw[1], fwOk);
+    // Dump the configuration block in 16-byte reads: a single 185-byte
+    // requestFrom exceeds the core's Wire receive buffer and fails.
+    uint8_t cfg[185] = {};   // 0x8047..0x80FF, checksum last
+    bool cfgOk = true;
+    for (size_t off = 0; off < sizeof cfg; off += 16) {
+        const size_t len = off + 16 <= sizeof cfg ? size_t(16)
+                                                  : sizeof cfg - off;
+        if (!touch.peek(uint16_t(0x8047 + off), cfg + off, len)) cfgOk = false;
+        char line[88];
+        int used = snprintf(line, sizeof line, "diag cfg %04x:",
+                            0x8047 + int(off));
+        if (used < 0) continue;
+        for (size_t i = 0; i < len; ++i) {
+            const int written =
+                used < int(sizeof line)
+                    ? snprintf(line + used, sizeof line - size_t(used),
+                               " %02x", cfg[off + i])
+                    : 0;
+            if (written <= 0) break;
+            used += written;
+        }
+        lcd::log("%s\n", line);
+    }
+    uint8_t fresh = 0;
+    const bool freshOk = touch.peek(0x8100, &fresh, 1);
+    // Config multi-byte fields are little-endian (unlike the big-endian
+    // point coordinates): 800 -> 20 03, 480 -> e0 01.
+    lcd::log("diag cfg ok=%d version=%d res=%dx%d touch_num=%d"
+             " module_switch=0x%02x checksum=0x%02x fresh=%d fresh_ok=%d\n",
+             cfgOk, cfg[0], int(cfg[2]) << 8 | cfg[1],
+             int(cfg[4]) << 8 | cfg[3], cfg[5], cfg[6], cfg[184], fresh,
+             freshOk);
+    lcd::log("OWNER: tap now\n");
+}
+#endif
+
 // Diagnostic only: report every I2C address that acknowledges a probe.
 void scanBus() {
     char line[160] = "i2c scan:";
@@ -346,10 +406,14 @@ void pollTouch(uint32_t now) {
 #endif
 #ifdef VENTANAL_LCD_DIAG_TOUCH
     // Every report change, plus at most one line per second while held.
+    // The CH422G shadow proves no later expander write re-asserted
+    // TP_RST (bit 1) while touch was live.
     if (sample.report != lastRawSample.report
         || now - lastRawLogMs >= 1000) {
-        lcd::log("touch raw=%d status=0x%02x contact=%d x=%d y=%d\n",
-                 int(sample.report), sample.status, sample.contact, x, y);
+        lcd::log("touch raw=%d status=0x%02x contact=%d x=%d y=%d int=%d"
+                 " ch422g_io=0x%02x\n",
+                 int(sample.report), sample.status, sample.contact, x, y,
+                 digitalRead(4), expander.outputs());
         lastRawLogMs = now;
     }
     lastRawSample = sample;
@@ -395,8 +459,12 @@ void setup() {
         lcd::log("error=gt911-begin\n");
         scanBus();
     } else {
-        lcd::log("touch gt911 address=0x%02x\n", touch.address());
+        lcd::log("touch gt911 address=0x%02x cycles=%d\n", touch.address(),
+                 int(touch.cycles()));
     }
+#ifdef VENTANAL_LCD_DIAG_TOUCH
+    touchBootDiag();
+#endif
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
