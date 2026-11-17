@@ -22,6 +22,7 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 #include <Wire.h>
+#include <WiFi.h>
 #include <esp_task_wdt.h>
 #include <cstdio>
 #include <ctime>
@@ -48,6 +49,7 @@
 #include "panel.h"
 #include "persist.h"
 #include "screens.h"
+#include "settings_page.h"
 #include "sync.h"
 #include "touch.h"
 #include <esp_sntp.h>
@@ -95,6 +97,16 @@ lcd::TouchPoller touchPoller{touch};
 Preferences prefs;
 Preferences settingsPrefs; // exclusively opened/closed by settings persistence
 lcd::DeviceSettings settings=lcd::defaultSettings(lcd::POWER_SOURCE_DETECTABLE);
+lcd::SettingsSession settingsPage;
+int settingsReturnSlot=0;
+bool settingsRefreshPending=false;
+// This board exposes no battery ADC. Keep calibration gated by both hardware
+// capability and a valid measurement; never synthesize a full-cell reading.
+int settingsBatteryMv() { return -1; }
+bool settingsBatteryButton() {
+    if constexpr(!lcd::BATTERY_ADC_AVAILABLE) return false;
+    return settingsBatteryMv()>0;
+}
 
 lcd::RefreshState state;   // manifest, cache ids, offline flag
 int screenIndex = 0;       // current screen within the screen list
@@ -275,7 +287,7 @@ bool renderClock() {
     const bool valid=lcd::formatClock(local,state.manifest.clock24h,timeText,sizeof timeText,dateText,sizeof dateText);
     // No voltage path on this board (board.h); batteryFullMv stays unused.
     const int mv=-1, percent=-1;
-    lcd::renderReadout(clockPixels,clockBackground,lcd::isLcarsSlot(clockSlot),
+    lcd::renderReadout(clockPixels,clockBackground,settingsPage.active || lcd::isLcarsSlot(clockSlot),
                        timeText,dateText,percent,lcd::batteryLevel(mv,percent));
     lcd::log("readout valid=%d time=%s date=%s h24=%d battery=none\n",
              valid,timeText,dateText,state.manifest.clock24h);
@@ -283,11 +295,11 @@ bool renderClock() {
     return valid;
 }
 void tickClock() {
-    if(clockSlot<0 || !state.drawn || time(nullptr)/60==drawnMinute) return;
+    if(clockSlot<0 || (!settingsPage.active && !state.drawn) || time(nullptr)/60==drawnMinute) return;
     const bool valid=renderClock(); const auto r=lcd::readoutRect(clockSlot);
     const bool ok=panel.blitRegionDimmed(r.x,r.y,r.w,r.h,clockPixels,clockDimmed,settings.brightness);
     lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
-             valid,lcd::SLOT_NAMES[clockSlot],r.x,r.y,r.w,r.h,ok,settings.brightness);
+             valid,settingsPage.active?"settings":lcd::SLOT_NAMES[clockSlot],r.x,r.y,r.w,r.h,ok,settings.brightness);
 }
 void seedRtc() {
     if constexpr(lcd::RTC_PCF85063) {
@@ -308,8 +320,32 @@ void saveRtcAfterNtp() {
     }
 }
 
+// Settings owns the panel while open. Every other redraw routes here, and
+// minute updates use CLOCK_GAP even when the underlying selection is artwork.
+bool showSettings() {
+    auto* pixels=static_cast<uint16_t*>(ps_malloc(size_t(lcd::WIDTH)*lcd::HEIGHT*2));
+    if(!pixels) { lcd::log("settings error=allocation\n"); return false; }
+    char footer[192];
+    snprintf(footer,sizeof footer,"VENTANAL · %s · WI-FI %s · v1.0.0",
+             VENTANAL_DEVICE_ID,WiFi.status()==WL_CONNECTED?"OK":"OFFLINE");
+    lcd::drawSettingsPage(pixels,settings,solarPublished(),settingsBatteryButton(),footer);
+    clockSlot=-1;
+    if(clockBackground && clockPixels && clockDimmed) {
+        clockSlot=1; // LCARS top-bar geometry; never the underlying art corner
+        memset(clockBackground,0,204*26*2);
+        renderClock();
+        lcd::pasteReadout(pixels,clockPixels,lcd::CLOCK_GAP);
+    }
+    const bool ok=panel.blitDimmed(pixels,pixels,settings.brightness);
+    free(pixels);
+    lcd::log("settings draw=%d brightness=%u solarListed=%d batteryButton=%d\n",
+             ok,settings.brightness,solarPublished(),settingsBatteryButton());
+    return ok;
+}
+
 // Blit a cached frame (plus overlays) to the panel through a PSRAM buffer.
 bool show(int index) {
+    if(settingsPage.active) return showSettings();
     const int slot = screenSlot(index);
     if (slot < 0) {   // persisted index outside the current screen list
         lcd::log("blit error=screen-index index=%d\n", index);
@@ -462,6 +498,7 @@ bool startRefresh(bool redraw) {
         lcd::log("refresh error=task-create\n");
         return false;
     }
+    settingsRefreshPending=false;
     return true;
 }
 
@@ -511,22 +548,57 @@ void applyFinishedRefresh() {
 // Task 6 calls this from the UI thread when a settings choice changes.
 // An in-flight worker finishes its immutable snapshot; the next pass uses the
 // new visibility so newly enabled screens get downloaded even after a toggle.
-bool settingsRefreshPending=false;
 bool applyDeviceSettings(const lcd::DeviceSettings& next) {
     if(!lcd::validSettings(next)) return false;
     const int previous=screenSlot(screenIndex);
+    const bool visibilityChanged=next.showArt!=settings.showArt || next.showWeather!=settings.showWeather
+        || next.showSolar!=settings.showSolar;
     settings=next;
     lcd::saveSettings(settingsPrefs,settings);
     lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
     storeScreenIndex();
     show(screenIndex);
-    settingsRefreshPending=true;
+    if(visibilityChanged) settingsRefreshPending=true;
     return true;
 }
 
 // --- Touch ----------------------------------------------------------------
 
+void closeSettings(const char* reason) {
+    settingsPage.active=false;
+    touchPoller.controlsMode(false);
+    lcd::remapSelection(screenIndex,spareCursor,settingsReturnSlot,solarPublished(),spareCount(),settings);
+    storeScreenIndex();
+    lcd::log("settings close=%s return=%s\n",reason,lcd::SLOT_NAMES[screenSlot(screenIndex)]);
+    show(screenIndex);
+}
+void settingsTap(int x,int y) {
+    const auto hit=lcd::hitSettings(x,y,solarPublished(),settingsBatteryButton());
+    lcd::log("settings hit=%d x=%d y=%d\n",int(hit),x,y);
+    if(hit==lcd::SettingsHit::Done) { closeSettings("done"); return; }
+    auto next=settings;
+    const bool accepted=lcd::applySettingsHit(next,hit,solarPublished(),settingsBatteryMv());
+    if(accepted && applyDeviceSettings(next)) {
+        lcd::log("settings change=%d brightness=%u timeout=%u art=%d weather=%d solar=%d saved=1\n",
+                 int(hit),settings.brightness,settings.timeoutMin,settings.showArt,settings.showWeather,settings.showSolar);
+    } else lcd::log("settings change=%d accepted=0\n",int(hit));
+}
+
 void handleGesture(Gesture gesture, int x, int y) {
+    if(settingsPage.active) {
+        if(gesture==Gesture::Next || gesture==Gesture::Previous) settingsTap(x,y);
+        return;
+    }
+    if((gesture==Gesture::Next || gesture==Gesture::Previous)
+       && classifyTap(x,y,lcd::isLcarsSlot(screenSlot(screenIndex)))==TapTarget::OpenSettings) {
+        settingsReturnSlot=screenSlot(screenIndex);
+        settingsPage.open(millis());
+        touchPoller.controlsMode(true);
+        refreshLabel.clear();
+        lcd::log("settings open return=%s x=%d y=%d\n",lcd::SLOT_NAMES[settingsReturnSlot],x,y);
+        showSettings();
+        return;
+    }
     const char* name = gesture == Gesture::Next      ? "next"
                      : gesture == Gesture::Previous  ? "previous"
                      : gesture == Gesture::DoubleTap ? "double"
@@ -622,9 +694,10 @@ void pollTouch(uint32_t now) {
     }
     lastRawSample = sample;
 #endif
+    if(touched && settingsPage.active) settingsPage.touch(now);
     if (touched && !lastTouched) touchUntilMs = now + TOUCH_WAKE_MS;
     lastTouched = touched;
-    if (gesture != Gesture::None) handleGesture(gesture, x, y);
+    if (gesture != Gesture::None) handleGesture(gesture, touchPoller.pressX(), touchPoller.pressY());
 }
 
 }  // namespace
@@ -737,6 +810,7 @@ void loop() {
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
     tickClock();
     pollTouch(now);
+    if(settingsPage.expired(millis())) closeSettings("idle");
     backlightRefresh();
     // The label hold (~2 s) expires here: redraw the cached frame clean.
     if (refreshLabel.tick(now)) {

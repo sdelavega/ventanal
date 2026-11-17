@@ -36,6 +36,14 @@ Gesture completeTap(Feeder& f, int x, int y) {
 }  // namespace
 
 int main() {
+    assert(classifyTap(539,63,true)==TapTarget::Next);
+    assert(classifyTap(540,63,true)==TapTarget::OpenSettings);
+    assert(classifyTap(540,64,true)==TapTarget::Next);
+    assert(classifyTap(549,79,false)==TapTarget::Next);
+    assert(classifyTap(550,79,false)==TapTarget::OpenSettings);
+    assert(classifyTap(550,80,false)==TapTarget::Next);
+    assert(classifyTap(399,0,true)==TapTarget::Previous);
+    assert(classifyTap(799,479,false)==TapTarget::Next);
     {   // Tap right half advances; left half goes back; the middle is right.
         Feeder right;
         assert(completeTap(right, 700, 240) == Gesture::Next);
@@ -97,6 +105,20 @@ int main() {
         f.tick(false, 700, 240);
         f.tick(false, 700, 240);
         assert(!f.active());
+    }
+    {   // Settings controls respond on release, independently on each tap.
+        GestureClassifier c; c.controlsMode(true);
+        c.sample(0,true,350,100); c.sample(40,true,350,100);
+        c.sample(80,false,700,300);
+        assert(c.sample(120,false,700,300)==Gesture::Previous);
+        assert(c.pressX()==350 && c.pressY()==100); // press location survives drag
+        c.sample(160,true,700,210); c.sample(200,true,700,210);
+        c.sample(240,false,700,210);
+        assert(c.sample(280,false,700,210)==Gesture::Next); // no spare gesture
+        c.sample(320,true,700,210); c.sample(360,true,700,210);
+        assert(c.sample(1860,true,700,210)==Gesture::None); // hold does nothing
+        c.sample(1900,false,700,210);
+        assert(c.sample(1940,false,700,210)==Gesture::None);
     }
     puts("lcd43b gesture: halves, double tap, long press, debounce passed");
     return 0;

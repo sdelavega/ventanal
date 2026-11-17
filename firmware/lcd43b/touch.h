@@ -68,6 +68,9 @@ public:
         return classifier_.sample(nowMs, touched, x, y);
     }
 
+    int pressX() const { return classifier_.pressX(); }
+    int pressY() const { return classifier_.pressY(); }
+    void controlsMode(bool enabled) { classifier_.controlsMode(enabled); }
     bool contact() const { return contact_; }
     int x() const { return x_; }
     int y() const { return y_; }

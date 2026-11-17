@@ -12,6 +12,13 @@
 
 #include <cstdint>
 
+enum class TapTarget { Next, Previous, OpenSettings };
+inline TapTarget classifyTap(int x,int y,bool lcarsPage) {
+    if(x>= (lcarsPage?540:550) && x<800 && y>=0 && y<(lcarsPage?64:80))
+        return TapTarget::OpenSettings;
+    return x>=400?TapTarget::Next:TapTarget::Previous;
+}
+
 enum class Gesture : uint8_t { None, Next, Previous, DoubleTap, Refresh };
 
 class GestureClassifier {
@@ -37,6 +44,10 @@ public:
         return expire(nowMs);
     }
 
+    int pressX() const { return pressX_; }
+    int pressY() const { return pressY_; }
+    void controlsMode(bool enabled) { *this=GestureClassifier{}; controls_=enabled; }
+
     // A press is active (possibly still unclassified).
     bool active() const {
         return state_ == State::Down || state_ == State::SecondDown;
@@ -53,17 +64,21 @@ private:
     };
 
     Gesture settle(uint32_t nowMs, bool down, int x, int y) {
-        (void)y;   // only the press's horizontal half classifies a tap
         switch (state_) {
         case State::Idle:
             if (down) {
                 pressStart_ = nowMs;
                 pressX_ = x;
+                pressY_ = y;
                 state_ = State::Down;
             }
             break;
         case State::Down:
             if (!down) {
+                if(controls_) {
+                    state_=State::Idle;
+                    return pressX_>=HALF?Gesture::Next:Gesture::Previous;
+                }
                 releaseStart_ = nowMs;
                 state_ = State::WaitSecond;
             }
@@ -94,7 +109,7 @@ private:
             && nowMs - (state_ == State::Down ? pressStart_ : secondStart_)
                    >= LONG_PRESS_MS) {
             state_ = State::Locked;
-            return Gesture::Refresh;
+            return controls_?Gesture::None:Gesture::Refresh;
         }
         if (state_ == State::WaitSecond && nowMs - releaseStart_ > DOUBLE_WINDOW_MS) {
             state_ = State::Idle;
@@ -110,5 +125,6 @@ private:
     uint32_t pressStart_ = 0;
     uint32_t secondStart_ = 0;
     uint32_t releaseStart_ = 0;
-    int pressX_ = 0;
+    int pressX_ = 0, pressY_ = 0;
+    bool controls_ = false;
 };

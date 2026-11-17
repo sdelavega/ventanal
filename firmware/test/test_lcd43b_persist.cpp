@@ -81,7 +81,7 @@ int main() {
         assert(!boot.screens[2].present && boot.spareCount == 0);
         lcd::loadPublishShape(prefs, boot);
         assert(boot.screens[2].present && boot.spareCount == 3);
-        assert(lcd::screenCount(true, 3) == 6);   // selection can normalise
+        int slots[6]; assert(lcd::activeSlots(true,3,lcd::DeviceSettings{},slots,6)==6);   // selection can normalise
     }
     {   // Cache ids and the selection round-trip under the phase-1 keys.
         freshNvs();
