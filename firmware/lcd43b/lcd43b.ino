@@ -52,8 +52,15 @@
 #include "diag.h"
 #endif
 
-#if defined(VENTANAL_LCD_DIAG_TOUCH) && defined(VENTANAL_LCD_DIAG_GESTURES)
-#error VENTANAL_LCD_DIAG_TOUCH and VENTANAL_LCD_DIAG_GESTURES drive the touch pipeline from different sources; build with at most one.
+#ifdef VENTANAL_LCD_DIAG_HW
+#include "hwprobe.h"
+#endif
+
+#if (defined(VENTANAL_LCD_DIAG_TOUCH) + defined(VENTANAL_LCD_DIAG_GESTURES) + defined(VENTANAL_LCD_DIAG_HW)) > 1
+#error Build with at most one of VENTANAL_LCD_DIAG_TOUCH, VENTANAL_LCD_DIAG_GESTURES, VENTANAL_LCD_DIAG_HW.
+#endif
+#if defined(VENTANAL_LCD_DIAG_HW) && defined(VENTANAL_LCD_DIAG_PANEL)
+#error Hardware probing and panel stress require separate builds.
 #endif
 
 // Optional private-config keys with safe defaults.
@@ -595,6 +602,12 @@ void setup() {
         lcd::log("diag panel stress=cold-cache vsync=on\n");
     }
 #endif
+#ifdef VENTANAL_LCD_DIAG_HW
+    scanBus();
+    expander.setBacklight(true);
+    lcd::hwProbeBegin();
+    return;  // no network worker or private configuration values in probe logs
+#endif
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
@@ -612,6 +625,11 @@ void setup() {
 
 void loop() {
     const uint32_t now = millis();
+#ifdef VENTANAL_LCD_DIAG_HW
+    lcd::hwProbeTick(now, expander);
+    delay(2);
+    return;
+#endif
     pollTouch(now);
     backlightRefresh();
     // The label hold (~2 s) expires here: redraw the cached frame clean.

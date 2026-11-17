@@ -74,7 +74,7 @@ Building with `-DVENTANAL_LCD_DIAG_TOUCH=1` instead logs the raw GT911
 view rate-limited (`touch raw=<report> status=0x.. contact=.. x=.. y=..`:
 every report change plus at most one line per second while a finger is
 held) alongside the usual `gesture=` lines, so a five-minute capture shows
-exactly what the controller reports for real touches. The two diagnostic
+exactly what the controller reports for real touches. The touch, gesture and hardware diagnostic
 flags cannot be combined (the sketch rejects that build).
 
 ## Behaviour
@@ -176,3 +176,58 @@ fake `esp_lcd`, and the diagnostic gesture sequence.
 Multi-device security (per-device keys/counters for HTTPS + signed manifests
 against the owner's secured host), pairing UI, and running the profile on
 the render Pi (the frame's unpaid art department).
+## Hardware facts
+
+Task 1 USB-only probe (2026-11-17), with **no Li-ion cell connected**.
+The [Waveshare download page](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3B#Resources)
+links the [4.3B schematic](https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3B/ESP32-S3-Touch-LCD-4.3B-Sch.pdf).
+All circuit references below are to **PDF page 1**; pages 2-3 are board layouts.
+`board.h` is the capability contract for subsequent work:
+
+| Constant | Value | Evidence / meaning |
+| --- | --- | --- |
+| `BATTERY_ADC_AVAILABLE` | `false` | `VBAT` at U4 CS8501 BAT and connector J5/SW1 has no ADC divider or ESP32 sense connection. |
+| `BATTERY_ADC_GPIO` | `-1` | No candidate sense pin; no arbitrary live peripheral GPIO was sampled. |
+| `BATTERY_DIVIDER` | `0.0f` | Unavailable sentinel, never a voltage multiplier. |
+| `POWER_SOURCE_DETECTABLE` | `false` | `VBUS` feeds the power path, not a logic input; U4 `CHRG`/`DONE` feed LED1/LED2 through `LED_P`, not the ESP32 or CH422G. |
+| `BACKLIGHT_PWM` | `false` | `DISP` runs from U11 EXIO2 to U2 AP3032 CTRL, with no ESP32 PWM route. |
+| `BACKLIGHT_EXIO` | `2` | Active high CH422G output; existing shadow-preserving switch remains in use. |
+| `BACKLIGHT_PWM_GPIO`, `BACKLIGHT_PWM_CHANNEL` | `-1`, `-1` | No hardware PWM channel. Brightness must use software pixel scaling. |
+| `RTC_PCF85063` | `true` | U3 PCF85063ATL, `SDA`/`SCL` shared on GPIO8/9 at 400 kHz; measured at `0x51`. |
+| `RTC_I2C_ADDRESS` | `0x51` | Calendar read/write/read verification passed; control register restored. |
+
+The installed vendor `ESP32_Display_Panel/src/board/supported/waveshare/BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3_B.h`
+also selects `SWITCH_EXPANDER`, active-high output 2, GPIO8/9 and 400 kHz.
+The vendor `ESP32_IO_Expander/examples/ch422g/ch422g.ino` warns that switching
+I/O direction affects **all** IO0-7: the probe reads register address `0x26`
+without changing direction. EXIO1/EXIO3 retain the touch/LCD reset roles.
+
+Reproduce with `-DVENTANAL_LCD_DIAG_HW=1` alongside the private config build
+flag. It is exclusive with touch, gesture and panel diagnostics. After the
+unchanged panel/GT911 bring-up, it scans the bus, freezes and rewrites the
+**same** seven RTC calendar bytes, verifies them, restores the original
+control register, then logs once per second from `t=0` through `t=60`.
+No clock is set to a fabricated date; the OS flag is preserved. It starts no
+network worker. Normal builds omit the helper and use the existing loop.
+The [NXP register reference](https://www.nxp.com/docs/en/data-sheet/PCF85063A.pdf)
+(sections 7.2-7.3) defines Control_1 STOP (bit 5), the BCD calendar at
+`0x04..0x0A` and Seconds OS (bit 7).
+
+Capture evidence is local and ignored: `.superpowers/lcd/hwprobe.log`.
+Observed `touch gt911 address=0x5d cycles=1`, `0x51` on the scan,
+`hw rtc roundtrip=PASS stop=1 read=1 write=1 verify=1 restore=1 ctrl=0x01 os=1`,
+and CH422G `inputs=ff outputs=ff`. CH422G acknowledges multiple register
+aliases (`20..27`, `30..3f`), so these are not separate devices or power sensors.
+The RTC seconds advance, but **OS=1 means the calendar is untrusted**;
+its existing date is not current. Presence and ticking do not establish
+valid wall time or retention. Later clock code must reject OS/unset dates,
+show no time until synchronized, and set the RTC from trusted time.
+
+RTC backup uses the distinct `V_BAT` / BAT1 supply through D16, diode-ORed
+with 3V3 through D15; `RTC_INT` routes to CH422G OC1, not a direct ESP32
+interrupt. Main-cell operation, charging and runtime require a Li-ion cell
+to confirm; RTC backup retention needs a verified backup supply and a
+power-removal test. Neither was tested on USB alone. A cell cannot add the
+missing sense connections: show **no battery percentage**, do not infer USB
+from these expander bits, and use the design's undetectable-source timeout
+fallback (applies always, default Never).

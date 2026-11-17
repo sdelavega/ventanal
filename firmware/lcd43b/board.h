@@ -1,0 +1,23 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Stephen de la Vega
+#pragma once
+
+// Waveshare ESP32-S3-Touch-LCD-4.3B schematic, page 1:
+// https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3B/ESP32-S3-Touch-LCD-4.3B-Sch.pdf
+// See README Hardware facts for USB-only measurements and limitations.
+namespace lcd {
+// VBAT feeds the charger/power path, not an ESP32 ADC or a divider.
+constexpr bool BATTERY_ADC_AVAILABLE = false;
+constexpr int BATTERY_ADC_GPIO = -1;
+constexpr float BATTERY_DIVIDER = 0.0f;  // unavailable, not a conversion factor
+// VBUS is not routed to a GPIO; CS8501 CHRG/DONE drive LEDs only.
+constexpr bool POWER_SOURCE_DETECTABLE = false;
+// DISP = CH422G EXIO2 -> AP3032 CTRL. No ESP32 LEDC connection.
+constexpr bool BACKLIGHT_PWM = false;
+constexpr int BACKLIGHT_EXIO = 2;
+constexpr int BACKLIGHT_PWM_GPIO = -1;
+constexpr int BACKLIGHT_PWM_CHANNEL = -1;
+// U3 PCF85063ATL on SDA/SCL (GPIO8/9); RTC_INT goes to CH422G OC1.
+constexpr bool RTC_PCF85063 = true;
+constexpr int RTC_I2C_ADDRESS = 0x51;
+}  // namespace lcd
