@@ -237,9 +237,21 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
                 if text.startswith(('KP MAX', 'R1')) or box[0] >= 140 and 375 <= box[1] < 400]
     alert = [box for _, box in boxes if box[1] >= 430]
     assert len(caption) == 2 and len(forecast) == 9 and alert
-    assert min(box[1] for box in forecast) - max(box[3] for box in caption) >= 10
-    assert min(box[1] for box in alert) - max(box[3] for box in forecast) >= 10
-    assert 458 - max(box[3] for box in alert) >= 10
+    # Measure rendered cap heights so the forecast cannot shrink to fit again.
+    headers = [box for text, box in boxes if box in forecast
+               and not text.startswith(('KP MAX', 'R1'))]
+    kp_lines = [box for text, box in boxes if text.startswith('KP MAX')]
+    probability_lines = [box for text, box in boxes if text.startswith('R1')]
+    assert len(headers) == len(kp_lines) == len(probability_lines) == 3
+    for group, minimum in ((headers, 12), (kp_lines, 13), (probability_lines, 12)):
+        assert all(box[3] - box[1] >= minimum for box in group)
+    hours = [box for text, box in boxes if text.isdigit() and box[3] == 365]
+    assert len(hours) == 8
+    assert min(box[1] for box in caption) - max(box[3] for box in hours) == 1
+    assert caption[0][1] == caption[1][1]
+    assert min(box[1] for box in forecast) - max(box[3] for box in caption) >= 3
+    assert min(box[1] for box in alert) - max(box[3] for box in forecast) >= 8
+    assert 458 - max(box[3] for box in alert) >= 8
     from ventanal.devices.lcd_solar import SECTIONS
     assert 430 - (SECTIONS[-1][0] + SECTIONS[-1][1]) == 6
     assert image.size == (800, 480)

@@ -104,8 +104,8 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
         _text(d, stamp[11:13], (bx+26, 365), 11, anchor='ms')
     threshold = y + height - 5/9*height
     d.line((x, threshold, x+width, threshold), fill=LCD_COLOURS['gold'])
-    _text(d, 'PLANETARY KP · 3-HOUR INTERVALS · UTC', (150, 376), 11, 'light_gray')
-    _text(d, 'G1 (KP 5)', (785, 376), 11, 'gold', anchor='rs')
+    _text(d, 'PLANETARY KP · 3-HOUR INTERVALS · UTC', (150, 375), 11, 'light_gray')
+    _text(d, 'G1 (KP 5)', (785, 375), 11, 'gold', anchor='rs')
 
     for i, (date, k, r, probability, g) in enumerate(forecast_days(data)):
         bx = 150+i*214
@@ -113,17 +113,17 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
             date = datetime.fromisoformat(date).strftime('%a %d')
         except (ValueError, TypeError):
             date = 'UNKNOWN'
-        _text(d, date, (bx, 398), 12, 'gold', bold=True, width=204)
+        _text(d, date, (bx, 394), 18, 'gold', bold=True, width=204)
         _text(d, f'KP MAX {kp_notation(k)} · {forecast_label(k, g)}',
-              (bx, 409), 11, width=204)
+              (bx, 411), 15, width=204)
         _text(d, f'R1–R2 {r if r is not None else "?"}% · '
               f'S1 {probability if probability is not None else "?"}%',
-              (bx, 421), 11, 'light_gray', width=204)
+              (bx, 427), 13, 'light_gray', width=204)
     label, message = alert_summary(data.alerts)
     if label:
-        _text(d, label, (150, 446), 16, 'gold', bold=True, width=72)
+        _text(d, label, (150, 450), 16, 'gold', bold=True, width=72)
         message, size = alert_fit(message, 550)
-        _text(d, message, (235, 446), size)
+        _text(d, message, (235, 450), size)
     else:
-        _text(d, message, (150, 446), 14, 'light_gray', width=635)
+        _text(d, message, (150, 450), 14, 'light_gray', width=635)
     return image
