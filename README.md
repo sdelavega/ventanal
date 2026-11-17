@@ -194,7 +194,9 @@ Your 5-digit ZIP is sent once (then cached locally) to `api.zippopotam.us`
 or deleted cache needs a new lookup. The call sign is checked locally against the
 FCC index and never transmitted. No third party receives the password, device
 key, board telemetry or private settings except the request data listed below.
-All Internet services necessarily see the server's public IP and User-Agent.
+All Internet services necessarily see the server's public IP and User-Agent,
+`Ventanal/1.0.0 (+https://github.com/sdelavega/ventanal)`. NWS requests append
+` <contact>` when an NWS contact is configured.
 
 | Third-party hosts | What they receive |
 | --- | --- |

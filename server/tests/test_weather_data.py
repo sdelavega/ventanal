@@ -17,7 +17,7 @@ from ventanal.weather.data import (
 )
 
 FIXTURES = Path(__file__).parent / 'fixtures'
-USER_AGENT = 'Ventanal/1.0.0'
+USER_AGENT = 'Ventanal/1.0.0 (+https://github.com/sdelavega/ventanal)'
 
 
 def fixture(name):

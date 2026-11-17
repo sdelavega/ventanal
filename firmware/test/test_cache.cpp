@@ -18,7 +18,7 @@ int main() {
     assert(files["/weather.vnf"] == good);
     assert(files["/weather.vnf.tmp"].size() == 100000);
     assert(WiFi.sleeping == WIFI_PS_MAX_MODEM && liveAllocations == 0);
-    assert(lastUserAgent == "Ventanal/1.0.0");
+    assert(lastUserAgent == "Ventanal/1.0.0 (+https://github.com/sdelavega/ventanal)");
     Inkplate d;
     assert(blitFrame("/weather.vnf", d));
     assert(d.pixels[0] == 2 && d.pixels.back() == 5);
@@ -26,7 +26,7 @@ int main() {
 #else
     assert(fetchFrame("http://test/frame", "/weather.vnf"));
     assert(readBytesCalls == 0 && largestRead <= 1460);
-    assert(lastUserAgent == "Ventanal/1.0.0");
+    assert(lastUserAgent == "Ventanal/1.0.0 (+https://github.com/sdelavega/ventanal)");
     assert(largestWrite == 65536 && writeCalls == 15);
     assert(WiFi.sleeping == WIFI_PS_MAX_MODEM && WiFi.sleepChanges == 2 && liveAllocations == 0);
     auto good=files["/weather.vnf"];
