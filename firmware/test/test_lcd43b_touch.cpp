@@ -215,6 +215,19 @@ int main() {
         assert(fired.size() == 1);
         assert(fired[0] == Gesture::Refresh);
     }
+    {
+        PollLoop loop;
+        const auto resets=gt911RisingEdges;
+        loop.poller.suppressWakeTouch();
+        holdFinger(650,20,1800,0); // wake cannot open Settings or refresh
+        loop.run(2500);
+        assert(loop.gestures().empty());
+        assert(gt911RisingEdges==resets); // no address-select reset on wake
+        gt911Device.schedule(2600,1,700,240);
+        gt911Device.schedule(2700,0,0,0);
+        loop.run(2000);
+        assert(loop.gestures()==std::vector<Gesture>{Gesture::Next});
+    }
     puts("lcd43b touch: 10-15ms GT911 cadence, no-update retention, release,"
          " bus errors passed");
     return 0;

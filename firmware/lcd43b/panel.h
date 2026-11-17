@@ -26,6 +26,7 @@ public:
     // Pulse the panel reset through the CH422G EXIO3 line (active low), then
     // start the RGB panel. Returns false if the driver or PSRAM allocation fails.
     bool begin(bool (*setLcdReset)(bool)) {
+        if(panel_) return true;
         setLcdReset(true);    // assert reset: EXIO3 low
         delay(10);
         setLcdReset(false);   // release
@@ -66,8 +67,17 @@ public:
         config.dma_burst_size = 64;
         config.flags.fb_in_psram = 1;
         if (esp_lcd_new_rgb_panel(&config, &panel_) != ESP_OK) return false;
-        if (esp_lcd_panel_init(panel_) != ESP_OK) return false;
+        if (esp_lcd_panel_init(panel_) != ESP_OK) { stop(); return false; }
         clear(0);
+        return true;
+    }
+
+    // disp_on_off only controls a DISP GPIO (absent here), not RGB DMA.
+    // Delete releases DMA, ISR, clocks and buffers; begin recreates them.
+    bool stop() {
+        if(!panel_) return true;
+        if(esp_lcd_panel_del(panel_)!=ESP_OK) return false;
+        panel_=nullptr;
         return true;
     }
 

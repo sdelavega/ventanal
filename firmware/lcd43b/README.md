@@ -6,7 +6,8 @@ Phase-1 port of Ventanal to the Waveshare
 [ESP32-S3-Touch-LCD-4.3B](https://www.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3B):
 an ESP32-S3 (N16R8: 16 MB flash, 8 MB PSRAM) driving an 800x480 parallel
 RGB565 LCD (ST7262-class) with GT911 capacitive touch, both behind a CH422G
-I/O expander for reset and backlight. USB powered: no battery, no deep sleep.
+I/O expander for reset and backlight. Idle light sleep supports USB or battery;
+this board has no battery-voltage or USB-source readout.
 
 ## Hardware references
 
@@ -258,3 +259,46 @@ For a bounded hardware capture, `VENTANAL_LCD_DIAG_SETTINGS_PAGE=1` opens
 Settings through the normal gesture handler at boot, without changing saved
 settings. The normal build omits this flag. Weather, solar and Settings share
 the same clock: gold time at x=554, light-gray date ten pixels after the time.
+
+## Idle power management
+
+On this board USB source and battery voltage cannot be measured. The saved
+**Screen off after** value therefore applies on USB and battery alike; its
+initial default is Never. No voltage, percentage or charge warning is invented.
+The pure `power.h` policy also supports detectable USB (never idle-sleep), low
+battery (four times the poll interval) and critical battery (red CHARGE ME for
+10 seconds, then touch-only sleep; another touch rechecks and shows it again).
+Quiet hours still switch the backlight off; touch overrides them for 60 seconds.
+A screen timeout is measured from the last contact, including Settings activity.
+
+Idle sleep waits for the refresh worker to finish, turns EXIO2 off and deletes
+the RGB panel with `esp_lcd_panel_del`. There is no RGB stop API;
+`esp_lcd_rgb_panel_restart` restarts on VSYNC, `set_pclk` changes frequency,
+and `disp_on_off` only drives DISP (this board has `disp_gpio_num=-1`). Driver
+deletion stops the LCD state machine, removes DMA/ISR resources and frees its
+frame/bounce buffers. Touch wake recreates the panel at the verified 16 MHz,
+WIDTH*20 bounce configuration, then redraws the selected cached frame and clock
+at the saved brightness before starting any due network refresh. The GT911 is
+probed at 0x5D without reset or address selection; failed probes suspend polling
+and retry once a second. The wake contact is consumed through its release.
+
+Manual `esp_light_sleep_start` requires Wi-Fi to be stopped. This build uses
+`WiFi.mode(WIFI_OFF)` before sleep; its existing watchdog-supervised worker
+reconnects on demand. It does not claim to preserve association using modem
+sleep, which would require automatic light sleep and a different power-management
+configuration. GPIO4 low wakes by touch; the ESP32 timer wakes at the remaining
+screen-off poll deadline (30 minutes, versus 10 minutes when on). Timer wakes
+refresh with scan-out/backlight still off, then return to sleep. Critical has
+no timer. RTC INT GPIO6 is unused for wake.
+
+`VENTANAL_LCD_DIAG_POWER` forces a one-minute timeout and 25% brightness in RAM, plus a 20-second
+sleep timer for bounded hardware capture; neither is saved to NVS. Remove it
+for the normal firmware. Sleep/wake and GT911 probe outcomes are logged without
+network identifiers. Sources: [ESP-IDF sleep modes](https://docs.espressif.com/projects/esp-idf/en/stable/esp32s3/api-reference/system/sleep_modes.html)
+and [RGB driver implementation](https://github.com/espressif/esp-idf/blob/v5.5.5/components/esp_lcd/rgb/esp_lcd_panel_rgb.c).
+
+Native USB Serial/JTAG loses its clocks during light sleep and some hosts do
+not recover while D+ stays asserted. After manual sleep, this firmware briefly
+disables/re-enables its USB PHY pads to request re-enumeration; serial monitors
+must reopen the device after that disconnect. This never resets GT911 or the
+ESP32. See [USB sleep limitations](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-guides/usb-serial-jtag-console.html).

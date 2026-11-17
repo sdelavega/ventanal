@@ -55,6 +55,10 @@ public:
             break;   // keep the previous contact state and coordinates
         }
         if (sample) *sample = {report, status, contact_, x_, y_};
+        if(swallowWake_) {
+            if(report==Gt911::Report::Release) swallowWake_=false;
+            return Gesture::None;
+        }
         return classifier_.sample(nowMs, contact_, x_, y_);
     }
 
@@ -68,6 +72,12 @@ public:
         return classifier_.sample(nowMs, touched, x, y);
     }
 
+    // Discard the wake contact, including long holds and double-tap state.
+    void suppressWakeTouch() {
+        classifier_=GestureClassifier{};
+        contact_=false;
+        swallowWake_=true;
+    }
     int pressX() const { return classifier_.pressX(); }
     int pressY() const { return classifier_.pressY(); }
     void controlsMode(bool enabled) { classifier_.controlsMode(enabled); }
@@ -80,6 +90,7 @@ private:
     Gt911* device_;
     GestureClassifier classifier_;
     bool contact_ = false;
+    bool swallowWake_=false;
     int x_ = 0, y_ = 0;
 };
 

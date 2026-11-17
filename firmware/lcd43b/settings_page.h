@@ -104,7 +104,7 @@ inline void drawSettingsChrome(uint16_t* px,bool labels=true) {
 inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarListed,
                              bool batteryButton,const char* footer) {
     const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0);
-    const auto sky=rgb565(170,170,255), light=rgb565(153,150,186), gray=rgb565(102,102,136);
+    const auto sky=rgb565(170,170,255), light=rgb565(153,150,186);
     drawSettingsChrome(px);
     drawText(px,WIDTH,HEIGHT,Antonio_Regular18pt7b,"SETTINGS",150,63,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"BRIGHTNESS",150,115,gold);
@@ -136,7 +136,6 @@ inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarList
             for(int i=0;i<9;++i) settingsBox(px,{cx+4+i,cy+4-i,2,2},0);
         }
     }
-    (void)gray;
     settingsFooter(px,footer,150,447,light);
 }
 } // namespace lcd

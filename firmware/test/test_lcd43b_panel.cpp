@@ -30,7 +30,8 @@ struct BitmapCall {
 };
 std::vector<BitmapCall> calls;
 
-unsigned newPanelCalls = 0;
+unsigned newPanelCalls = 0, deleteCalls = 0;
+bool deleteFails=false;
 esp_lcd_rgb_panel_config_t lastConfig = {};
 
 int dummyPanel = 0;   // the fake handle's pointee
@@ -46,6 +47,11 @@ esp_err_t esp_lcd_new_rgb_panel(const esp_lcd_rgb_panel_config_t* config,
     lastConfig = *config;
     *ret_panel = reinterpret_cast<esp_lcd_panel_handle_t>(&dummyPanel);
     return ESP_OK;
+}
+
+esp_err_t esp_lcd_panel_del(esp_lcd_panel_handle_t) {
+    ++deleteCalls;
+    return deleteFails?ESP_ERR_INVALID_STATE:ESP_OK;
 }
 
 esp_err_t esp_lcd_panel_init(esp_lcd_panel_handle_t) { return ESP_OK; }
@@ -180,6 +186,17 @@ int main() {
         assert(region[0]==0xffff);
         assert(panel.blitRegionDimmed(550,0,250,80,region.data(),scratch.data(),25));
         assert(fb[550]==0x39e7); // repeated redraw does not compound dimming
+    }
+    {
+        Panel panel; assert(panel.begin([](bool) { return true; }));
+        auto handle=panel.handle();
+        deleteFails=true; assert(!panel.stop()); assert(panel.handle()==handle);
+        deleteFails=false; assert(panel.stop()); assert(!panel.handle());
+        const auto deletes=deleteCalls; assert(panel.stop()); assert(deleteCalls==deletes);
+        assert(!panel.blit(src));
+        assert(!panel.blitRegion(0,0,1,1,src));
+        assert(panel.begin([](bool) { return true; }));
+        assert(panel.blitDimmed(src,src,25));
     }
     puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover,"
          " anti-flicker bounce config passed");

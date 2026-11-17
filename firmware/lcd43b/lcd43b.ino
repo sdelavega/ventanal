@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 //
 // Ventanal phase-1 firmware for the Waveshare ESP32-S3-Touch-LCD-4.3B.
-// The board is USB powered (no battery, no deep sleep): it fetches the
+// The board applies its configured idle timeout on USB and battery. It fetches the
 // per-device manifest every ten minutes and on demand, hash-verifies and
 // caches changed VNR1 RGB565 frames in LittleFS, and blits the selected
 // screen to the 800x480 panel. Touch: tap right half = next screen, left
@@ -24,6 +24,11 @@
 #include <Wire.h>
 #include <WiFi.h>
 #include <esp_task_wdt.h>
+#include <esp_sleep.h>
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+#include <hal/usb_serial_jtag_ll.h>
+#endif
+#include <driver/gpio.h>
 #include <cstdio>
 #include <ctime>
 #include <sys/time.h>
@@ -47,6 +52,7 @@
 #include "manifest.h"
 #include "overlay.h"
 #include "panel.h"
+#include "power.h"
 #include "persist.h"
 #include "screens.h"
 #include "settings_page.h"
@@ -117,6 +123,24 @@ int spareCursor = 0;       // next spare shown by a double tap
 // fetch failed; expiry redraws the cached frame clean.
 lcd::RefreshLabelState refreshLabel;
 
+lcd::PowerSession powerSession;
+bool touchReady=true;
+bool timerRefreshPending=false;
+bool chargeShowing=false;
+uint32_t chargeSince=0;
+uint32_t touchProbeMs=0;
+// There is no voltage or VBUS signal on this board. No invented reading.
+lcd::BatteryLevel powerLevel() {
+    const int mv=settingsBatteryMv();
+    return lcd::batteryLevel(mv,lcd::batteryPercent(mv,settings.batteryFullMv));
+}
+uint32_t powerPollMs() {
+#ifdef VENTANAL_LCD_DIAG_PANEL
+    return REFRESH_MS;
+#else
+    return lcd::pollIntervalMs(powerSession.screenOn,powerLevel());
+#endif
+}
 bool backlightState = false;
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
@@ -295,7 +319,7 @@ bool renderClock() {
     return valid;
 }
 void tickClock() {
-    if(clockSlot<0 || (!settingsPage.active && !state.drawn) || time(nullptr)/60==drawnMinute) return;
+    if(!powerSession.screenOn || chargeShowing || clockSlot<0 || (!settingsPage.active && !state.drawn) || time(nullptr)/60==drawnMinute) return;
     const bool valid=renderClock(); const auto r=lcd::readoutRect(clockSlot);
     const bool ok=panel.blitRegionDimmed(r.x,r.y,r.w,r.h,clockPixels,clockDimmed,settings.brightness);
     lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
@@ -322,9 +346,10 @@ void saveRtcAfterNtp() {
 
 // Settings owns the panel while open. Every other redraw routes here, and
 // minute updates use CLOCK_GAP even when the underlying selection is artwork.
+void closeSettings(const char* reason);
 bool showSettings() {
     auto* pixels=static_cast<uint16_t*>(ps_malloc(size_t(lcd::WIDTH)*lcd::HEIGHT*2));
-    if(!pixels) { lcd::log("settings error=allocation\n"); return false; }
+    if(!pixels) { lcd::log("settings error=allocation\n"); closeSettings("error"); return false; }
     char footer[192];
     snprintf(footer,sizeof footer,"VENTANAL · %s · WI-FI %s · v1.0.0",
              VENTANAL_DEVICE_ID,WiFi.status()==WL_CONNECTED?"OK":"OFFLINE");
@@ -345,6 +370,7 @@ bool showSettings() {
 
 // Blit a cached frame (plus overlays) to the panel through a PSRAM buffer.
 bool show(int index) {
+    if(!powerSession.screenOn || chargeShowing) return false;
     if(settingsPage.active) return showSettings();
     const int slot = screenSlot(index);
     if (slot < 0) {   // persisted index outside the current screen list
@@ -427,6 +453,8 @@ void logRefreshLabel() {
 // refreshed with every accepted manifest) and only applies once the wall
 // clock is trustworthy: before the first NTP sync the backlight stays on.
 void backlightRefresh() {
+    if(!powerSession.screenOn) { setBacklight(false); return; }
+    if(chargeShowing) { setBacklight(true); return; }
     tm local{};
     const time_t now = time(nullptr);
     localtime_r(&now, &local);
@@ -593,10 +621,11 @@ void handleGesture(Gesture gesture, int x, int y) {
        && classifyTap(x,y,lcd::isLcarsSlot(screenSlot(screenIndex)))==TapTarget::OpenSettings) {
         settingsReturnSlot=screenSlot(screenIndex);
         settingsPage.open(millis());
+        powerSession.activity(millis());
         touchPoller.controlsMode(true);
         refreshLabel.clear();
         lcd::log("settings open return=%s x=%d y=%d\n",lcd::SLOT_NAMES[settingsReturnSlot],x,y);
-        showSettings();
+        if(!showSettings() && settingsPage.active) closeSettings("error");
         return;
     }
     const char* name = gesture == Gesture::Next      ? "next"
@@ -647,7 +676,9 @@ void handleGesture(Gesture gesture, int x, int y) {
     backlightRefresh();
 }
 
+void restoreTouchWake();
 void pollTouch(uint32_t now) {
+    if(!touchReady) return;
     if (now - lastTouchPollMs < TOUCH_POLL_MS) return;
     lastTouchPollMs = now;
     Gesture gesture = Gesture::None;
@@ -694,10 +725,121 @@ void pollTouch(uint32_t now) {
     }
     lastRawSample = sample;
 #endif
+    if(touched && !powerSession.screenOn) {
+        restoreTouchWake(); // a contact during a background download also wakes
+        return;
+    }
+    if(touched) powerSession.activity(now);
     if(touched && settingsPage.active) settingsPage.touch(now);
     if (touched && !lastTouched) touchUntilMs = now + TOUCH_WAKE_MS;
     lastTouched = touched;
-    if (gesture != Gesture::None) handleGesture(gesture, touchPoller.pressX(), touchPoller.pressY());
+    if (gesture != Gesture::None && !chargeShowing) handleGesture(gesture, touchPoller.pressX(), touchPoller.pressY());
+}
+
+// Never call touch.begin() here: that would drive INT and select an address.
+bool probeTouchAfterWake() {
+    Wire.beginTransmission(Gt911::PRIMARY);
+    const bool answers=Wire.endTransmission()==0;
+    uint8_t product[3]={};
+    const bool ok=answers && touch.address()==Gt911::PRIMARY
+        && touch.peek(0x8140,product,sizeof product)
+        && product[0]=='9' && product[1]=='1' && product[2]=='1';
+    lcd::log(ok?"gt911 ok after wake\n":"gt911 error after wake\n");
+    return ok;
+}
+void showChargeMe() {
+    if(!panel.begin(setLcdResetLine)) { lcd::log("power error=panel-resume\n"); return; }
+    auto* pixels=static_cast<uint16_t*>(ps_malloc(size_t(lcd::WIDTH)*lcd::HEIGHT*2));
+    if(pixels) {
+        lcd::drawSettingsChrome(pixels,false);
+        lcd::drawText(pixels,lcd::WIDTH,lcd::HEIGHT,Antonio_Regular18pt7b,
+                      "CHARGE ME",280,240,lcd::rgb565(221,68,68));
+        panel.blitDimmed(pixels,pixels,settings.brightness);
+        free(pixels);
+    } else lcd::log("power error=charge-allocation\n");
+    clockSlot=-1;
+    chargeShowing=true;
+    chargeSince=millis();
+    setBacklight(true);
+    lcd::log("power charge-me seconds=10\n");
+}
+void restoreTouchWake() {
+    powerSession.wakeTouch(millis());
+    touchUntilMs=millis()+TOUCH_WAKE_MS;
+    lastTouched=false;
+    touchPoller.suppressWakeTouch();
+    refreshLabel.clear(); logRefreshLabel();
+    if(powerLevel()==lcd::BatteryLevel::Critical) showChargeMe();
+    else if(panel.begin(setLcdResetLine)) {
+        show(screenIndex); // cache + current clock, dimmed, before network I/O
+        backlightRefresh();
+        lcd::log("power restored brightness=%u screen=%s label=idle\n",
+                 settings.brightness,lcd::SLOT_NAMES[screenSlot(screenIndex)]);
+    } else lcd::log("power error=panel-resume\n");
+}
+void sleepPower() {
+    setBacklight(false);
+    if(!panel.stop()) { lcd::log("power error=panel-stop\n"); delay(1000); return; }
+    powerSession.sleep();
+    // Manual light sleep cannot preserve association. The existing worker
+    // reconnects on demand, using its bounded/watchdog-supervised path.
+    WiFi.mode(WIFI_OFF);
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    uint32_t wait=lcd::pollWaitMs(millis()-lastFetchMs,powerPollMs());
+#ifdef VENTANAL_LCD_DIAG_POWER
+    if(powerLevel()!=lcd::BatteryLevel::Critical) wait=20000; // capture timer wake
+#endif
+    esp_err_t armed=gpio_wakeup_enable(GPIO_NUM_4,GPIO_INTR_LOW_LEVEL);
+    if(armed==ESP_OK) armed=esp_sleep_enable_gpio_wakeup();
+    if(armed==ESP_OK && wait) armed=esp_sleep_enable_timer_wakeup(uint64_t(wait)*1000);
+    lcd::log("power sleep timer_ms=%lu critical=%d int=%d\n",
+             static_cast<unsigned long>(wait),powerLevel()==lcd::BatteryLevel::Critical,digitalRead(4));
+    Serial.flush();
+    const esp_err_t result=armed==ESP_OK?esp_light_sleep_start():armed;
+    const auto reason=esp_sleep_get_wakeup_cause();
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+    // Light sleep gates USB clocks without dropping D+. Force a clean
+    // detach/re-enumeration so the host can recover its CDC connection.
+    usb_serial_jtag_ll_phy_enable_pad(false);
+    delay(20);
+    usb_serial_jtag_ll_phy_enable_pad(true);
+#endif
+    esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
+    gpio_wakeup_disable(GPIO_NUM_4);
+    touchReady=probeTouchAfterWake();
+    touchProbeMs=millis();
+    if(result!=ESP_OK) {
+        lcd::log("power error=sleep code=%d\n",int(result));
+        // Bounded retry while dark; do not claim a successful wake.
+        delay(1000);
+        return;
+    }
+    if(reason==ESP_SLEEP_WAKEUP_GPIO) {
+        lcd::log("power wake reason=touch\n");
+        restoreTouchWake();
+    } else if(reason==ESP_SLEEP_WAKEUP_TIMER) {
+        lcd::log("power wake reason=timer\n");
+        powerSession.wakeTimer();
+        timerRefreshPending=true;
+    } else lcd::log("power wake reason=other code=%d\n",int(reason));
+}
+void tickPower() {
+    if(!touchReady && millis()-touchProbeMs>=1000) {
+        touchReady=probeTouchAfterWake(); touchProbeMs=millis();
+    }
+    const auto action=lcd::decidePower({false,false,powerLevel(),powerSession.idle(millis()),
+                                       settings.timeoutMin,false});
+    if(chargeShowing && action!=lcd::PowerAction::ChargeMe) {
+        chargeShowing=false; show(screenIndex); backlightRefresh();
+    }
+    if(powerLevel()==lcd::BatteryLevel::Critical) timerRefreshPending=false;
+    if(refreshBusy || timerRefreshPending) return;
+    if(action==lcd::PowerAction::ChargeMe) {
+        if(!chargeShowing && powerSession.screenOn) showChargeMe();
+        if(chargeShowing && millis()-chargeSince<10000) return;
+        chargeShowing=false;
+        sleepPower();
+    } else if(!powerSession.screenOn || action==lcd::PowerAction::Sleep) sleepPower();
 }
 
 }  // namespace
@@ -737,6 +879,10 @@ void setup() {
     auto diagnostic=settings; diagnostic.brightness=50; diagnostic.showWeather=false;
     settings=diagnostic; // deliberately RAM-only: normal build restores owner settings
     lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
+#endif
+#ifdef VENTANAL_LCD_DIAG_POWER
+    settings.timeoutMin=1; settings.brightness=25; // RAM only; normal build restores NVS
+    lcd::log("diag power timeout_min=1 brightness=25 sleep_timer_ms=20000 RAM-only\n");
 #endif
     lcd::log("settings brightness=%u timeout=%u art=%d weather=%d solar=%d\n",
              settings.brightness,settings.timeoutMin,settings.showArt,settings.showWeather,settings.showSolar);
@@ -788,6 +934,7 @@ void setup() {
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
+    powerSession.activity(millis());
     show(screenIndex);            // cached frame, or the waiting screen
     startRefresh(true);
 #ifdef VENTANAL_LCD_DIAG_SETTINGS_PAGE
@@ -827,8 +974,11 @@ void loop() {
 #endif
     if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
         applyFinishedRefresh();
-    if (!refreshBusy && (settingsRefreshPending || now - lastFetchMs >= REFRESH_MS)) {
-        if(startRefresh(false)) settingsRefreshPending=false;
+    const uint32_t interval=powerPollMs();
+    if (!refreshBusy && powerLevel()!=lcd::BatteryLevel::Critical
+        && (timerRefreshPending || settingsRefreshPending || (interval && now-lastFetchMs>=interval))) {
+        if(startRefresh(false)) { settingsRefreshPending=false; timerRefreshPending=false; }
     }
+    tickPower();
     delay(2);
 }

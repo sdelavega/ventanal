@@ -79,7 +79,7 @@ inline bool isLcarsSlot(int slot) { return slot==1 || slot==2; }
 inline ReadoutRect readoutRect(int slot) { return isLcarsSlot(slot)?CLOCK_GAP:ART_CORNER; }
 inline uint16_t batteryColour(BatteryLevel lvl) {
     return lvl==BatteryLevel::Ok ? rgb565(95,174,79)
-         : lvl==BatteryLevel::Low ? rgb565(255,170,0) : rgb565(221,68,68);
+         : rgb565(221,68,68);
 }
 inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcars,
                           const char* time, const char* date, int percent, BatteryLevel lvl) {

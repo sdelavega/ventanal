@@ -26,3 +26,5 @@ esp_err_t esp_lcd_panel_init(esp_lcd_panel_handle_t panel);
 esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t panel, int x_start,
                                     int y_start, int x_end, int y_end,
                                     const void* color_data);
+
+esp_err_t esp_lcd_panel_del(esp_lcd_panel_handle_t panel);
