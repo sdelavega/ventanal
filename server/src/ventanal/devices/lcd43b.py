@@ -11,6 +11,8 @@ manifest's schema (id/url/size) and adds the full SHA-256 so the firmware
 can hash-verify every download.
 """
 
+from dataclasses import replace
+
 import hashlib
 import json
 import logging
@@ -71,17 +73,7 @@ def decode_frame(data: bytes) -> np.ndarray:
     return np.stack((red, green, blue), axis=-1)
 
 
-def _letterbox_solar(source) -> Image.Image:
-    """Temporary solar path until Task 3; the server adds no readout."""
-    image = source.rgb if hasattr(source, 'rgb') else source
-    if image.size != (1600, 1200):
-        raise ValueError('letterbox source must be 1600x1200')
-    frame = Image.new('RGB', (LCD_W, LCD_H))
-    frame.paste(image.resize((640, 480), Image.Resampling.LANCZOS), (80, 0))
-    return frame
-
-
-def render_art(image: Image.Image, credit, now, clock_24h: bool = True) -> Image.Image:
+def render_art(image: Image.Image, credit) -> Image.Image:
     """Compose native 800x480 art with the soft-shade credit; the board draws time."""
     backdrop = compose(image, size=(LCD_W, LCD_H))
     title_font, secondary_font = font('inter-bold', 12), font('inter', 11)
@@ -141,21 +133,19 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
     if name == 'art':
         credit = (read_manifest(cfg.output_dir)['screens']
                   .get('art', {}).get('credit') or {})
-        return render_art(_art_image(cfg, client, credit), credit,
-                          now, cfg.clock_24h)
+        return render_art(_art_image(cfg, client, credit), credit)
     if name == 'weather':
         return weather_frame(cfg, now, client)
     if name == 'solar':
         from ventanal.solar.data import fetch_solar
-        from ventanal.solar.render import render_solar
+        from ventanal.devices.lcd_solar import render_lcd_solar
         from ventanal.weather.data import geocode
         coords = (cfg.latitude, cfg.longitude)
         if None in coords:
             lat, lon, _ = geocode(cfg, client, cfg.cache_dir)
             coords = (lat, lon)
-        canvas = render_solar(fetch_solar(client, cfg.cache_dir, now),
-                              cfg.ham_call_sign, coords, now, cfg)
-        return _letterbox_solar(canvas)
+        return render_lcd_solar(fetch_solar(client, cfg.cache_dir, now),
+                                replace(cfg, latitude=coords[0], longitude=coords[1]), now)
     raise ValueError(f'unknown screen: {name}')
 
 
@@ -255,7 +245,7 @@ def _render_spares(cfg, now, client, out, base_url) -> list:
         credit = entry.get('credit') or {} if isinstance(entry, dict) else {}
         try:
             image = _art_image(cfg, client, credit)
-            data = encode_frame(render_art(image, credit, now, cfg.clock_24h))
+            data = encode_frame(render_art(image, credit))
             spares.append(_publish_frame(out, base_url, f'spare{index}', data, now))
         except Exception as exc:
             if index < len(previous):

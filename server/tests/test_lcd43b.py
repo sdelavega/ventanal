@@ -85,29 +85,114 @@ def test_decode_frame_roundtrip_and_rejects_bad_frames():
             lcd43b.decode_frame(corrupt)
 
 
-def test_letterbox_geometry():
-    frame = lcd43b._letterbox_solar(solid_canvas((0, 255, 0)).rgb)
-    assert frame.size == (800, 480)
-    pixels = frame.load()
-    assert pixels[0, 0] == (0, 0, 0)
-    assert pixels[79, 240] == (0, 0, 0)
-    assert pixels[400, 240] == (0, 255, 0)
-    assert pixels[719, 479] == (0, 255, 0)
-    assert pixels[720, 240] == (0, 0, 0)
-    assert pixels[799, 479] == (0, 0, 0)
+def solar_sample(tmp_path, **changes):
+    from test_solar import sample, NOW as solar_now
+    from ventanal.devices.lcd_solar import render_lcd_solar
+    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7,
+                 longitude=-72.7, **changes)
+    return render_lcd_solar(sample(), config, solar_now)
 
 
-@pytest.mark.parametrize('clock_24h', [True, False])
-def test_lcd_frames_have_no_updated_readout(clock_24h):
+def test_lcd_solar_is_native_full_screen(tmp_path):
+    from PIL import ImageColor
+    from ventanal.devices.lcd_lcars import CLOCK_GAP, LCD_COLOURS
+    image = solar_sample(tmp_path)
+    assert image.size == (800, 480) and image.mode == 'RGB'
+    assert image.getpixel((10, 240)) == ImageColor.getrgb(LCD_COLOURS['gold'])
+    x, y, w, h = CLOCK_GAP
+    assert not np.asarray(image.crop((x, y, x+w, y+h))).any()
+    assert image.getpixel((770, 13)) == ImageColor.getrgb('#ff7700')
+
+
+def test_lcd_solar_golden(tmp_path):
+    image = solar_sample(tmp_path)
+    with Image.open(Path(__file__).parent / 'golden/lcd43b/solar.png') as expected:
+        assert image.tobytes() == expected.convert('RGB').tobytes()
+
+
+def test_lcd_solar_still_gated(tmp_path, monkeypatch):
+    from ventanal.solar.licence import Verification
+    from ventanal.solar import data as solar_data
+    from test_solar import sample as solar_data_sample
+    allowed = True
+    monkeypatch.setattr('ventanal.solar.licence.verify',
+                        lambda *a: Verification(allowed, 'test licence'))
+    value = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
+    monkeypatch.setattr(lcd43b, 'weather_frame',
+                        lambda *a: Image.new('RGB', (800, 480)))
+    monkeypatch.setattr(solar_data, 'fetch_solar', lambda *a: solar_data_sample())
+    lcd43b.tick(value, NOW, None)
+    assert 'solar' in read_manifest(lcd43b.device_dir(value))['screens']
+    allowed = False
+    monkeypatch.setattr(solar_data, 'fetch_solar',
+                        lambda *a: pytest.fail('unauthorised solar fetch'))
+    lcd43b.tick(value, NOW, None)
+    assert 'solar' not in read_manifest(lcd43b.device_dir(value))['screens']
+    assert not lcd43b._solar_allowed(replace(value, ham_call_sign=''), NOW)
+
+
+@pytest.mark.parametrize('located', [True, False])
+def test_lcd_solar_data_pipeline(tmp_path, monkeypatch, located):
+    from ventanal.solar import data as solar_data
+    from ventanal.weather import data as weather_data
+    from ventanal.devices.lcd_solar import render_lcd_solar
+    from test_solar import sample as solar_data_sample
+    data = solar_data_sample()
+    config = cfg(tmp_path, ham_call_sign='CALL SIGN',
+                 latitude=41.7 if located else None,
+                 longitude=-72.7 if located else None)
+    monkeypatch.setattr(solar_data, 'fetch_solar', lambda *a: data)
+
+    def geocode(*args):
+        assert not located
+        return 41.7, -72.7, 'Sample'
+
+    monkeypatch.setattr(weather_data, 'geocode', geocode)
+    image = lcd43b._render_screen(config, 'solar', NOW, None)
+    expected = render_lcd_solar(data, replace(config, latitude=41.7, longitude=-72.7), NOW)
+    assert image.tobytes() == expected.tobytes()
+
+
+@pytest.mark.parametrize('storm', [False, True])
+def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
+    from PIL import ImageDraw
+    from ventanal.devices.lcd_solar import render_lcd_solar
+    from test_solar import sample as solar_data_sample
+    data = solar_data_sample()
+    if storm:
+        data = replace(data, sfi=999, ssn=999, xray='X99.9', k=9, a=999,
+                       kp=[(stamp, 9) for stamp, _ in data.kp],
+                       alerts=['WARNING: G5 GEOMAGNETIC STORM · UNTIL NOV 19 2026 UTC ' * 10,
+                               'WARNING: R5 RADIO BLACKOUT · NOV 19 2026 UTC'])
+    else:
+        data = replace(data, alerts=[], scales={})
+    boxes = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, text, *args, **kwargs):
+        box = draw.textbbox(xy, text, font=kwargs['font'], anchor=kwargs['anchor'])
+        boxes.append((text, box))
+        return original(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
+    image = render_lcd_solar(data, config, NOW)
+    for text, (x0, y0, x1, y1) in boxes:
+        assert 0 <= x0 < x1 <= 800 and 26 <= y0 < y1 < 458, text
+    for i, (text, a) in enumerate(boxes):
+        for other, b in boxes[i+1:]:
+            assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (text, other)
+    assert image.size == (800, 480)
+
+
+def test_lcd_frames_have_no_updated_readout():
     image = Image.new('RGB', (1600, 1200), (80, 110, 140))
-    frame = lcd43b.render_art(image, {'title': 'Snow'}, NOW, clock_24h)
+    frame = lcd43b.render_art(image, {'title': 'Snow'})
     assert frame.size == (800, 480)
     assert frame.crop((550, 0, 800, 80)).tobytes() == compose(
         image, size=(800, 480)).crop((550, 0, 800, 80)).tobytes()
     assert frame.crop((0, 445, 600, 480)).tobytes() != compose(
         image, size=(800, 480)).crop((0, 445, 600, 480)).tobytes()
-    assert frame.tobytes() == lcd43b.render_art(
-        image, {'title': 'Snow'}, NOW.replace(hour=18), not clock_24h).tobytes()
 
 
 def lcd_sample(sample, **changes):
@@ -141,7 +226,7 @@ def test_lcd_weather_no_overlap(sample):
     from ventanal.weather.data import Alert
     w, _, _, _, _, _, now, config = sample
     alert = Alert('Long advisory headline ' * 18, '', 'Minor', None)
-    layout = weather_layout(w, [alert], config, now)
+    layout = weather_layout([alert], config, now)
     assert len(layout['advisory_lines']) == 3
     fx0, fy0, fx1, fy1 = layout['forecast_bbox']
     ax0, ay0, ax1, ay1 = layout['advisory_bbox']
@@ -194,9 +279,9 @@ def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=(), 
         from ventanal.solar import data as solar_data
         monkeypatch.setattr(solar_data, 'fetch_solar',
                             lambda client, cache_dir, now: object())
-        from ventanal.solar import render as solar_render
-        monkeypatch.setattr(solar_render, 'render_solar',
-                            lambda *a: solid_canvas((0, 0, 255)))
+        from ventanal.devices import lcd_solar
+        monkeypatch.setattr(lcd_solar, 'render_lcd_solar',
+                            lambda *a: Image.new('RGB', (800, 480), (0, 0, 255)))
         from ventanal.weather import data as weather_data
         monkeypatch.setattr(weather_data, 'geocode',
                             lambda *a: (40.01, -105.27, 'Boulder'))
@@ -627,19 +712,19 @@ def test_serve_device_routes(tmp_path):
 def test_lcd_weather_location_label(sample, monkeypatch, label):
     from ventanal.devices import lcd_weather
     calls = []
-    original = lcd_weather._location_marker
+    original = lcd_weather.location_marker
 
     def marker(canvas, centre, colours, here_label):
         calls.append(here_label)
         return original(canvas, centre, colours, here_label)
 
-    monkeypatch.setattr(lcd_weather, '_location_marker', marker)
+    monkeypatch.setattr(lcd_weather, 'location_marker', marker)
     lcd_sample(sample, here_label=label)
     assert calls == [label]
 
 
 @pytest.mark.parametrize('missing', [None, 'alerts', 'radar', 'basemap'])
-def test_lcd_weather_data_pipeline(sample, monkeypatch, missing):
+def test_lcd_weather_data_pipeline(sample, monkeypatch, caplog, missing):
     from ventanal import jobs
     from ventanal.devices import lcd_weather
     w, alerts, radar, lines, place, coords, now, config = sample
@@ -665,10 +750,5 @@ def test_lcd_weather_data_pipeline(sample, monkeypatch, missing):
         None if missing == 'radar' else radar, config, now,
         lines={} if missing == 'basemap' else lines, place=place, coords=coords)
     assert image.tobytes() == expected.tobytes()
-
-
-def test_lcd_solar_has_no_updated_readout():
-    source = solid_canvas((12, 100, 150))
-    expected = Image.new('RGB', (800, 480))
-    expected.paste(source.rgb.resize((640, 480), Image.Resampling.LANCZOS), (80, 0))
-    assert lcd43b._letterbox_solar(source).tobytes() == expected.tobytes()
+    if missing:
+        assert f'LCD weather {missing} unavailable: unavailable' in caplog.text

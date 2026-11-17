@@ -13,7 +13,7 @@ from ventanal.quantize import Canvas, Method
 from ventanal.text import fit, font, renderable
 from ventanal.weather.data import WMO_LONG, WMO_SHORT
 from ventanal.weather.radar import clean_echoes
-from ventanal.weather.render import _location_marker
+from ventanal.weather.render import location_marker
 
 log = logging.getLogger(__name__)
 MAP_SOURCE_SIZE = (782, 462)
@@ -37,7 +37,7 @@ def _text(draw, label, xy, size, colour='white', *, bold=False,
     draw.text(xy, label, font=face, fill=LCD_COLOURS.get(colour, colour), anchor=anchor)
 
 
-def weather_layout(w, alerts, cfg, now) -> dict:
+def weather_layout(alerts, cfg, now) -> dict:
     """Plan the exact advisory glyph bounds, independently of the forecast.
 
     Wrap at most three lines; fit the remaining text on the last line.
@@ -94,7 +94,7 @@ def _radar_image(radar, lines, cfg, now):
                         (0, 0), Method.SOLID, mask.filter(ImageFilter.MaxFilter(5)))
             inner.paste(Image.new('RGB', MAP_SOURCE_SIZE, colours[name]),
                         (0, 0), Method.SOLID, mask)
-        _location_marker(inner, (396, 236), colours, cfg.here_label)
+        location_marker(inner, (396, 236), colours, cfg.here_label)
         valid = radar.valid.astimezone(now.tzinfo)
         caption = (f'NEXRAD COMPOSITE · {_clock(valid, cfg)} · '
                    f'{cfg.radar_radius_miles:g} MI')
@@ -154,7 +154,7 @@ def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
         if chance:
             d.rounded_rectangle((cx-30, 410, cx-31 + max(1, round(60*chance/100)), 413),
                                 radius=2, fill=LCD_COLOURS['sky'])
-    layout = weather_layout(w, alerts, cfg, now)
+    layout = weather_layout(alerts, cfg, now)
     for label, xy in layout['advisory_lines']:
         _text(d, label, xy, 12, 'red' if alerts else 'light_gray', bold=True)
     return image
@@ -167,20 +167,20 @@ def weather_frame(cfg, now, client) -> Image.Image:
     weather = jobs.fetch_weather(lat, lon, cfg.units, client, now=now)
     try:
         alerts = jobs.fetch_alerts(lat, lon, client, cfg.nws_contact)
-    except Exception:
-        log.warning('LCD weather alerts unavailable')
+    except Exception as exc:
+        log.warning('LCD weather alerts unavailable: %s', exc)
         alerts = []
     bbox = jobs.bbox_around(lat, lon, cfg.radar_radius_miles, 782/462)
     radar = None
     if cfg.radar == 'iem':
         try:
             radar = jobs.fetch_iem(bbox, MAP_SOURCE_SIZE, client, cfg.cache_dir)
-        except Exception:
-            log.warning('LCD weather radar unavailable')
+        except Exception as exc:
+            log.warning('LCD weather radar unavailable: %s', exc)
     try:
         lines = jobs.basemap(bbox, MAP_SOURCE_SIZE, cfg.cache_dir, client)
-    except Exception:
-        log.warning('LCD weather basemap unavailable')
+    except Exception as exc:
+        log.warning('LCD weather basemap unavailable: %s', exc)
         lines = {}
     return render_lcd_weather(weather, alerts, radar, cfg, now, lines=lines,
                               place=place, coords=(lat, lon))
