@@ -32,6 +32,44 @@ server-side), so the direct driver is smaller, avoids LVGL/screen-drift
 workarounds, and lets us keep the PSRAM frame buffer plus the recommended
 `WIDTH*10` bounce buffers.
 
+Full-frame blits pass exactly `(0, 0, 800, 480)`: ESP-IDF's
+`esp_lcd_panel_draw_bitmap` end coordinates are **exclusive** and the source
+is read packed at `x_end - x_start` pixels per row, so `(0, 0, 799, 479)`
+would copy 799×479 pixels at a 799-pixel stride, shearing every row one
+pixel further (the diagonal wrap seen in the first hardware run).
+`test_lcd43b_panel` pins the arguments with a fake `esp_lcd` and checks a
+vertical-line test pattern survives the blit.
+
+## Serial logging
+
+Logs go to the native USB-Serial/JTAG port (`/dev/cu.usbmodem101`, the same
+port esptool uses), so the sketch must be built with hardware CDC on boot:
+
+```
+USBMode=hwcdc,CDCOnBoot=cdc
+```
+
+Both appear in the boot log as `usb cdc hw=1 onboot=1` so a capture proves
+the running image is configured correctly. Every line is emitted by one
+bounded `write()` (never a per-character trickle), a 4 KB TX ring retains
+recent boot lines until a host opens the port (oldest dropped if it fills),
+and `flush()` runs only while a host actually has the port open — a missing
+or stalled host can never block the loop. Gesture handling always logs
+`gesture=<kind> x=… y=…` and every screen change logs `screen=<name>`.
+To capture a boot, open the port and reset the board
+(`capture_lcd43b.py --reset`); baud rate is ignored by USB CDC.
+
+## Diagnostics
+
+Building with `-DVENTANAL_LCD_DIAG_GESTURES=1` (added to
+`compiler.cpp.extra_flags` alongside `VENTANAL_LCD_CONFIG`) replays a host-tested
+synthetic touch sequence (`diag.h`) through the production classifier a
+couple of seconds after the first refresh, logging every gesture
+(`next`, `double`, `previous`, `refresh`) and screen change without a finger
+on the panel — the blocking refresh gesture runs last. The sequence and its
+ordering are pinned by `test_lcd43b_diag`. Use it only for captures and
+hardware bring-up; production images leave the flag off.
+
 ## Behaviour
 
 - Connects Wi-Fi, syncs NTP, fetches `/devices/<id>/manifest.json` every
@@ -85,7 +123,9 @@ make -C firmware/test test   # includes test_lcd43b_* units
 
 Covered: gesture classifier halves/double/long-press/debounce, bundled
 SHA-256 against FIPS 180-4 vectors, VNR1 header/hash validation, device
-manifest parsing/quiet hours, and overlay pixel clipping.
+manifest parsing/quiet hours, overlay pixel clipping, the panel blit
+arguments and vertical-line pattern against a fake `esp_lcd`, and the
+diagnostic gesture sequence.
 
 ## Phase 2 (not yet)
 

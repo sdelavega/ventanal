@@ -17,6 +17,8 @@
 #include <Preferences.h>
 #include <WiFi.h>
 #include <Wire.h>
+#include <cstdarg>
+#include <cstdio>
 #include <ctime>
 #include <esp_sntp.h>
 
@@ -35,6 +37,10 @@
 #include "manifest.h"
 #include "overlay.h"
 #include "panel.h"
+#include "screens.h"
+#ifdef VENTANAL_LCD_DIAG_GESTURES
+#include "diag.h"
+#endif
 
 // Optional private-config keys with safe defaults.
 #ifndef VENTANAL_DEVICE_ID
@@ -70,6 +76,31 @@ bool offline = true;
 bool drawn = false;
 uint32_t fetchCounter = 0;
 
+#ifdef VENTANAL_LCD_DIAG_GESTURES
+// One-shot diagnostic gesture replay (see diag.h), armed in setup() and
+// disabled once the synthetic sequence completes.
+bool diagActive = false;
+uint32_t diagStartMs = 0;
+#endif
+
+// Serial logging over the native USB-Serial/JTAG port. The sketch logs in
+// whole lines: one bounded write per line, then a flush only while a host
+// actually has the CDC port open, so a missing or stalled host can never
+// block the loop. Lines printed before a host connects stay in the enlarged
+// TX ring buffer (oldest dropped) and surface as soon as one does.
+void logLine(const char* format, ...) {
+    char line[192];
+    va_list args;
+    va_start(args, format);
+    const int length = vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    if (length <= 0) return;
+    const size_t used = size_t(length) < sizeof line - 1 ? size_t(length)
+                                                         : sizeof line - 1;
+    Serial.write(reinterpret_cast<const uint8_t*>(line), used);
+    if (Serial) Serial.flush();
+}
+
 lcd::DeviceManifest manifest;
 
 // Screen slots: 0=art, 1=weather, 2=solar, 3..5=spares. Slot names double
@@ -87,28 +118,39 @@ bool setLcdResetLine(bool asserted) { return expander.setLcdReset(asserted); }
 
 // Diagnostic only: report every I2C address that acknowledges a probe.
 void scanBus() {
-    Serial.print("i2c scan:");
+    char line[160] = "i2c scan:";
+    size_t used = strlen(line);
     for (uint8_t address = 1; address < 0x78; ++address) {
         Wire.beginTransmission(address);
-        if (Wire.endTransmission() == 0) Serial.printf(" %02x", address);
+        if (Wire.endTransmission() == 0 && used < sizeof line - 8)
+            used += snprintf(line + used, sizeof line - used, " %02x", address);
     }
-    Serial.println();
+    logLine("%s\n", line);
 }
+
+// Screen list: art, weather, solar (while published), then the spares.
+// Indexing lives in lcd/screens.h (host-tested) so a missing solar screen
+// hands index 2 to the first spare instead of a phantom solar slot.
+bool solarPublished() { return manifest.screens[2].present; }
 
 int screenCount() {
-    return 2 + (manifest.screens[2].present ? 1 : 0) + manifest.spareCount;
+    return lcd::screenCount(solarPublished(), manifest.spareCount);
 }
 
-int spareBase() { return 2 + (manifest.screens[2].present ? 1 : 0); }
+int spareBase() { return lcd::spareBase(solarPublished()); }
 
 const lcd::FrameInfo& screenInfo(int index) {
     static const lcd::FrameInfo empty;
-    if (index < 3) return manifest.screens[index];
-    const int spare = index - spareBase();
-    return spare >= 0 && spare < manifest.spareCount ? manifest.spares[spare] : empty;
+    const int spare = lcd::screenSpare(index, solarPublished(), manifest.spareCount);
+    if (spare >= 0) return manifest.spares[spare];
+    if (index == 0 || index == 1) return manifest.screens[index];
+    if (solarPublished() && index == 2) return manifest.screens[2];
+    return empty;
 }
 
-int screenSlot(int index) { return index < 3 ? index : 3 + (index - spareBase()); }
+int screenSlot(int index) {
+    return lcd::screenSlot(index, solarPublished(), manifest.spareCount);
+}
 
 void loadCacheIds() {
     for (int slot = 0; slot < SLOT_COUNT; ++slot) {
@@ -139,7 +181,7 @@ bool wifiConnect() {
     while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_TIMEOUT_MS)
         delay(50);
     const bool connected = WiFi.status() == WL_CONNECTED;
-    Serial.printf("wifi connected=%d\n", connected);
+    logLine("wifi connected=%d\n", connected);
     return connected;
 }
 
@@ -148,12 +190,12 @@ bool syncTime() {
     const uint32_t started = millis();
     while (millis() - started < NTP_TIMEOUT_MS) {
         if (sntp_get_sync_status() == SNTP_SYNC_STATUS_COMPLETED) {
-            Serial.println("time ntp=synced");
+            logLine("time ntp=synced\n");
             return true;
         }
         delay(100);
     }
-    Serial.println("time ntp=unavailable");
+    logLine("time ntp=unavailable\n");
     return false;
 }
 
@@ -172,7 +214,7 @@ bool fetchManifest() {
     http.setTimeout(HTTP_TIMEOUT_MS);
     const int status = http.GET();
     if (status != 200 || http.getSize() <= 0 || http.getSize() > 8192) {
-        Serial.printf("manifest status=%d\n", status);
+        logLine("manifest status=%d\n", status);
         http.end();
         return false;
     }
@@ -180,15 +222,15 @@ bool fetchManifest() {
     http.end();
     lcd::DeviceManifest parsed;
     if (!lcd::parseDeviceManifest(body.c_str(), parsed)) {
-        Serial.println("manifest parsed=0");
+        logLine("manifest parsed=0\n");
         return false;
     }
     manifest = parsed;
-    Serial.printf("manifest parsed=1 screens=%d%d%d spares=%u quiet=%04d-%04d\n",
-                  manifest.screens[0].present, manifest.screens[1].present,
-                  manifest.screens[2].present, manifest.spareCount,
-                  manifest.quietValid() ? manifest.quietStart : -1,
-                  manifest.quietValid() ? manifest.quietEnd : -1);
+    logLine("manifest parsed=1 screens=%d%d%d spares=%u quiet=%04d-%04d\n",
+            manifest.screens[0].present, manifest.screens[1].present,
+            manifest.screens[2].present, manifest.spareCount,
+            manifest.quietValid() ? manifest.quietStart : -1,
+            manifest.quietValid() ? manifest.quietEnd : -1);
     return true;
 }
 
@@ -197,7 +239,7 @@ bool fetchManifest() {
 bool downloadFrame(const lcd::FrameInfo& info, int slot) {
     uint8_t* buffer = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
     if (!buffer) {
-        Serial.println("download error=allocation");
+        logLine("download error=allocation\n");
         return false;
     }
     const String url = String(VENTANAL_HOST_URL) + info.url;
@@ -226,12 +268,12 @@ bool downloadFrame(const lcd::FrameInfo& info, int slot) {
         }
         ok = got == lcd::FRAME_BYTES
           && lcd::frameVerified(buffer, lcd::FRAME_BYTES, info.sha256);
-        Serial.printf("download slot=%s id=%.16s bytes=%u verified=%d ms=%lu\n",
-                      SLOT_NAMES[slot], info.id, unsigned(got), ok,
-                      static_cast<unsigned long>(millis() - started));
+        logLine("download slot=%s id=%.16s bytes=%u verified=%d ms=%lu\n",
+                SLOT_NAMES[slot], info.id, unsigned(got), ok,
+                static_cast<unsigned long>(millis() - started));
     } else {
-        Serial.printf("download slot=%s status=%d size=%d\n", SLOT_NAMES[slot],
-                       status, http.getSize());
+        logLine("download slot=%s status=%d size=%d\n", SLOT_NAMES[slot],
+                status, http.getSize());
     }
     http.end();
     if (ok) {
@@ -269,13 +311,13 @@ void syncSlot(const lcd::FrameInfo& info, int slot) {
             LittleFS.remove(path);
             cachedIds[slot][0] = 0;
             storeCacheId(slot);
-            Serial.printf("cache removed slot=%s\n", SLOT_NAMES[slot]);
+            logLine("cache removed slot=%s\n", SLOT_NAMES[slot]);
         }
         LittleFS.remove(temporary);
         return;
     }
     if (!strcmp(cachedIds[slot], info.id) && LittleFS.exists(path)) {
-        Serial.printf("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
+        logLine("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
         return;
     }
     downloadFrame(info, slot);   // failures keep the previous cache
@@ -284,11 +326,15 @@ void syncSlot(const lcd::FrameInfo& info, int slot) {
 // Blit a cached frame (plus overlays) to the panel through a PSRAM buffer.
 bool show(int index) {
     const int slot = screenSlot(index);
+    if (slot < 0) {   // persisted index outside the current screen list
+        logLine("blit error=screen-index index=%d\n", index);
+        return false;
+    }
     const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
     uint16_t* pixels = static_cast<uint16_t*>(
         ps_malloc(size_t(lcd::WIDTH) * lcd::HEIGHT * 2));
     if (!pixels) {
-        Serial.println("blit error=allocation");
+        logLine("blit error=allocation\n");
         return false;
     }
     const uint32_t started = millis();
@@ -315,9 +361,9 @@ bool show(int index) {
     panel.blit(pixels);
     free(pixels);
     drawn = ok;
-    Serial.printf("blit screen=%s id=%.16s cache=%s offline=%d ms=%lu\n",
-                  SLOT_NAMES[slot], cachedIds[slot], ok ? "frame" : "waiting",
-                  offline, static_cast<unsigned long>(millis() - started));
+    logLine("blit screen=%s id=%.16s cache=%s offline=%d ms=%lu\n",
+            SLOT_NAMES[slot], cachedIds[slot], ok ? "frame" : "waiting",
+            offline, static_cast<unsigned long>(millis() - started));
     return ok;
 }
 
@@ -325,7 +371,7 @@ void setBacklight(bool on) {
     if (on == backlightState) return;
     backlightState = on;
     expander.setBacklight(on);
-    Serial.printf("backlight on=%d\n", on);
+    logLine("backlight on=%d\n", on);
 }
 
 void backlightRefresh() {
@@ -350,10 +396,19 @@ bool refresh(bool redraw) {
     if (WiFi.status() == WL_CONNECTED) {
         syncTime();
         ok = fetchManifest();
-        if (ok) downloadChanged();
+        if (ok) {
+            // A shrunk screen list (e.g. solar dropping out overnight) can
+            // leave the persisted selection past the end; self-heal to art.
+            if (screenIndex >= screenCount()) {
+                screenIndex = 0;
+                storeScreenIndex();
+                logLine("screen=%s\n", SLOT_NAMES[screenSlot(screenIndex)]);
+            }
+            downloadChanged();
+        }
     }
     offline = !ok;
-    Serial.printf("refresh fetch=%lu ok=%d offline=%d\n", fetchCounter++, ok, offline);
+    logLine("refresh fetch=%lu ok=%d offline=%d\n", fetchCounter++, ok, offline);
     // Redraw when asked, when the fetch succeeded, or while nothing valid
     // has ever been drawn (the offline overlay may have changed).
     if (redraw || ok || !drawn) show(screenIndex);
@@ -366,21 +421,24 @@ void handleGesture(Gesture gesture, int x, int y) {
                      : gesture == Gesture::Previous  ? "previous"
                      : gesture == Gesture::DoubleTap ? "double"
                                                       : "refresh";
-    Serial.printf("gesture=%s x=%d y=%d\n", name, x, y);
+    logLine("gesture=%s x=%d y=%d\n", name, x, y);
     const int count = screenCount();
     switch (gesture) {
     case Gesture::Next:
         screenIndex = (screenIndex + 1) % count;
+        logLine("screen=%s\n", SLOT_NAMES[screenSlot(screenIndex)]);
         show(screenIndex);
         break;
     case Gesture::Previous:
         screenIndex = (screenIndex + count - 1) % count;
+        logLine("screen=%s\n", SLOT_NAMES[screenSlot(screenIndex)]);
         show(screenIndex);
         break;
     case Gesture::DoubleTap:
         if (manifest.spareCount) {
             screenIndex = spareBase() + spareCursor;
             spareCursor = (spareCursor + 1) % manifest.spareCount;
+            logLine("screen=%s\n", SLOT_NAMES[screenSlot(screenIndex)]);
             show(screenIndex);
         }
         break;
@@ -397,27 +455,43 @@ void handleGesture(Gesture gesture, int x, int y) {
 }  // namespace
 
 void setup() {
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+    // HWCDC (native USB-Serial/JTAG): keep the last boot lines while no
+    // host has the port open (the not-connected write path drops only the
+    // oldest queued bytes), and bound every write even if a host stalls.
+    Serial.setTxBufferSize(4096);
+    Serial.setTxTimeoutMs(20);
+#endif
     Serial.begin(115200);
     delay(300);
-    Serial.println("ventanal lcd43b boot");
+    logLine("ventanal lcd43b boot\n");
+    logLine("usb cdc hw=%d onboot=%d\n", ARDUINO_USB_MODE, ARDUINO_USB_CDC_ON_BOOT);
     Wire.begin(8, 9);   // SDA=GPIO8, SCL=GPIO9, shared by expander and touch
     Wire.setClock(400000);
-    if (!prefs.begin("ventanal", false)) Serial.println("error=nvs-open");
+    if (!prefs.begin("ventanal", false)) logLine("error=nvs-open\n");
     // Mount the partition named "littlefs" (spiffs subtype); first boot formats.
     if (!LittleFS.begin(true, "/littlefs", 10, "littlefs"))
-        Serial.println("error=littlefs-mount");
+        logLine("error=littlefs-mount\n");
     loadCacheIds();
     loadScreenIndex();
-    if (!expander.begin()) Serial.println("error=ch422g-begin");
+    if (!expander.begin()) logLine("error=ch422g-begin\n");
     expander.setBacklight(false);
-    if (!panel.begin(setLcdResetLine)) Serial.println("error=panel-begin");
+    if (!panel.begin(setLcdResetLine)) logLine("error=panel-begin\n");
     if (!touch.begin(4, setTouchResetLine)) {
-        Serial.println("error=gt911-begin");
+        logLine("error=gt911-begin\n");
         scanBus();
     } else {
-        Serial.printf("touch gt911 address=0x%02x\n", touch.address());
+        logLine("touch gt911 address=0x%02x\n", touch.address());
     }
     refresh(true);
+#ifdef VENTANAL_LCD_DIAG_GESTURES
+    // Run the synthetic gesture sequence (host-tested in diag.h) a couple of
+    // seconds after the first refresh, so a capture taken without touching
+    // the panel still exercises the whole gesture pipeline.
+    diagActive = true;
+    diagStartMs = millis() + 2000;
+    logLine("diag gestures=planned\n");
+#endif
 }
 
 void loop() {
@@ -425,7 +499,22 @@ void loop() {
     if (now - lastTouchPollMs >= TOUCH_POLL_MS) {
         lastTouchPollMs = now;
         int x = 0, y = 0;
-        const bool touched = touch.read(x, y);
+        bool touched = false;
+#ifdef VENTANAL_LCD_DIAG_GESTURES
+        if (diagActive && diagStartMs && now >= diagStartMs) {
+            // Synthetic samples through the real classifier (see diag.h);
+            // real touch takes over again once the sequence completes.
+            if (!lcd::diagTouchSample(now - diagStartMs, touched, x, y)) {
+                diagActive = false;
+                touched = false;
+                logLine("diag gestures=done\n");
+            }
+        } else {
+            touched = touch.read(x, y);
+        }
+#else
+        touched = touch.read(x, y);
+#endif
         const Gesture gesture = gestures.sample(now, touched, x, y);
         if (touched && !lastTouched) touchUntilMs = now + TOUCH_WAKE_MS;
         lastTouched = touched;
