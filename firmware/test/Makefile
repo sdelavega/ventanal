@@ -5,7 +5,7 @@ ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJs
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean
-test: build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay
+test: build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel
 	./build/test_budget
 	./build/test_extras
 	./build/test_longpress
@@ -33,6 +33,7 @@ test: build/test_budget build/test_extras build/test_longpress build/test_solar 
 	./build/test_lcd43b_frame
 	./build/test_lcd43b_manifest
 	./build/test_lcd43b_overlay
+	./build/test_lcd43b_panel
 
 build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
@@ -132,10 +133,16 @@ build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.ino ../ven
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-# lcd43b device profile: pure host-side units with no Arduino fakes.
+# lcd43b device profile: host-side units. gesture/frame/manifest/overlay are
+# pure C++; panel compiles the production header against the esp_lcd fakes.
 build/test_lcd43b_gesture: test_lcd43b_gesture.cpp ../lcd43b/gesture.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_gesture.cpp $(LDFLAGS) -o $@
+
+build/test_lcd43b_panel: test_lcd43b_panel.cpp ../lcd43b/panel.h fakes/Arduino.h fakes/esp_lcd_panel_ops.h fakes/esp_lcd_panel_rgb.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes -Wframe-larger-than=2048 test_lcd43b_panel.cpp $(LDFLAGS) -o $@
+
 
 build/test_lcd43b_frame: test_lcd43b_frame.cpp ../lcd43b/frame.h ../lcd43b/sha256.h Makefile
 	mkdir -p build

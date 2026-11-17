@@ -61,10 +61,17 @@ public:
     }
 
     // Copy a full 800x480 RGB565 image into the panel's frame buffer.
+    // ESP-IDF's draw_bitmap end coordinates are EXCLUSIVE (x_end = x_start +
+    // width, y_end = y_start + height) and the source is read packed at
+    // (x_end - x_start) pixels per row, so the full screen is exactly
+    // (0, 0, WIDTH, HEIGHT). Passing WIDTH-1/HEIGHT-1 would copy a
+    // (WIDTH-1)x(HEIGHT-1) region at a (WIDTH-1)-pixel stride, shearing each
+    // row one pixel further left — the diagonal wrap this class must never
+    // regress into (pinned by test_lcd43b_panel).
     // For an RGB panel this is a synchronous memcpy into PSRAM.
     bool blit(const uint16_t* pixels) {
-        return panel_ && esp_lcd_panel_draw_bitmap(panel_, 0, 0, WIDTH - 1,
-                                                   HEIGHT - 1, pixels) == ESP_OK;
+        return panel_ && esp_lcd_panel_draw_bitmap(panel_, 0, 0, WIDTH, HEIGHT,
+                                                   pixels) == ESP_OK;
     }
 
     void clear(uint16_t colour) {
