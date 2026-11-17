@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+[Unit]
+Description=Ventanal half-hour render schedule
+
+[Timer]
+OnCalendar=*-*-* *:25,55:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

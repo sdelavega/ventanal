@@ -1,0 +1,141 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Stephen de la Vega
+#pragma once
+#include "security_config.h"
+#include <Preferences.h>
+#include <HTTPClient.h>
+#include <string>
+#include <cstring>
+#include <vector>
+#ifdef VENTANAL_HOST_TEST
+#include <CommonCrypto/CommonDigest.h>
+#include <CommonCrypto/CommonHMAC.h>
+#else
+#include <WiFi.h>
+#include <WiFiClientSecure.h>
+#include <mbedtls/md.h>
+#include <mbedtls/sha256.h>
+#endif
+
+inline std::string hexBytes(const unsigned char* p,size_t n) {
+    const char* digits="0123456789abcdef"; std::string out;
+    for(size_t i=0;i<n;++i) { out+=digits[p[i]>>4]; out+=digits[p[i]&15]; }
+    return out;
+}
+inline bool hex64(const char* s) {
+    if(strlen(s)!=64) return false;
+    for(unsigned i=0;i<64;++i) if(!((s[i]>='0'&&s[i]<='9')||(s[i]>='a'&&s[i]<='f'))) return false;
+    return true;
+}
+inline std::string deviceKey() {
+    const char* s=VENTANAL_DEVICE_KEY; if(!hex64(s)) return {};
+    std::string key;
+    for(unsigned i=0;i<64;i+=2) {
+        auto nibble=[](char c) { return c<='9'?c-'0':c-'a'+10; };
+        key+=char((nibble(s[i])<<4)|nibble(s[i+1]));
+    }
+    return key;
+}
+inline bool securityConfigured() {
+    return (strlen(VENTANAL_HOST_CERT_PEM) + strlen(VENTANAL_DEVICE_KEY) > 0) ||
+           strncmp(VENTANAL_HOST_URL,"https://",8)==0;
+}
+inline std::string hmacHex(const std::string& key,const std::string& data) {
+    unsigned char out[32];
+#ifdef VENTANAL_HOST_TEST
+    CCHmac(kCCHmacAlgSHA256,key.data(),key.size(),data.data(),data.size(),out);
+#else
+    if(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
+        reinterpret_cast<const unsigned char*>(key.data()),key.size(),
+        reinterpret_cast<const unsigned char*>(data.data()),data.size(),out)!=0) return {};
+#endif
+    return hexBytes(out,32);
+}
+struct FrameHash {
+#ifdef VENTANAL_HOST_TEST
+    CC_SHA256_CTX ctx;
+    FrameHash() { CC_SHA256_Init(&ctx); }
+    void add(const void* p,size_t n) { CC_SHA256_Update(&ctx,p,static_cast<CC_LONG>(n)); }
+    std::string finish() { unsigned char out[32]; CC_SHA256_Final(out,&ctx); return hexBytes(out,32); }
+#else
+    mbedtls_sha256_context ctx;
+    FrameHash() { mbedtls_sha256_init(&ctx); mbedtls_sha256_starts(&ctx,0); }
+    ~FrameHash() { mbedtls_sha256_free(&ctx); }
+    void add(const void* p,size_t n) { mbedtls_sha256_update(&ctx,static_cast<const unsigned char*>(p),n); }
+    std::string finish() { unsigned char out[32]; mbedtls_sha256_finish(&ctx,out); return hexBytes(out,32); }
+#endif
+};
+inline bool nextCounter(uint64_t& value) {
+    Preferences p;
+    if(!p.begin("ventanal",false)) return false;
+    uint64_t old=0;
+    // Missing key is initial pairing; malformed existing state fails closed.
+    bool ok=!p.isKey("sec-counter") || p.getBytes("sec-counter",&old,sizeof old)==sizeof old;
+    if(!ok || old==UINT64_MAX) { p.end(); return false; }
+    value=old+1;
+    ok=p.putBytes("sec-counter",&value,sizeof value)==sizeof value;
+    p.end(); return ok;
+}
+inline std::string requestProof(const std::string& key,const char* method,const char* path,uint64_t counter) {
+    char number[21]; snprintf(number,sizeof number,"%llu",static_cast<unsigned long long>(counter));
+    return hmacHex(key,std::string(method)+path+number);
+}
+#ifdef VENTANAL_HOST_TEST
+using TransportClient=WiFiClient;
+#else
+struct TransportClient { WiFiClient plain; WiFiClientSecure secure; };
+#endif
+// Only one Arduino task performs requests. Keep its verified TLS connection
+// across manifest/main/weather and post-draw spare refills within this wake.
+inline TransportClient& requestClient(TransportClient& local) {
+    if(!securityConfigured()) return local;
+    static TransportClient shared; return shared;
+}
+inline HTTPClient& requestHttp(HTTPClient& local) {
+    if(!securityConfigured()) return local;
+    static HTTPClient shared; return shared;
+}
+inline void finishTransport(HTTPClient& http,bool complete) {
+    if(securityConfigured()) http.setReuse(complete);
+    http.end();
+}
+inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* url) {
+    if(!securityConfigured()) {
+        if(strncmp(url,"http://",7)!=0) return false;
+#ifdef VENTANAL_HOST_TEST
+        return http.begin(client,url);
+#else
+        return http.begin(client.plain,url);
+#endif
+    }
+    const std::string key=deviceKey();
+    const std::string origin=VENTANAL_HOST_URL;
+    if(key.size()!=32 || !strlen(VENTANAL_HOST_CERT_PEM) || origin.rfind("https://",0)!=0 ||
+       std::string(url).compare(0,origin.size(),origin)!=0 || url[origin.size()]!='/') return false;
+#ifndef VENTANAL_HOST_TEST
+    client.secure.setCACert(VENTANAL_HOST_CERT_PEM);
+    client.secure.setHandshakeTimeout(5);
+#endif
+#ifdef VENTANAL_HOST_TEST
+    if(!http.begin(client,url)) return false;
+#else
+    if(!http.begin(client.secure,url)) return false;
+#endif
+    uint64_t counter;
+    if(!nextCounter(counter)) { finishTransport(http,false); return false; }
+    char number[21]; snprintf(number,sizeof number,"%llu",static_cast<unsigned long long>(counter));
+    const auto proof=requestProof(key,"GET",url+origin.size(),counter);
+    http.addHeader("Authorization",(std::string("Ventanal ")+proof).c_str());
+    http.addHeader("X-Ventanal-Counter",number);
+    http.setReuse(true);
+    return true;
+}
+// Verified manifest hashes live only for this wake, never change NVS State ABI.
+struct ExpectedHash { std::string url,sha; };
+inline std::vector<ExpectedHash> expectedHashes;
+inline const char* expectedHash(const char* url) {
+    const std::string origin=VENTANAL_HOST_URL;
+    if(std::string(url).compare(0,origin.size(),origin)!=0) return "";
+    for(const auto& h:expectedHashes) if(h.url==url+origin.size()) return h.sha.c_str();
+    return "";
+}

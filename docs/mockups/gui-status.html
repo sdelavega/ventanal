@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ventanal Status</title>
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --violet:#ddbbff; --sky:#aaaaff; --gold:#ffaa00; --gray:#666688;
+  --orange:#ff7700; --lgray:#9996ba; --text:#d3d3d3; --red:#dd4444;
+  --bg:#000; --panel:#0b0b12;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font-family:Antonio,"Arial Narrow",sans-serif;letter-spacing:.04em}
+.frame{display:grid;grid-template-columns:150px 1fr;grid-template-rows:auto 1fr;min-height:100vh;gap:6px;padding:12px}
+.elbow-top{grid-column:1/3;display:grid;grid-template-columns:150px 1fr auto;gap:6px;align-items:stretch}
+.elbow-top .cap{background:var(--orange);border-top-left-radius:60px;height:64px}
+.elbow-top .bar{background:var(--orange);display:flex;align-items:center;justify-content:flex-end;padding:0 18px;color:#000;font-weight:700;font-size:28px}
+.elbow-top .end{background:var(--gold);border-radius:0 32px 32px 0;width:70px}
+.side{display:flex;flex-direction:column;gap:6px}
+.side a{display:block;height:64px;padding:8px 14px;color:#000;text-decoration:none;font-weight:700;font-size:20px;text-align:right;display:flex;align-items:flex-end;justify-content:flex-end}
+.side a.status{background:var(--violet)} .side a.art{background:var(--sky)}
+.side a.settings{background:var(--lgray)} .side a.cal{background:var(--gold)}
+.side a.cur{outline:3px solid #fff;outline-offset:-3px}
+.side .fill{flex:1;background:var(--gray);border-bottom-left-radius:60px;min-height:80px}
+main{display:flex;flex-direction:column;gap:14px;padding:4px 0 0 10px}
+h1{margin:0;color:var(--gold);font-size:40px;font-weight:700}
+.warn{display:flex;gap:12px;align-items:center;background:var(--red);color:#000;border-radius:28px;padding:10px 12px 10px 22px;font-weight:700;font-size:20px}
+.warn span{flex:1} .btn{background:#000;color:var(--gold);border:0;border-radius:20px;padding:8px 18px;font:inherit;font-weight:700;cursor:pointer}
+.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px}
+.tile{background:var(--panel);border-left:14px solid var(--sky);border-radius:0 18px 18px 0;padding:12px 16px}
+.tile .k{color:var(--lgray);font-size:16px}
+.tile .v{color:var(--text);font-size:34px;font-weight:700}
+.tile .s{color:var(--gold);font-size:16px}
+.battery{height:14px;background:#222;border-radius:7px;margin-top:6px;overflow:hidden}
+.battery i{display:block;height:100%;width:95%;background:var(--violet)}
+.previews{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.pv{background:var(--panel);border-radius:18px;overflow:hidden}
+.pv .lbl{background:var(--violet);color:#000;font-weight:700;padding:6px 14px;font-size:18px;display:flex;justify-content:space-between}
+.pv .lbl.w{background:var(--orange)}
+.img{aspect-ratio:4/3;display:flex;align-items:center;justify-content:center;color:#555;font-size:18px;
+  background:linear-gradient(135deg,#3a4a3a,#7d8a78 40%,#c9c6b0 70%,#5a6a7a)}
+.img.w{background:linear-gradient(90deg,#c1c5b3 0 6%,#222 6% 100%)}
+.log{font-size:16px;color:var(--lgray);line-height:1.6}
+.log b{color:var(--sky);font-weight:400}
+@media (max-width:640px){
+  .frame{grid-template-columns:1fr;padding:8px}
+  .elbow-top{grid-template-columns:40px 1fr 40px}
+  .elbow-top .cap{border-top-left-radius:32px;height:48px}.elbow-top .bar{font-size:22px}
+  .side{flex-direction:row;overflow-x:auto}
+  .side a{height:44px;min-width:110px;font-size:16px;border-radius:22px;align-items:center;justify-content:center}
+  .side .fill{display:none} main{padding:0}
+  h1{font-size:30px}
+}
+</style>
+</head>
+<body>
+<div class="frame">
+  <div class="elbow-top"><div class="cap"></div><div class="bar">VENTANAL · OPERATIONS</div><div class="end"></div></div>
+  <nav class="side">
+    <a class="status cur" href="#">STATUS</a>
+    <a class="art" href="#">ART</a>
+    <a class="settings" href="#">SETTINGS</a>
+    <a class="cal" href="#">CALIBRATION</a>
+    <div class="fill"></div>
+  </nav>
+  <main>
+    <div class="warn"><span>NO PASSWORD SET · ANYONE ON THIS NETWORK CAN CHANGE SETTINGS</span><button class="btn">SET A PASSWORD</button></div>
+    <h1>FRAME STATUS</h1>
+    <div class="grid">
+      <div class="tile"><div class="k">LAST CHECK-IN</div><div class="v">17:30</div><div class="s">6 MIN AGO · ONLINE</div></div>
+      <div class="tile" style="border-color:var(--violet)"><div class="k">BATTERY (ESTIMATE)</div><div class="v">95%</div><div class="battery"><i></i></div></div>
+      <div class="tile" style="border-color:var(--gold)"><div class="k">NEXT UPDATE</div><div class="v">18:00</div><div class="s">QUIET 23:00–06:00</div></div>
+      <div class="tile" style="border-color:var(--orange)"><div class="k">SHOWING</div><div class="v">ART</div><div class="s">SPARE 1 OF 3</div></div>
+    </div>
+    <div class="previews">
+      <div class="pv"><div class="lbl"><span>ART · GREETING THE SPRING</span><span>WU BIN · 1600</span></div><div class="img">PREVIEW OF ART FRAME</div></div>
+      <div class="pv"><div class="lbl w"><span>WEATHER</span><span>RENDERED 17:25</span></div><div class="img w">PREVIEW OF WEATHER FRAME</div></div>
+    </div>
+    <div class="log"><b>17:30</b> CHECK-IN · WEATHER DOWNLOADED<br><b>16:59</b> SKIP RECORDED · THE WINTER SUN → GREETING THE SPRING<br><b>14:00</b> NEW ART · THE WINTER SUN</div>
+  </main>
+</div>
+</body>
+</html>

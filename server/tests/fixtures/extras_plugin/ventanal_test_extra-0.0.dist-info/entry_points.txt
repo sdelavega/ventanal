@@ -1,0 +1,2 @@
+[ventanal.extras]
+test-extra = ventanal_test_extra:manifest

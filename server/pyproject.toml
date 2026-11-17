@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "ventanal"
+version = "1.0.0"
+requires-python = ">=3.13"
+license = "GPL-3.0-or-later"
+dependencies = ["pillow", "numpy", "httpx", "pyshp", "fonttools", "tomlkit", "cryptography", "rawpy>=0.28", "pillow-heif>=1.8.1", "pypng>=0.20220715.0", "tifffile"]
+
+[project.optional-dependencies]
+accel = ["numba"]
+dev = ["pytest"]
+
+[project.scripts]
+ventanal = "ventanal.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+ventanal = ["fonts/*/*.ttf", "fonts/*/OFL.txt", "static/*.css", "static/*.js", "extras/catalogue.json", "extras/keys/*.pub", "extras/keys/*.txt"]

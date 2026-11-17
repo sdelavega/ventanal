@@ -1,0 +1,343 @@
+{
+  "offset": 0,
+  "rows": 3,
+  "found": 53,
+  "items": [
+    {
+      "id": "1170079101_object",
+      "created": "2020-03-21T23:28:01Z",
+      "modified": "2025-07-11T18:03:11Z",
+      "responsible_department": "Den Kongelige Kobberstiksamling",
+      "collection": [
+        "Gammel bestand"
+      ],
+      "content_description": [
+        "Årstiderne personificeret af fire kvinder i forskellige klædedragter"
+      ],
+      "distinguishing_features": [
+        "Beskåret"
+      ],
+      "acquisition_date": "1787-01-01T00:00:00Z",
+      "acquisition_date_precision": "1887-01-01",
+      "dimensions": [
+        {
+          "notes": "395 x 496 mm",
+          "part": "bladmaal",
+          "type": "højde",
+          "unit": "millimeter",
+          "value": "395"
+        },
+        {
+          "notes": "395 x 496 mm",
+          "part": "bladmaal",
+          "type": "bredde",
+          "unit": "millimeter",
+          "value": "496"
+        }
+      ],
+      "documentation": [
+        {
+          "title": "The New Hollstein German engravings, etchings and woodcuts 1400-1700, Wenceslaus Hollar, part I-IX",
+          "author": "Simon Turner",
+          "notes": "441 kopi b",
+          "shelfmark": "C 43896",
+          "year_of_publication": "2009-2012"
+        },
+        {
+          "title": "A descriptive catalogue of the etched work of Wenceslaus Hollar 1607-1677",
+          "author": "Richard Pennington",
+          "notes": "p. 98, nr. 606-609",
+          "shelfmark": "49707",
+          "year_of_publication": "1982"
+        },
+        {
+          "title": "Prenten in de Gouden Eeuw van kunst tot kastpapier",
+          "author": "Jan van der Waals",
+          "notes": "Kat. nr. 91, afb. p. 71",
+          "shelfmark": "k2006-035",
+          "year_of_publication": "2006"
+        }
+      ],
+      "inscriptions": [
+        {
+          "content": "F.n.t.h.: \"Rombout van den Hoeye\". Nederlandske titler under hver kvinde i margin f.n.: \"LENTEN\"; \"SOMER\"; \"HERFST\"; \"WINTER\". Under hver titel: \"Den LENTEN tÿt...vuer en sucht\"",
+          "language": "Hollandsk",
+          "type": "Påskrift"
+        }
+      ],
+      "object_names": [
+        {
+          "name": "Kobberstik"
+        },
+        {
+          "name": "Grafik"
+        }
+      ],
+      "production": [
+        {
+          "creator": "Hollar, Wenceslaus",
+          "creator_forename": "Wenceslaus",
+          "creator_surname": "Hollar",
+          "creator_date_of_birth": "1607-07-13T00:00:00.000Z",
+          "creator_date_of_death": "1677-03-25T00:00:00.000Z",
+          "creator_nationality": "Tjekkisk, Engelsk",
+          "creator_gender": "MALE",
+          "creator_role": "Kopi efter",
+          "creator_lref": "12399_person"
+        },
+        {
+          "creator": "Hoeye, Rombout van den",
+          "creator_forename": "Rombout van den",
+          "creator_surname": "Hoeye",
+          "creator_date_of_birth": "1622-01-01T00:00:00.000Z",
+          "creator_date_of_death": "1671-01-01T00:00:00.000Z",
+          "creator_nationality": "Hollandsk",
+          "creator_gender": "MALE",
+          "creator_role": "Udgiver",
+          "creator_lref": "22746_person"
+        }
+      ],
+      "production_date": [
+        {
+          "start": "1650-01-01T00:00:00.000Z",
+          "end": "1670-01-01T00:00:00.000Z",
+          "period": "1650-1670"
+        }
+      ],
+      "techniques": [
+        "Ætsning og kobberstik"
+      ],
+      "titles": [
+        {
+          "title": "Fire jomfruer som de fire årstider",
+          "type": "beskrivelse",
+          "language": "dansk"
+        }
+      ],
+      "notes": [
+        "Litt: Temeente Archief Amsterdam, Notarial Archief 1970 A, Not. D. Doornick 1662/12/02; \"Notitite van de platen bevonden ten huyse van Sr. Rombout van den Hoeye ende Jouff\\e Sara de Bary\", p. 4, \"de vier getyden in joffrouwen - 10\""
+      ],
+      "number_of_parts": 1,
+      "object_number": "KKSgb4308",
+      "object_url": "https://api.smk.dk/api/v1/art?object_number=KKSgb4308",
+      "frontend_url": "https://open.smk.dk/artwork/image/KKSgb4308",
+      "iiif_manifest": "https://api.smk.dk/api/v1/iiif/manifest?id=KKSgb4308",
+      "enrichment_url": "https://enrichment.api.smk.dk/api/enrichment/KKSgb4308",
+      "similar_images_url": "https://similar.api.smk.dk/similar/?object_number=KKSgb4308",
+      "production_dates_notes": [
+        "Værkdatering: ca. 1650-1670"
+      ],
+      "public_domain": true,
+      "rights": "https://creativecommons.org/publicdomain/mark/1.0/",
+      "on_display": false,
+      "alternative_images": [
+        {
+          "mime_type": "image/tiff",
+          "iiif_id": "https://iip.smk.dk/iiif/jp2/4q77fs35c_kksgb4308.tif.jp2",
+          "iiif_info": "https://iip.smk.dk/iiif/jp2/4q77fs35c_kksgb4308.tif.jp2/info.json",
+          "width": 3546,
+          "height": 2702,
+          "size": 3313422.0689655175,
+          "thumbnail": "https://iip-thumb.smk.dk/iiif/jp2/4q77fs35c_kksgb4308.tif.jp2/full/!1024,/0/default.jpg",
+          "native": "https://iip.smk.dk/iiif/jp2/4q77fs35c_kksgb4308.tif.jp2/full/full/0/native.jpg",
+          "orientation": "landscape"
+        }
+      ],
+      "image_mime_type": "image/tiff",
+      "image_iiif_id": "https://iip.smk.dk/iiif/jp2/s7526g51g_kksgb4308.tif.reconstructed.tif.jp2",
+      "image_iiif_info": "https://iip.smk.dk/iiif/jp2/s7526g51g_kksgb4308.tif.reconstructed.tif.jp2/info.json",
+      "image_width": 3183,
+      "image_height": 2535,
+      "image_size": 4337700,
+      "image_thumbnail": "https://iip-thumb.smk.dk/iiif/jp2/s7526g51g_kksgb4308.tif.reconstructed.tif.jp2/full/!1024,/0/default.jpg",
+      "image_native": "https://api.smk.dk/api/v1/download/W3siaW1nX3VybCI6Imh0dHBzOi8vaWlwLnNtay5kay9paWlmL2pwMi9zNzUyNmc1MWdfa2tzZ2I0MzA4LnRpZi5yZWNvbnN0cnVjdGVkLnRpZi5qcDIvZnVsbC9mdWxsLzAvbmF0aXZlLmpwZyIsInB1YmxpY19kb21haW4iOnRydWUsIm9iamVjdF9udW1iZXIiOiJLS1NnYjQzMDgiLCJudW0iOiIifV0=/KKSgb4308.jpg",
+      "image_cropped": true,
+      "image_orientation": "landscape",
+      "image_hq": true,
+      "has_3d_file": false,
+      "has_image": true,
+      "colors": [
+        "#999999",
+        "#dddddd",
+        "#777777",
+        "#111111",
+        "#ffffff",
+        "#eeeeee",
+        "#444444"
+      ],
+      "suggested_bg_color": [
+        "#777777"
+      ],
+      "entropy": 8.999554,
+      "contrast": 5.3324695,
+      "colortemp": 3.1102805,
+      "brightness": 5.8830104,
+      "has_text": true,
+      "artist": [
+        "Ubekendt"
+      ]
+    },
+    {
+      "id": "1170025066_object",
+      "created": "2020-03-21T13:14:19Z",
+      "modified": "2026-04-29T05:07:01Z",
+      "responsible_department": "Den Kongelige Maleri- og Skulptursamling",
+      "current_location_name": "Sal 217E",
+      "current_location_date": "2026-04-27T00:00:00Z",
+      "acquisition_date": "2025-01-01T00:00:00Z",
+      "acquisition_date_precision": "2025",
+      "content_subject": [
+        "Norge"
+      ],
+      "dimensions": [
+        {
+          "part": "netto",
+          "type": "højde",
+          "unit": "centimeter",
+          "value": "63"
+        },
+        {
+          "part": "netto",
+          "type": "bredde",
+          "unit": "centimeter",
+          "value": "49"
+        },
+        {
+          "notes": "709 x 580 x 63 mm",
+          "part": "Brutto",
+          "type": "højde",
+          "unit": "centimeter",
+          "value": "70.9"
+        },
+        {
+          "notes": "709 x 580 x 63 mm",
+          "part": "Brutto",
+          "type": "bredde",
+          "unit": "centimeter",
+          "value": "58"
+        },
+        {
+          "notes": "709 x 580 x 63 mm",
+          "part": "Brutto",
+          "type": "dybde",
+          "unit": "centimeter",
+          "value": "6.3"
+        }
+      ],
+      "exhibitions": [
+        {
+          "exhibition": "Nordic Highlights",
+          "date_start": "2017-04-08T00:00:00.000Z",
+          "date_end": "2017-08-13T00:00:00.000Z",
+          "venue": "SMK København"
+        },
+        {
+          "exhibition": "Winter",
+          "date_start": "2025-11-21T00:00:00.000Z",
+          "date_end": "2026-03-22T00:00:00.000Z",
+          "venue": "The National Gallery of Canada"
+        }
+      ],
+      "inscriptions": [
+        {
+          "content": "Balke",
+          "language": "Norsk",
+          "type": "Signatur"
+        }
+      ],
+      "materials": [
+        "Lærred"
+      ],
+      "object_names": [
+        {
+          "name": "Maleri"
+        }
+      ],
+      "production": [
+        {
+          "creator": "Balke, Peder",
+          "creator_forename": "Peder",
+          "creator_surname": "Balke",
+          "creator_date_of_birth": "1804-08-28T00:00:00.000Z",
+          "creator_date_of_death": "1887-02-15T00:00:00.000Z",
+          "creator_nationality": "Norsk",
+          "creator_gender": "MALE",
+          "creator_lref": "34266_person"
+        }
+      ],
+      "production_date": [
+        {
+          "start": "1850-01-01T00:00:00.000Z",
+          "end": "1859-12-31T00:00:00.000Z",
+          "period": "1850-1859"
+        }
+      ],
+      "techniques": [
+        "Olie på lærred"
+      ],
+      "titles": [
+        {
+          "title": "Træ i vinterskov",
+          "type": "museumstitel",
+          "language": "dansk"
+        }
+      ],
+      "object_history_note": [
+        "Deponeret af privat ejer, Norge i 2016; erhvervet fra samme ejer 2025"
+      ],
+      "object_number": "KMS9137",
+      "object_url": "https://api.smk.dk/api/v1/art?object_number=KMS9137",
+      "frontend_url": "https://open.smk.dk/artwork/image/KMS9137",
+      "iiif_manifest": "https://api.smk.dk/api/v1/iiif/manifest?id=KMS9137",
+      "enrichment_url": "https://enrichment.api.smk.dk/api/enrichment/KMS9137",
+      "similar_images_url": "https://similar.api.smk.dk/similar/?object_number=KMS9137",
+      "production_dates_notes": [
+        "Værkdatering: 1850'erne"
+      ],
+      "public_domain": true,
+      "rights": "https://creativecommons.org/publicdomain/mark/1.0/",
+      "on_display": true,
+      "image_mime_type": "image/tiff",
+      "image_iiif_id": "https://iip.smk.dk/iiif/jp2/dv13zz91q_kms9137.tif.jp2",
+      "image_iiif_info": "https://iip.smk.dk/iiif/jp2/dv13zz91q_kms9137.tif.jp2/info.json",
+      "image_width": 7088,
+      "image_height": 8923,
+      "image_size": 65435834,
+      "image_thumbnail": "https://iip-thumb.smk.dk/iiif/jp2/dv13zz91q_kms9137.tif.jp2/full/!1024,/0/default.jpg",
+      "image_native": "https://api.smk.dk/api/v1/download/W3siaW1nX3VybCI6Imh0dHBzOi8vaWlwLnNtay5kay9paWlmL2pwMi9kdjEzeno5MXFfa21zOTEzNy50aWYuanAyL2Z1bGwvZnVsbC8wL25hdGl2ZS5qcGciLCJwdWJsaWNfZG9tYWluIjp0cnVlLCJvYmplY3RfbnVtYmVyIjoiS01TOTEzNyIsIm51bSI6IiJ9XQ==/KMS9137.jpg",
+      "image_orientation": "portrait",
+      "image_hq": true,
+      "has_3d_file": false,
+      "has_image": true,
+      "colors": [
+        "#999999",
+        "#bbbbbb",
+        "#1c1733",
+        "#111111",
+        "#040a14",
+        "#666666"
+      ],
+      "suggested_bg_color": [
+        "#666666"
+      ],
+      "entropy": 9.765611,
+      "contrast": 3.6375134,
+      "saturation": 1.4027082,
+      "colortemp": 2.9508867,
+      "brightness": 5.419192,
+      "artist": [
+        "Peder Balke"
+      ]
+    }
+  ],
+  "facets": {},
+  "facets_ranges": {},
+  "corrections": [],
+  "autocomplete": [
+    "Winterlandscape in Gentofte with Copenhagen in the Distance",
+    "Winter Scenery",
+    "Triumftog symboliserende vinter (Winter)",
+    "Montmartre. Winter",
+    "Augusta Winterfeldt"
+  ]
+}

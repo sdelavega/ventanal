@@ -1,0 +1,7 @@
+.superpowers/
+server/ventanal.toml
+firmware/ventanal/config.h
+__pycache__/
+.venv/
+*.egg-info/
+build/

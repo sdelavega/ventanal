@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+[Unit]
+Description=Ventanal weekly amateur licence database refresh
+
+[Timer]
+OnCalendar=Sun *-*-* 07:00:00
+Persistent=true
+OnBootSec=5min
+
+[Install]
+WantedBy=timers.target

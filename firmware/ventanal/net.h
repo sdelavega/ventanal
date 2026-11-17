@@ -1,0 +1,30 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Stephen de la Vega
+#pragma once
+#include "logic.h"
+#include <cstdio>
+bool wifiConnect(uint32_t timeoutMs = 15000);
+bool syncTime();
+struct ScreenInfo { char id[17]; char url[96]; ReadoutRect readout; };
+bool fetchManifest(ScreenInfo& art, ScreenInfo& weather);
+
+struct ManifestExtras { ScreenInfo solar{}; ScreenInfo spares[3]{}; uint8_t count=0; ScreenInfo extraScreens[2]{}; char names[2][49]{}; Screen order[5]{}; uint8_t orderCount=0; };
+inline ManifestExtras manifestExtras;
+inline char manifestSkipQuery[280]{};
+
+inline constexpr char VENTANAL_FIRMWARE_VERSION[] = "1.0.0";
+inline char manifestBoardQuery[160]{};
+inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0) {
+    if(pct<0 || pct>100 || (strcmp(screen,"art") && strcmp(screen,"weather") && strcmp(screen,"solar") && strncmp(screen,"extra-",6))) {
+        manifestBoardQuery[0]=0; return;
+    }
+    bool valid=strlen(frame)==16;
+    for(unsigned i=0; valid && i<16; ++i)
+        valid=(frame[i]>='0' && frame[i]<='9') || (frame[i]>='a' && frame[i]<='f');
+    snprintf(manifestBoardQuery,sizeof manifestBoardQuery,"bat=%d&screen=%s%s%s&fw=%s",
+             pct,screen,valid?"&frame=":"",valid?frame:"",VENTANAL_FIRMWARE_VERSION);
+    if(millivolts>0) {
+        const size_t used=strlen(manifestBoardQuery);
+        snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&bat_mv=%d",millivolts);
+    }
+}

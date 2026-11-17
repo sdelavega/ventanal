@@ -1,0 +1,111 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Solar Screen Mockup</title>
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap" rel="stylesheet">
+<style>
+:root{--violet:#ddbbff;--sky:#aaaaff;--gold:#ffaa00;--gray:#666688;--orange:#ff7700;--lgray:#9996ba;--text:#d3d3d3;--red:#dd4444;
+      --good:#6fbf5a;--bg:#000}
+html,body{margin:0;background:#111;color:var(--text)}
+.wrap{padding:16px}
+.note{font:15px/1.4 -apple-system,system-ui,sans-serif;color:#aaa;max-width:1100px;margin:0 0 12px}
+.frame{width:min(100%,1120px);aspect-ratio:4/3;position:relative;overflow:hidden;border-radius:6px;background:var(--bg)}
+.scr{width:1600px;height:1200px;position:absolute;left:0;top:0;transform-origin:0 0;
+     font-family:Antonio,'Arial Narrow',sans-serif;text-transform:uppercase;color:var(--text);letter-spacing:1px}
+.a{position:absolute}
+.lbl{font-size:24px;font-weight:700;color:#000;display:flex;align-items:flex-end;justify-content:flex-end;padding:0 14px 8px;box-sizing:border-box}
+.big{font-weight:700;line-height:.9}
+.k{color:var(--lgray);font-size:24px}
+.band{display:grid;grid-template-columns:150px 1fr 1fr;gap:10px;align-items:center;margin-bottom:12px}
+.band .n{white-space:nowrap;font-size:34px;font-weight:700;color:var(--gold)}
+.pill{border-radius:24px;height:42px;display:flex;align-items:center;justify-content:center;font-size:24px;font-weight:700;color:#000}
+.good{background:var(--good)} .fair{background:var(--gold)} .poor{background:var(--red)}
+.bar{position:absolute;bottom:0;width:58px;border-radius:6px 6px 0 0}
+.sun{border-radius:50%;background:
+  radial-gradient(circle at 38% 42%, #fff3b0 0 3%, transparent 4%),
+  radial-gradient(circle at 62% 58%, #3a1a00 0 2.5%, transparent 3.5%),
+  radial-gradient(circle at 55% 35%, #3a1a00 0 1.8%, transparent 2.8%),
+  radial-gradient(circle at 50% 50%, #ffd34d 0 40%, #ff9a1a 62%, #c84a0a 80%, #5a1800 100%)}
+</style>
+</head>
+<body>
+<div class="wrap">
+<p class="note">Solar weather screen, mockup at the panel's real 1600 × 1200 size, in the LCARS Modern palette (the real panel will dither these colours). Numbers are sample values. The black corner at top right is reserved for the battery + "Last updated" readout, as on the other screens.</p>
+<div class="frame" id="f"><div class="scr" id="s">
+
+  <!-- left elbow column -->
+  <div class="a" style="left:0;top:0;width:200px;height:110px;background:var(--orange);border-top-left-radius:90px"></div>
+  <div class="a" style="left:200px;top:0;width:820px;height:46px;background:var(--orange)"></div>
+  <div class="a" style="left:1026px;top:0;width:40px;height:46px;background:var(--gold)"></div>
+  <div class="a" style="left:200px;top:46px;width:70px;height:64px;background:var(--orange);"></div>
+  <div class="a" style="left:270px;top:46px;width:60px;height:64px;background:var(--bg);border-top-left-radius:46px"></div>
+  <div class="a lbl" style="left:0;top:116px;width:200px;height:120px;background:var(--violet)">SOLAR FLUX</div>
+  <div class="a lbl" style="left:0;top:242px;width:200px;height:120px;background:var(--sky)">GEOMAG</div>
+  <div class="a lbl" style="left:0;top:368px;width:200px;height:250px;background:var(--gold)">HF BANDS</div>
+  <div class="a lbl" style="left:0;top:624px;width:200px;height:286px;background:var(--lgray)">KP 24 H</div>
+  <div class="a lbl" style="left:0;top:916px;width:200px;height:170px;background:var(--gray);color:var(--text)">3-DAY</div>
+  <div class="a" style="left:0;top:1092px;width:200px;height:108px;background:var(--orange);border-bottom-left-radius:90px"></div>
+  <div class="a" style="left:200px;top:1154px;width:1400px;height:46px;background:var(--orange)"></div>
+
+  <!-- header -->
+  <div class="a big" style="left:340px;top:58px;font-size:58px;color:var(--gold)">SOLAR CONDITIONS</div>
+  <div class="a k" style="left:342px;top:124px">CALLSIGN · FN31 · 17 NOV 2026 · 04:00 UTC · NOAA SWPC</div>
+
+  <!-- key numbers -->
+  <div class="a" style="left:240px;top:178px">
+    <div class="k">SOLAR FLUX (SFI)</div><div class="big" style="font-size:150px;color:var(--text)">142</div>
+  </div>
+  <div class="a" style="left:560px;top:190px"><div class="k">SUNSPOTS</div><div class="big" style="font-size:72px">118</div></div>
+  <div class="a" style="left:760px;top:190px"><div class="k">X-RAY</div><div class="big" style="font-size:72px;color:var(--gold)">B6.3</div></div>
+  <div class="a" style="left:560px;top:300px"><div class="k">K-INDEX</div><div class="big" style="font-size:72px;color:var(--good)">2</div></div>
+  <div class="a" style="left:760px;top:300px"><div class="k">A-INDEX</div><div class="big" style="font-size:72px">8</div></div>
+  <div class="a" style="left:240px;top:410px;font-size:26px;color:var(--sky)">GEOMAGNETIC FIELD QUIET · NOISE S1–S2 · MUF ≈ 24 MHZ</div>
+
+  <!-- HF band table -->
+  <div class="a" style="left:240px;top:458px;width:680px">
+    <div class="band"><div></div><div class="k" style="text-align:center">DAY</div><div class="k" style="text-align:center">NIGHT</div></div>
+    <div class="band"><div class="n">80–40 M</div><div class="pill fair">FAIR</div><div class="pill good">GOOD</div></div>
+    <div class="band"><div class="n">30–20 M</div><div class="pill good">GOOD</div><div class="pill good">GOOD</div></div>
+    <div class="band"><div class="n">17–15 M</div><div class="pill good">GOOD</div><div class="pill fair">FAIR</div></div>
+    <div class="band"><div class="n">12–10 M</div><div class="pill fair">FAIR</div><div class="pill poor">POOR</div></div>
+  </div>
+
+  <!-- sun -->
+  <div class="a sun" style="left:960px;top:200px;width:540px;height:540px"></div>
+  <div class="a k" style="left:960px;top:752px;width:540px;text-align:center;color:var(--violet)">SUN TODAY · NASA SDO 171 Å</div>
+
+  <!-- Kp chart -->
+  <div class="a" style="left:240px;top:760px;width:640px;height:120px;border-bottom:2px solid var(--gray)">
+    <div class="bar" style="left:0;height:40px;background:var(--good)"></div>
+    <div class="bar" style="left:78px;height:55px;background:var(--good)"></div>
+    <div class="bar" style="left:156px;height:38px;background:var(--good)"></div>
+    <div class="bar" style="left:234px;height:70px;background:var(--gold)"></div>
+    <div class="bar" style="left:312px;height:92px;background:var(--gold)"></div>
+    <div class="bar" style="left:390px;height:110px;background:var(--red)"></div>
+    <div class="bar" style="left:468px;height:62px;background:var(--gold)"></div>
+    <div class="bar" style="left:546px;height:42px;background:var(--good)"></div>
+  </div>
+  <div class="a k" style="left:240px;top:888px;font-size:20px">PLANETARY KP · 3-HOUR INTERVALS · PEAK 5 AT 15:00 UTC</div>
+
+  <!-- 3-day forecast -->
+  <div class="a" style="left:240px;top:935px;width:1260px;display:grid;grid-template-columns:repeat(3,1fr);gap:24px">
+    <div><div class="big" style="font-size:40px;color:var(--gold)">MON 17</div><div style="font-size:30px">KP MAX 3 · QUIET</div><div class="k">R1–R2 FLARES 25% · S1 5%</div></div>
+    <div><div class="big" style="font-size:40px;color:var(--gold)">TUE 18</div><div style="font-size:30px">KP MAX 5 · <span style="color:var(--red)">G1 STORM</span></div><div class="k">R1–R2 FLARES 30% · S1 5%</div></div>
+    <div><div class="big" style="font-size:40px;color:var(--gold)">WED 19</div><div style="font-size:30px">KP MAX 4 · ACTIVE</div><div class="k">R1–R2 FLARES 25% · S1 5%</div></div>
+  </div>
+  <div class="a" style="left:240px;top:1080px;width:1260px;height:58px;border-radius:29px;background:#1a1a1a;display:flex;align-items:center;padding:0 24px;box-sizing:border-box;font-size:26px">
+    <span style="color:var(--red);font-weight:700;margin-right:14px">ALERT</span> G1 GEOMAGNETIC STORM WATCH TUE 18 NOV · AURORA POSSIBLE TO NORTHERN US
+  </div>
+
+  <!-- reserved readout corner -->
+  <div class="a" style="left:1236px;top:30px;width:334px;height:136px;border:2px dashed #333;border-radius:12px;color:#444;font-size:20px;display:flex;align-items:center;justify-content:center">BATTERY · UPDATED</div>
+</div></div>
+</div>
+<script>
+const f=document.getElementById('f'),s=document.getElementById('s');
+function fit(){s.style.transform='scale('+(f.clientWidth/1600)+')'} addEventListener('resize',fit); fit();
+</script>
+</body>
+</html>

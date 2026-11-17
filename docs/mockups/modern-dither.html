@@ -1,0 +1,160 @@
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&family=Inter:wght@500;700&display=swap" rel="stylesheet">
+<style>
+ .row{display:flex;gap:16px;flex-wrap:wrap;align-items:flex-start}
+ .col{flex:1 1 340px;min-width:300px}
+ .col canvas{width:100%;height:auto;display:block;border-radius:4px;background:#000}
+ .cap{font-size:13px;opacity:.75;margin:6px 0 14px}
+ .crop canvas{image-rendering:pixelated;max-width:450px}
+ .tg{display:inline-flex;gap:6px;margin:4px 0 14px}
+ .tg button{padding:6px 12px;border-radius:6px;border:1px solid #666;background:transparent;color:inherit;cursor:pointer}
+ .tg button.on{background:#ffaa00;color:#000;border-color:#ffaa00}
+ .sw{display:inline-flex;align-items:center;gap:6px;margin-right:14px;font-size:13px}
+ .sw b{width:18px;height:18px;border-radius:4px;display:inline-block;border:1px solid #555}
+</style>
+
+<h2>Option A in the LCARS Modern palette, and the art screen with liquid glass</h2>
+<p class="subtitle">Left: what the host draws. Right: a simulation of what the six-colour panel shows after dithering. The zoomed crops are real pixels at 3× so you can judge the grain; on the 13.3″ panel that's about 150 pixels per inch.</p>
+
+<div class="section">
+ <div class="label">LCARS Modern palette (from the ha-lcars theme file)</div>
+ <div id="pal1"></div>
+ <div class="label" style="margin-top:8px">What the panel can actually show (approximate; I'll calibrate it against your panel later)</div>
+ <div id="pal2"></div>
+</div>
+
+<p class="cap"><b>v2:</b> LCARS blocks use a fine regular pattern (even texture on flat fills); the painting uses error diffusion (best for photos and paintings). Bubbles are now acrylic: heavier blur, ~80% tint, faint grain, hairline border, full pill shape.</p>
+
+<h3>Weather · option A</h3>
+<div class="row">
+ <div class="col"><canvas id="wA" width="1600" height="1200"></canvas><div class="cap">Intended</div></div>
+ <div class="col"><canvas id="wB" width="1600" height="1200"></canvas><div class="cap">On the panel (simulated)</div></div>
+</div>
+<div class="row crop">
+ <div class="col"><canvas id="wC" width="300" height="200"></canvas><div class="cap">Crop at 3×: the left-side blocks. Text is always drawn in solid panel colours, so it stays sharp; only the coloured blocks are dithered.</div></div>
+</div>
+
+<h3>Art screen · liquid glass</h3>
+<div class="row">
+ <div class="col"><canvas id="aA" width="1600" height="1200"></canvas><div class="cap">Intended</div></div>
+ <div class="col"><canvas id="aB" width="1600" height="1200"></canvas><div class="cap">On the panel (simulated)</div></div>
+</div>
+<div class="row crop">
+ <div class="col"><canvas id="aC" width="300" height="200"></canvas><div class="cap">Crop at 3×: the top-right glass readout.</div></div>
+</div>
+<p class="cap">How the glass works: the host blurs and brightens the painting behind each bubble, then adds a bright rim along the top edge and a soft shadow underneath. The board then draws the battery and "Last updated" text onto that glass when it wakes up, so the reading is always current.</p>
+
+<script>
+(async()=>{
+const M={violet:'#ddbbff',sky:'#aaaaff',gold:'#ffaa00',gray:'#666688',orange:'#ff7700',lgray:'#9996ba',green:'#33cc99',sun:'#ffcc66',red:'#dd4444',tgray:'#d3d3d3',white:'#ffffff',black:'#000000'};
+// approximate real Spectra 6 reflectance colours
+const P=[[26,26,26],[230,230,224],[238,216,69],[178,26,28],[42,89,184],[42,106,58]];
+const PH=P.map(c=>'rgb('+c.join(',')+')');
+const K=PH[0],W=PH[1],Y=PH[2],R=PH[3],B=PH[4],G=PH[5];
+const sw=(id,list)=>document.getElementById(id).innerHTML=list.map(([n,c])=>`<span class="sw"><b style="background:${c}"></b>${n}</span>`).join('');
+sw('pal1',Object.entries(M).filter(([k])=>!['white','black','tgray'].includes(k)));
+sw('pal2',[['black',K],['white',W],['yellow',Y],['red',R],['blue',B],['green',G]]);
+
+await document.fonts.load('700 40px Antonio');await document.fonts.load('400 40px Antonio');await document.fonts.load('700 30px Inter');
+
+// ---------- dithering ----------
+const near=(r,g,b)=>{let bi=0,bd=1e9;for(let i=0;i<6;i++){const p=P[i],dr=r-p[0],dg=g-p[1],db=b-p[2];const d=dr*dr*.3+dg*dg*.59+db*db*.11;if(d<bd){bd=d;bi=i}}return bi};
+const bay=(()=>{const m=[[0,32,8,40,2,34,10,42],[48,16,56,24,50,18,58,26],[12,44,4,36,14,46,6,38],[60,28,52,20,62,30,54,22],[3,35,11,43,1,33,9,41],[51,19,59,27,49,17,57,25],[15,47,7,39,13,45,5,37],[63,31,55,23,61,29,53,21]];return m.map(r=>r.map(v=>v/64-.5))})();
+function dither(src,dst,mode){
+ const w=src.width,h=src.height,s=src.getContext('2d').getImageData(0,0,w,h),d=s.data;
+ const f=new Float32Array(w*h*3);for(let i=0,j=0;i<d.length;i+=4,j+=3){f[j]=d[i];f[j+1]=d[i+1];f[j+2]=d[i+2]}
+ for(let y=0;y<h;y++){const ltr=!(y&1);for(let xx=0;xx<w;xx++){const x=ltr?xx:w-1-xx,j=(y*w+x)*3;
+  let r=f[j],g=f[j+1],b=f[j+2];
+  if(mode==='bayer'){const t=bay[y&7][x&7]*110;r+=t;g+=t;b+=t}
+  const k=near(r,g,b),p=P[k],o=(y*w+x)*4;d[o]=p[0];d[o+1]=p[1];d[o+2]=p[2];
+  if(mode==='fs'){const er=f[j]-p[0],eg=f[j+1]-p[1],eb=f[j+2]-p[2],dx=ltr?1:-1;
+   const add=(xo,yo,q)=>{const X=x+xo,Y2=y+yo;if(X<0||X>=w||Y2>=h)return;const n=(Y2*w+X)*3;f[n]+=er*q;f[n+1]+=eg*q;f[n+2]+=eb*q};
+   add(dx,0,7/16);add(-dx,1,3/16);add(0,1,5/16);add(dx,1,1/16)}}}
+ dst.getContext('2d').putImageData(s,0,0)}
+const crop=(src,dst,x,y)=>{const c=dst.getContext('2d');c.imageSmoothingEnabled=false;c.clearRect(0,0,300,200);c.drawImage(src,x,y,100,67,0,0,300,200)};
+
+// ---------- weather: shapes (dithered) and text (solid) ----------
+function elbow(c,x,y,w,h,bar,side,Ro,ri,col,flip){c.save();if(flip){c.translate(0,2*y+h);c.scale(1,-1)}
+ c.fillStyle=col;c.beginPath();c.moveTo(x,y+h);c.lineTo(x,y+Ro);c.arcTo(x,y,x+Ro,y,Ro);c.lineTo(x+w,y);c.lineTo(x+w,y+bar);c.lineTo(x+side+ri,y+bar);
+ c.arc(x+side+ri,y+bar+ri,ri,-Math.PI/2,Math.PI,true);c.lineTo(x+side,y+h);c.closePath();c.fill();c.restore()}
+const rr=(c,x,y,w,h,r,col)=>{c.fillStyle=col;c.beginPath();c.roundRect(x,y,w,h,r);c.fill()};
+const days=[['SUN',61,44,40,'RAIN'],['MON',55,38,80,'RAIN'],['TUE',49,31,0,'CLEAR'],['WED',52,33,5,'CLEAR'],['THU',60,40,10,'CLOUDS'],['FRI',63,46,30,'SHOWERS'],['SAT',57,39,15,'CLOUDS']];
+function wShapes(c,real){
+ c.fillStyle='#000';c.fillRect(0,0,1600,1200);
+ elbow(c,30,30,1150,176,46,230,110,50,M.violet,false);
+ elbow(c,30,994,1540,176,46,230,110,50,M.violet,true);
+ c.fillStyle=M.orange;c.fillRect(1188,30,40,46);
+ rr(c,1236,30,334,46,[0,23,23,0],M.gold);
+ const side=[[212,118,M.sky],[336,252,M.orange],[594,66,M.lgray],[666,322,M.gray]];
+ side.forEach(([y,h,col])=>{c.fillStyle=col;c.fillRect(30,y,230,h)});
+ // radar frame + echoes (native panel colours keep it readable)
+ c.fillStyle='#0a0a12';c.fillRect(780,230,790,470);c.strokeStyle=M.sky;c.lineWidth=4;c.strokeRect(780,230,790,470);
+ c.strokeStyle=M.gray;c.lineWidth=1.5;for(let x=860;x<1570;x+=80){c.beginPath();c.moveTo(x,232);c.lineTo(x,698);c.stroke()}for(let y=310;y<700;y+=80){c.beginPath();c.moveTo(782,y);c.lineTo(1568,y);c.stroke()}
+ const blob=(x,y,rx,ry,col)=>{c.fillStyle=col;c.beginPath();c.ellipse(x,y,rx,ry,-.4,0,7);c.fill()};
+ blob(1260,430,190,105,real?G:'#33aa55');blob(1270,425,120,62,real?Y:'#eedd33');blob(1285,418,55,30,real?R:'#dd3333');blob(930,600,90,48,real?G:'#33aa55');
+ // rain-chance bars
+ days.forEach((d,i)=>{const x=345+i*178;rr(c,x,990,130,22,11,M.gray);if(d[3])rr(c,x,990,130*d[3]/100,22,11,M.sky)});
+ c.fillStyle=M.sky;c.fillRect(330,748,1240,4);
+}
+function wText(c,real){
+ const T=(t,x,y,size,col,wt='700',al='left')=>{c.font=`${wt} ${size}px Antonio`;c.fillStyle=col;c.textAlign=al;c.textBaseline='alphabetic';c.fillText(t,x,y)};
+ const y_=real?Y:M.gold,w_=real?W:M.white,k_=K,r_=real?R:M.red,t_=real?W:M.tgray;
+ T('ATMOSPHERIC CONDITIONS',330,148,64,y_);
+ T('BOULDER · CO · 80302 · 40.01N 105.27W',332,194,30,t_,'400');
+ // corner readout
+ c.fillStyle=k_;for(let i=0;i<4;i++){if(i<3)c.fillRect(1262+i*22,40,16,26);else{c.lineWidth=2.5;c.strokeStyle=k_;c.strokeRect(1263+i*22,41,14,24)}}
+ c.fillRect(1350,47,4,12);
+ T('POWER 74%',1550,66,30,k_,'700','right');
+ T('LAST UPDATED 14:32',1570,118,30,w_,'400','right');T('SUN 15 NOV 2026',1570,154,30,y_,'400','right');
+ // side labels (dark text on blocks)
+ [[212,118,'02-1115',k_],[336,252,'RADAR',k_],[594,66,'47-0711',k_],[666,322,'LONG RANGE',real?W:M.white]].forEach(([y,h,t,col])=>T(t,248,y+h-12,26,col,'700','right'));
+ // current
+ T('58°',330,430,220,w_);
+ T('PARTLY CLOUDY',340,500,44,y_);
+ ['WIND NE 8 MPH','HUMIDITY 62%','RAIN 40% AFTER 18:00'].forEach((t,i)=>T(t,340,560+i*46,32,w_,'400'));
+ T('SUNSET 17:16',340,698,32,y_,'400');
+ T('NEXRAD COMPOSITE · 14:25 · 150 MI',796,688,24,t_,'400');
+ c.fillStyle=w_;c.beginPath();c.arc(1180,470,9,0,7);c.fill();
+ // 7 day
+ days.forEach((d,i)=>{const cx=410+i*178;T(d[0],cx,812,40,y_,'700','center');T(String(d[1]),cx,890,66,w_,'700','center');T(String(d[2]),cx,940,40,w_,'400','center');T(d[4],cx,976,24,t_,'400','center')});
+ T('ADVISORY · FROST LIKELY TUE–WED NIGHTS',330,1060,32,r_,'700');
+}
+
+// ---------- art screen with liquid glass ----------
+const img=new Image();img.src='hunters.jpg';await img.decode();
+function cover(c){const s=Math.max(1600/img.width,1200/img.height),w=img.width*s,h=img.height*s;c.drawImage(img,(1600-w)/2,(1200-h)/2,w,h)}
+function glass(c,x,y,w,h,r){
+ // shadow
+ c.save();c.shadowColor='rgba(0,0,0,.45)';c.shadowBlur=30;c.shadowOffsetY=10;rr(c,x,y,w,h,r,'rgba(0,0,0,.25)');c.restore();
+ // acrylic: heavy blur of what's behind, strong tint, faint grain, hairline border
+ c.save();c.beginPath();c.roundRect(x,y,w,h,r);c.clip();c.filter='blur(48px) saturate(1.6)';cover(c);c.filter='none';
+ c.fillStyle='rgba(243,243,240,.80)';c.fillRect(x,y,w,h);
+ for(let i=0;i<w*h*.02;i++){c.fillStyle=Math.random()<.5?'rgba(0,0,0,.05)':'rgba(255,255,255,.08)';c.fillRect(x+Math.random()*w,y+Math.random()*h,2,2)}
+ c.restore();
+ c.lineWidth=2;c.strokeStyle='rgba(255,255,255,.9)';c.beginPath();c.roundRect(x+1,y+1,w-2,h-2,r);c.stroke();
+ c.lineWidth=1.5;c.strokeStyle='rgba(0,0,0,.25)';c.beginPath();c.roundRect(x-.5,y-.5,w+1,h+1,r);c.stroke();
+}
+const corner={x:932,y:28,w:640,h:84,r:42}, credit={x:28,y:1088,w:980,h:84,r:42};
+function aShapes(c){cover(c);glass(c,corner.x,corner.y,corner.w,corner.h,corner.r);glass(c,credit.x,credit.y,credit.w,credit.h,credit.r)}
+function aText(c,real){const k=real?K:'#111';
+ const T=(t,x,y,f,al='left')=>{c.font=f;c.fillStyle=k;c.textAlign=al;c.fillText(t,x,y)};
+ for(let i=0;i<4;i++){if(i<3)c.fillRect(corner.x+36+i*20,corner.y+30,14,24);else{c.lineWidth=2.5;c.strokeStyle=k;c.strokeRect(corner.x+37+i*20,corner.y+31,12,22)}}
+ c.fillRect(corner.x+114,corner.y+37,4,10);
+ T('74%',corner.x+130,corner.y+54,'700 30px Inter');
+ T('Updated 14:32 · Sun 15 Nov',corner.x+corner.w-32,corner.y+54,'500 30px Inter','right');
+ T('Hunters in the Snow',credit.x+36,credit.y+54,'700 30px Inter');
+ T('Pieter Bruegel the Elder · 1565 · Kunsthistorisches Museum',credit.x+350,credit.y+54,'500 26px Inter');
+}
+
+const g=id=>document.getElementById(id);
+let mode='fs';
+function render(){
+ const wa=g('wA').getContext('2d');wShapes(wa,false);wText(wa,false);
+ const wb=g('wB');wShapes(wb.getContext('2d'),true);dither(wb,wb,'bayer');wText(wb.getContext('2d'),true);crop(wb,g('wC'),190,300);
+ const aa=g('aA').getContext('2d');aShapes(aa);aText(aa,false);
+ const ab=g('aB');aShapes(ab.getContext('2d'));dither(ab,ab,mode);aText(ab.getContext('2d'),true);crop(ab,g('aC'),926,20);
+}
+render();
+document.querySelectorAll('.tg button').forEach(b=>b.onclick=()=>{document.querySelectorAll('.tg button').forEach(x=>x.classList.toggle('on',x===b));mode=b.dataset.m;render();
+ window.brainstorm&&brainstorm.send&&brainstorm.send({type:'click',choice:'dither-'+mode})});
+})();
+</script>

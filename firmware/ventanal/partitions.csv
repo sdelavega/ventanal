@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+# Name, Type, SubType, Offset, Size, Flags
+nvs, data, nvs, 0x9000, 24K,
+otadata, data, ota, 0xf000, 8K,
+app0, app, factory, 0x20000, 4M,
+littlefs, data, spiffs, 0x420000, 0x1BD0000,
+coredump, data, coredump, 0x1FF0000, 64K,

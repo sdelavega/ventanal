@@ -1,0 +1,87 @@
+[location]
+zip = "00000"                 # US ZIP; or set latitude/longitude/place_name instead
+timezone = "America/New_York"
+
+[display]
+units = "imperial"
+clock = "24h"
+
+[schedule]
+# Quiet hours use local HH:MM; equal endpoints disable quiet hours.
+quiet_start = "23:00"
+quiet_end = "06:00"
+weather_interval_minutes = 30
+art_slots = ["02:00", "06:00", "10:00", "14:00", "18:00", "22:00"]
+
+[art]
+# Shared museum image LRU cap; current main/spares are always retained.
+image_cache_bytes = 2147483648
+screen_fit_only = false
+include_monotone = false
+# Never select these source:object_id identities for main art or spares.
+# Paste entries from `ventanal skipped` here; skipping alone does not ignore.
+ignored = []
+museums = ["met", "aic", "cleveland"]
+# Rijksmuseum is keyless. Available: rijksmuseum, nga, smk, paris, commons.
+# Commons is opt-in; Paris Musées requires a free token in [art.credentials.paris].
+no_repeat_days = 60
+
+[[art.seasons]]
+name = "holiday-winter"
+start = "11-01"
+end = "12-31"
+terms = ["winter", "snow", "Christmas", "Nativity", "Adoration of the Magi", "winter landscape"]
+
+[[art.seasons]]
+name = "winter"
+start = "01-01"
+end = "02-28"
+terms = ["winter landscape", "ice skating", "snow"]
+
+[[art.seasons]]
+name = "spring"
+start = "03-01"
+end = "05-31"
+terms = ["spring", "blossom", "garden", "flowers"]
+
+[[art.seasons]]
+name = "summer"
+start = "06-01"
+end = "08-31"
+terms = ["summer", "seaside", "harvest"]
+
+[[art.seasons]]
+name = "autumn"
+start = "09-01"
+end = "10-31"
+terms = ["autumn", "harvest", "falling leaves", "All Hallows"]
+
+[weather]
+# location caption over the radar dot: "off", "en" (YOU ARE HERE) or "es" (ESTÁS AQUÍ)
+here_label = "off"
+radar = "iem"
+radar_radius_miles = 150
+nws_contact = ""
+
+[panel]   # calibrated later by `ventanal calibrate`
+black = "#1a1a1a"
+white = "#e6e6e0"
+yellow = "#eed845"
+red = "#b21a1c"
+blue = "#2a59b8"
+green = "#2a6a3a"
+
+[server]
+# HTTPS listener used after password setup / Security activation.
+https_listen = "0.0.0.0:8766"
+listen = "0.0.0.0:8765"
+output_dir = "/var/lib/ventanal"
+cache_dir = "/var/cache/ventanal"
+
+# Paris Musées requires a free public API token; leave disabled until configured.
+[art.credentials.paris]
+token = ""
+
+[ham]
+# Optional US amateur call sign; verified locally against FCC status/expiry and ZIP5.
+call_sign = ""

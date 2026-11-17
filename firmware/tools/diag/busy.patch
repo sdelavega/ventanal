@@ -1,0 +1,50 @@
+--- a/src/boards/Inkplate13SPECTRA/Inkplate13SPECTRADriver.cpp
++++ b/src/boards/Inkplate13SPECTRA/Inkplate13SPECTRADriver.cpp
+@@ -31,0 +32 @@
++static const char *ventanalBusyStage = "unassigned";
+@@ -158,0 +160 @@
++    Serial.printf("panel entry busy=%d boot_ms=%lu battery=%.3f\n", digitalRead(SPECTRA133_BUSYN_PIN), (unsigned long)millis(), readBattery());
+@@ -186 +188 @@
+-    waitForBusy();
++    ventanalBusyStage = "master-dtm"; waitForBusy();
+@@ -204 +206 @@
+-    waitForBusy();
++    ventanalBusyStage = "slave-dtm"; waitForBusy();
+@@ -208 +210 @@
+-    waitForBusy();
++    ventanalBusyStage = "drf"; waitForBusy();
+@@ -397 +399 @@
+-    waitForBusy();
++    ventanalBusyStage = "partial-master-dtm"; waitForBusy();
+@@ -463 +465 @@
+-    waitForBusy();
++    ventanalBusyStage = "partial-slave-dtm"; waitForBusy();
+@@ -465 +467 @@
+-    waitForBusy();
++    ventanalBusyStage = "partial-drf"; waitForBusy();
+@@ -503,0 +506 @@
++            Serial.printf("panel power-high busy=%d\n", digitalRead(SPECTRA133_BUSYN_PIN));
+@@ -509,0 +513 @@
++            Serial.printf("panel reset busy=%d boot_ms=%lu\n", digitalRead(SPECTRA133_BUSYN_PIN), (unsigned long)millis());
+@@ -515,0 +520 @@
++            Serial.printf("panel screen-init busy=%d\n", digitalRead(SPECTRA133_BUSYN_PIN));
+@@ -519 +524 @@
+-            waitForBusy();
++            ventanalBusyStage = "pon"; waitForBusy();
+@@ -526 +531 @@
+-            waitForBusy();
++            ventanalBusyStage = "pof"; waitForBusy();
+@@ -784,2 +789,3 @@
+-    // Wait until the screen is ready to accept new commads.
+-    // This will be indicated by pulling the BUSYN pin to high.
++    const uint32_t started = millis();
++    bool reported = false;
++    Serial.printf("busy-enter stage=%s level=%d\n", ventanalBusyStage, digitalRead(SPECTRA133_BUSYN_PIN));
+@@ -788 +794,4 @@
+-        // Let the RTOS breathe.
++        if (!reported && uint32_t(millis() - started) > 5000) {
++            Serial.printf("busy-stuck stage=%s\n", ventanalBusyStage);
++            reported = true;
++        }
+@@ -790,0 +800 @@
++    Serial.printf("busy-done stage=%s ms=%lu\n", ventanalBusyStage, (unsigned long)(millis() - started));

@@ -1,0 +1,137 @@
+<link href="https://fonts.googleapis.com/css2?family=Antonio:wght@400;700&display=swap" rel="stylesheet">
+<style>
+  /* Only the six colours the panel can show (approximate real-panel tones) */
+  :root{--k:#0d0d0d;--w:#efeee6;--y:#e6cf3a;--r:#b5362d;--b:#3d5ca8;--g:#4b7a40}
+  .frame{width:720px;height:540px;overflow:hidden;position:relative;background:var(--k);border-radius:4px}
+  .scr{width:1600px;height:1200px;transform:scale(.45);transform-origin:0 0;position:absolute;left:0;top:0;
+       font-family:Antonio,'Arial Narrow',sans-serif;color:var(--w);background:var(--k);text-transform:uppercase}
+  .a{position:absolute}
+  .lbl{font-size:26px;letter-spacing:2px;color:var(--k);font-weight:700;padding:0 14px;display:flex;align-items:flex-end;justify-content:flex-end;box-sizing:border-box}
+  .pill{border-radius:30px}
+  .radar{background:
+     radial-gradient(ellipse 120px 70px at 62% 40%, var(--r) 30%, transparent 32%),
+     radial-gradient(ellipse 220px 120px at 60% 42%, var(--y) 40%, transparent 42%),
+     radial-gradient(ellipse 330px 190px at 58% 45%, var(--g) 45%, transparent 47%),
+     radial-gradient(ellipse 160px 90px at 20% 75%, var(--g) 45%, transparent 47%),
+     var(--k);
+     border:3px solid var(--b)}
+  .grid{background-image:linear-gradient(var(--b) 1px,transparent 1px),linear-gradient(90deg,var(--b) 1px,transparent 1px);background-size:80px 80px;opacity:.35}
+  .day{text-align:center}
+  .day .n{font-size:40px;color:var(--y);font-weight:700}
+  .day .hi{font-size:64px;font-weight:700}
+  .day .lo{font-size:40px;color:var(--b)}
+  .day .c{font-size:24px;color:var(--w)}
+  .bat{display:flex;gap:4px;align-items:center}
+  .bat i{display:block;width:16px;height:30px;background:var(--k)}
+  .bat i.e{background:transparent;border:2px solid var(--k);box-sizing:border-box}
+  .cards{grid-template-columns:1fr !important;max-width:740px}
+  .card-image{overflow:visible !important;height:auto !important;aspect-ratio:auto !important;padding:10px}
+  .note{font-size:13px;color:#888;margin-top:6px}
+</style>
+
+<h2>Weather screen — which LCARS layout?</h2>
+<p class="subtitle">Drawn at the panel's real 1600×1200 size, scaled down, using only its six colours. The black-and-yellow corner block (top right) is the battery + "Last updated" readout that appears on every screen.</p>
+
+<div class="cards">
+
+<!-- ============ A: Bridge console ============ -->
+<div class="card" data-choice="a" onclick="toggleSelect(this)">
+ <div class="card-image"><div class="frame"><div class="scr">
+   <!-- top elbow -->
+   <div class="a" style="left:30px;top:30px;width:230px;height:150px;background:var(--y);border-top-left-radius:110px"></div>
+   <div class="a" style="left:260px;top:30px;width:880px;height:46px;background:var(--y)"></div>
+   <div class="a" style="left:260px;top:76px;width:60px;height:60px;background:var(--k);border-top-left-radius:50px"></div>
+   <div class="a" style="left:1150px;top:30px;width:60px;height:46px;background:var(--r)"></div>
+   <div class="a" style="left:330px;top:84px;font-size:62px;font-weight:700;letter-spacing:3px;color:var(--y)">Atmospheric conditions</div>
+   <div class="a" style="left:330px;top:160px;font-size:30px;color:var(--b);letter-spacing:3px">Boulder · CO · 80302 · sector 40.01N 105.27W</div>
+   <!-- corner readout -->
+   <div class="a lbl pill" style="left:1230px;top:30px;width:340px;height:46px;background:var(--y);justify-content:space-between;align-items:center;border-radius:0 30px 30px 0">
+     <div class="bat"><i></i><i></i><i></i><i class="e"></i></div><span>Power 74%</span></div>
+   <div class="a" style="left:1240px;top:86px;width:330px;text-align:right;font-size:30px;color:var(--w)">Last updated 14:32<br><span style="color:var(--y)">Sun 15 Nov 2026</span></div>
+   <!-- sidebar -->
+   <div class="a lbl" style="left:30px;top:186px;width:230px;height:120px;background:var(--b)">02-1115</div>
+   <div class="a lbl" style="left:30px;top:312px;width:230px;height:260px;background:var(--r)">Radar</div>
+   <div class="a lbl" style="left:30px;top:578px;width:230px;height:70px;background:var(--y)">47-0711</div>
+   <div class="a lbl" style="left:30px;top:654px;width:230px;height:340px;background:var(--b)">Long range</div>
+   <div class="a" style="left:30px;top:1000px;width:230px;height:170px;background:var(--y);border-bottom-left-radius:110px"></div>
+   <div class="a" style="left:260px;top:1124px;width:1310px;height:46px;background:var(--y)"></div>
+   <div class="a" style="left:260px;top:1064px;width:60px;height:60px;background:var(--k);border-bottom-left-radius:50px"></div>
+   <!-- current -->
+   <div class="a" style="left:330px;top:230px;font-size:220px;font-weight:700;line-height:1">58°</div>
+   <div class="a" style="left:340px;top:470px;font-size:44px;color:var(--y)">Partly cloudy</div>
+   <div class="a" style="left:340px;top:530px;font-size:32px;line-height:1.5">Wind NE 8 mph<br>Humidity 62%<br>Rain 40% after 18:00<br><span style="color:var(--b)">Sunset 17:16</span></div>
+   <!-- radar -->
+   <div class="a radar" style="left:780px;top:230px;width:790px;height:470px"><div class="grid" style="width:100%;height:100%"></div>
+     <div class="a" style="left:375px;top:215px;width:16px;height:16px;background:var(--w);border-radius:50%"></div>
+     <div class="a" style="left:10px;top:420px;font-size:24px;color:var(--b)">NEXRAD composite · 14:25 · 150 mi</div></div>
+   <!-- 7 day -->
+   <div class="a" style="left:330px;top:740px;width:1240px;height:4px;background:var(--b)"></div>
+   <div class="a" style="left:330px;top:770px;width:1240px;display:flex;justify-content:space-between">
+     <div class="day"><div class="n">Sun</div><div class="hi">61</div><div class="lo">44</div><div class="c">Rain 40%</div></div>
+     <div class="day"><div class="n">Mon</div><div class="hi">55</div><div class="lo">38</div><div class="c">Rain 80%</div></div>
+     <div class="day"><div class="n">Tue</div><div class="hi">49</div><div class="lo">31</div><div class="c">Clear</div></div>
+     <div class="day"><div class="n">Wed</div><div class="hi">52</div><div class="lo">33</div><div class="c">Clear</div></div>
+     <div class="day"><div class="n">Thu</div><div class="hi">60</div><div class="lo">40</div><div class="c">Clouds</div></div>
+     <div class="day"><div class="n">Fri</div><div class="hi">63</div><div class="lo">46</div><div class="c">Rain 30%</div></div>
+     <div class="day"><div class="n">Sat</div><div class="hi">57</div><div class="lo">39</div><div class="c">Clouds</div></div>
+   </div>
+   <div class="a" style="left:330px;top:1040px;font-size:30px;color:var(--r)">Advisory · frost likely Tue–Wed nights</div>
+ </div></div></div>
+ <div class="card-body"><h3>A · Bridge console</h3><p>Classic LCARS frame. Current conditions and radar share the top half; the week runs across the bottom as columns.</p></div>
+</div>
+
+<!-- ============ B: Sensor sweep ============ -->
+<div class="card" data-choice="b" onclick="toggleSelect(this)">
+ <div class="card-image"><div class="frame"><div class="scr">
+   <div class="a" style="left:30px;top:30px;width:180px;height:120px;background:var(--b);border-top-left-radius:90px"></div>
+   <div class="a" style="left:210px;top:30px;width:780px;height:40px;background:var(--b)"></div>
+   <div class="a" style="left:210px;top:70px;width:50px;height:50px;background:var(--k);border-top-left-radius:40px"></div>
+   <div class="a" style="left:270px;top:76px;font-size:52px;font-weight:700;color:var(--b);letter-spacing:3px">Sensor sweep · Boulder 80302</div>
+   <div class="a lbl" style="left:30px;top:156px;width:180px;height:400px;background:var(--r)">Radar</div>
+   <div class="a lbl" style="left:30px;top:562px;width:180px;height:80px;background:var(--y)">14-25</div>
+   <div class="a lbl" style="left:30px;top:648px;width:180px;height:400px;background:var(--b)">Range</div>
+   <div class="a" style="left:30px;top:1054px;width:180px;height:116px;background:var(--b);border-bottom-left-radius:90px"></div>
+   <div class="a" style="left:210px;top:1130px;width:780px;height:40px;background:var(--b)"></div>
+   <!-- big radar -->
+   <div class="a radar" style="left:240px;top:150px;width:750px;height:960px"><div class="grid" style="width:100%;height:100%"></div>
+     <div class="a" style="left:360px;top:440px;width:18px;height:18px;background:var(--w);border-radius:50%"></div>
+     <div class="a" style="left:12px;top:910px;font-size:26px;color:var(--b)">NEXRAD · 14:25 · 150 mi</div></div>
+   <!-- corner readout -->
+   <div class="a" style="left:1030px;top:30px;width:540px;height:110px;background:var(--y);border-radius:0 55px 55px 0;color:var(--k);padding:12px 40px 0 24px;box-sizing:border-box;font-size:30px;font-weight:700;display:flex;justify-content:space-between">
+     <div><div class="bat"><i></i><i></i><i></i><i class="e"></i></div><div style="margin-top:8px">74%</div></div>
+     <div style="text-align:right">Last updated 14:32<br>Sun 15 Nov</div></div>
+   <!-- current -->
+   <div class="a" style="left:1030px;top:170px;font-size:170px;font-weight:700;line-height:1">58°</div>
+   <div class="a" style="left:1270px;top:190px;font-size:34px;line-height:1.45">Partly cloudy<br><span style="color:var(--y)">NE 8 mph</span><br>Rain 40% p.m.</div>
+   <!-- 7-day range bars -->
+   <div class="a" style="left:1030px;top:380px;width:540px">
+     <div style="font-size:28px;color:var(--y);letter-spacing:3px;margin-bottom:10px">Long-range projection</div>
+     <div id="rows"></div>
+   </div>
+ </div></div></div>
+ <div class="card-body"><h3>B · Sensor sweep</h3><p>Radar takes the whole left side. The week is a stack of temperature-range bars, low-to-high, like a sensor readout.</p></div>
+</div>
+
+</div>
+
+<div class="mockup" style="margin-top:24px">
+ <div class="mockup-header">For comparison: the corner readout on an art screen (no LCARS there, just a small plain label)</div>
+ <div class="mockup-body"><div class="frame" style="width:720px;height:540px">
+   <div class="scr" style="background:linear-gradient(160deg,#3d5ca8 0%,#efeee6 35%,#efeee6 55%,#4b7a40 75%,#0d0d0d 100%);text-transform:none">
+     <div class="a" style="right:30px;top:30px;background:var(--k);color:var(--w);font-family:Antonio;font-size:30px;padding:12px 22px;border-radius:8px;display:flex;gap:18px;align-items:center">
+       <div class="bat" style="filter:invert(1)"><i></i><i></i><i></i><i class="e"></i></div><span>74% · Updated 14:32 Sun 15 Nov</span></div>
+     <div class="a" style="left:40px;bottom:30px;background:var(--w);color:var(--k);font-family:Georgia,serif;font-size:28px;padding:10px 18px">Hunters in the Snow · Pieter Bruegel the Elder · 1565</div>
+   </div></div>
+ <p class="note">Art credit strip bottom-left is my proposal — say if you'd rather have the art completely clean.</p></div>
+</div>
+
+<script>
+const d=[["Sun",44,61,"40%"],["Mon",38,55,"80%"],["Tue",31,49,""],["Wed",33,52,""],["Thu",40,60,""],["Fri",46,63,"30%"],["Sat",39,57,""]];
+const lo=25,hi=70,W=330;
+document.getElementById('rows').innerHTML=d.map(([n,a,b,p])=>{
+ const x=(a-lo)/(hi-lo)*W, w=(b-a)/(hi-lo)*W;
+ return `<div style="display:flex;align-items:center;height:96px;font-size:34px">
+  <div style="width:80px;color:var(--y);font-weight:700">${n}</div>
+  <div style="width:${W}px;height:44px;position:relative"><div style="position:absolute;left:${x}px;width:${w}px;height:44px;background:${p?'var(--b)':'var(--r)'};border-radius:22px"></div></div>
+  <div style="width:130px;text-align:right">${a}–${b}</div></div>`}).join('');
+</script>

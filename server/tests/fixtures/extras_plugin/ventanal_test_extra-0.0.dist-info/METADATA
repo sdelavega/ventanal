@@ -1,0 +1,4 @@
+Metadata-Version: 2.1
+Name: ventanal-test-extra
+Version: 0.0
+Summary: Test-only fixture, never distributed with Ventanal

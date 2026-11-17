@@ -1,0 +1,19 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+[Unit]
+Description=Ventanal frame HTTP server
+After=network.target
+
+[Service]
+User=ventanal
+Group=ventanal
+ExecStart=/opt/ventanal/venv/bin/ventanal serve
+Restart=on-failure
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/ventanal /var/cache/ventanal /etc/ventanal/ventanal.toml /etc/ventanal/backups
+
+[Install]
+WantedBy=multi-user.target

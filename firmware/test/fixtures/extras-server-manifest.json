@@ -1,0 +1,71 @@
+{
+  "version": 1,
+  "screens": {
+    "art": {
+      "id": "8cc1cf86d93ff0d6",
+      "url": "/frames/art-8cc1cf86d93ff0d6.vnf",
+      "size": 960016,
+      "rendered": "2027-01-15T08:00:00+00:00",
+      "readout": {
+        "x": 10,
+        "y": 10,
+        "w": 300,
+        "h": 100,
+        "style": "lcars"
+      },
+      "credit": null,
+      "sha256": "8cc1cf86d93ff0d6543004f5b26b980e46e035e4fd250f707ece84f83944653c"
+    },
+    "weather": {
+      "id": "8cc1cf86d93ff0d6",
+      "url": "/frames/weather-8cc1cf86d93ff0d6.vnf",
+      "size": 960016,
+      "rendered": "2027-01-15T08:00:00+00:00",
+      "readout": {
+        "x": 10,
+        "y": 10,
+        "w": 300,
+        "h": 100,
+        "style": "lcars"
+      },
+      "credit": null,
+      "sha256": "8cc1cf86d93ff0d6543004f5b26b980e46e035e4fd250f707ece84f83944653c"
+    },
+    "solar": {
+      "id": "8cc1cf86d93ff0d6",
+      "url": "/frames/solar-8cc1cf86d93ff0d6.vnf",
+      "size": 960016,
+      "rendered": "2027-01-15T08:00:00+00:00",
+      "readout": {
+        "x": 10,
+        "y": 10,
+        "w": 300,
+        "h": 100,
+        "style": "lcars"
+      },
+      "credit": null,
+      "sha256": "8cc1cf86d93ff0d6543004f5b26b980e46e035e4fd250f707ece84f83944653c"
+    },
+    "extra-test": {
+      "id": "8cc1cf86d93ff0d6",
+      "url": "/frames/extra-test-8cc1cf86d93ff0d6.vnf",
+      "size": 960016,
+      "rendered": "2027-01-15T08:00:00+00:00",
+      "readout": {
+        "x": 10,
+        "y": 10,
+        "w": 300,
+        "h": 100,
+        "style": "lcars"
+      },
+      "credit": null,
+      "sha256": "8cc1cf86d93ff0d6543004f5b26b980e46e035e4fd250f707ece84f83944653c"
+    }
+  },
+  "screen_order": [
+    "art",
+    "weather",
+    "solar",
+    "extra-test"
+  ]
+}
