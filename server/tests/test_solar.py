@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
+from dataclasses import replace
 from datetime import datetime, timezone, timedelta
 from io import BytesIO
 from zipfile import ZipFile
@@ -14,6 +15,8 @@ from ventanal.solar.publish import meaningful, due
 from ventanal.quantize import Method, quantize, simulate
 
 NOW = datetime(2026, 11, 17, 4, tzinfo=timezone.utc)
+CALIBRATED_PANEL = tuple(tuple(bytes.fromhex(h)) for h in
+                         ('2a272e','c1c5b3','d6c547','652922','3c5b91','567359'))
 
 def fixture_zip():
     b = BytesIO()
@@ -70,6 +73,7 @@ def test_render():
     from ventanal.config import load_config
     from pathlib import Path
     cfg=load_config(Path(__file__).parents[1]/"ventanal.example.toml")
+    cfg=replace(cfg,panel_rgb=CALIBRATED_PANEL)
     canvas = render_solar(sample(), 'CALL SIGN', (41.7,-72.7), NOW, cfg)
     r=SOLAR_READOUT
     assert not np.any(np.asarray(canvas.method)[r.y:r.y+r.h,r.x:r.x+r.w] == Method.SOLID)
@@ -403,7 +407,9 @@ def test_solar_layout_clearance(monkeypatch, storm):
     assert render.LAYOUT['chart'][1]-bounds['HF CONDITIONS, MUF AND NOISE ARE ESTIMATES'][3]>=28
     assert min(b[1] for b in forecast)-bounds['PLANETARY KP · 3-HOUR INTERVALS · UTC'][3]>=28
     fy,fh=render.LAYOUT['sidebar'][-1][:2]
-    assert fy<=min(b[1] for b in forecast) and fy+fh>=max(b[3] for b in forecast)
+    # The bottom elbow gap takes precedence over spanning all forecast lines.
+    assert fy<=min(b[1] for b in forecast)
+    assert fy+fh==994-6
     rows=render.LAYOUT['sidebar']
     assert {rows[i+1][0]-(y+h) for i,(y,h,_,_) in enumerate(rows[:-1])}=={6}
 
@@ -596,5 +602,86 @@ def test_sidebar_ink_maximises_simulated_panel_lightness(monkeypatch, screen, ca
         background_l=to_oklab(mean)[0]
         lightness=to_oklab(np.asarray(cfg.panel_rgb)[:2])[:,0]
         expected=cfg.panel_rgb[int(np.argmax(abs(lightness-background_l)))]
-        assert inks[y+h-12]==expected
+        assert inks[max(y+22,y+h-12) if screen=='solar' else y+h-12]==expected
     assert len(inks)==len(segments)
+
+
+def test_solar_bottom_sidebar_gap_and_no_accent_sliver():
+    from pathlib import Path
+    from ventanal.solar.render import LAYOUT
+    cfg=load_config(Path(__file__).parents[1]/'ventanal.example.toml')
+    rgb=np.asarray(render_solar(sample(),'CALL SIGN',(41.7,-72.7),NOW,cfg).rgb)
+    y,h,_,_=LAYOUT['sidebar'][-1]
+    assert y+h == 994-6
+    assert not rgb[988:994,30:261].any()
+    assert not rgb[y:y+h,260].any()
+    assert rgb[994,30:261].any()
+
+
+@pytest.mark.parametrize('message', [
+    'GEOMAGNETIC STORM G5 UNTIL NOV 20 2026 UTC ' * 100,
+    'X' * 10000,
+    'RADIO BLACKOUT R3 / ELECTRON FLUX ' + 'SECONDARY ' * 200,
+])
+@pytest.mark.parametrize('width', [1104, 140, 12, 0])
+def test_alert_fit_whole_words_and_fixed_size(message, width):
+    from ventanal.solar.render import alert_fit
+    from ventanal.text import font
+    fitted,size=alert_fit(message,width)
+    assert size == 18
+    assert font('antonio',size).getlength(fitted) <= width
+    if fitted != message:
+        assert fitted == '' or fitted.endswith('…')
+        prefix=fitted.removesuffix('…').rstrip()
+        assert not prefix or message.startswith(prefix+' ') or message==prefix
+    if width==1104 and message.startswith('GEOMAGNETIC'):
+        assert fitted.startswith('GEOMAGNETIC STORM G5')
+
+
+def test_pathological_alert_render_stays_inside_budget(monkeypatch):
+    from pathlib import Path
+    from ventanal.solar import render
+    from ventanal.text import font
+    message='GEOMAGNETIC STORM G5 ' + 'PROLONGED ' * 1000
+    monkeypatch.setattr(render,'alert_summary',lambda alerts:('ALERT',message))
+    original=render._text
+    seen=[]
+    def capture(canvas,text,xy,px,colour,**kw):
+        if text.startswith('GEOMAGNETIC'):
+            assert px==18 and text.endswith('…')
+            assert message.startswith(text[:-1].rstrip()+' ')
+            assert font('antonio',px).getlength(text)<=render.LAYOUT['alert'][2]-136
+            assert xy[0]+font('antonio',px).getbbox(text)[2]<=1570
+            seen.append(text)
+        return original(canvas,text,xy,px,colour,**kw)
+    monkeypatch.setattr(render,'_text',capture)
+    cfg=load_config(Path(__file__).parents[1]/'ventanal.example.toml')
+    render.render_solar(sample(),'CALL SIGN',(41.7,-72.7),NOW,cfg)
+    assert len(seen)==1
+
+
+def test_alert_relevance_prioritises_hf_and_severity():
+    from ventanal.solar.render import alert_summary
+    _,message=alert_summary(['ALERT: ELECTRON FLUX', 'WATCH: GEOMAGNETIC STORM G1',
+                             'WARNING: RADIO BLACKOUT R3'])
+    assert message.startswith('WARNING RADIO BLACKOUT R3')
+    assert 'GEOMAGNETIC STORM G1' in message and 'ELECTRON' not in message
+
+
+def test_short_sidebar_label_stays_in_its_segment(monkeypatch):
+    from pathlib import Path
+    from ventanal.solar import render
+    from ventanal.text import font
+    original=render._text
+    seen=[]
+    def capture(canvas,text,xy,px,colour,**kw):
+        if text=='3-DAY':
+            y,h,_,_=render.LAYOUT['sidebar'][-1]
+            _,top,_,bottom=font('antonio-bold',px).getbbox(text,anchor='rs')
+            assert y<=xy[1]+top<xy[1]+bottom<y+h
+            seen.append(text)
+        return original(canvas,text,xy,px,colour,**kw)
+    monkeypatch.setattr(render,'_text',capture)
+    cfg=load_config(Path(__file__).parents[1]/'ventanal.example.toml')
+    render.render_solar(sample(),'CALL SIGN',(41.7,-72.7),NOW,cfg)
+    assert seen==['3-DAY']

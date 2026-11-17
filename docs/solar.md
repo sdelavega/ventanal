@@ -85,7 +85,8 @@ Both sun captions are centred on the sun. Solar uses a large flux
 readout, four metric cells, separate summary and band rows, full-width Kp chart
 with a G1 (Kp 5) reference, three forecast columns and a final alert line. Alerts use a
 bright bold label and light summaries of up to two active products (type, scale,
-UTC dates); fitting omits whole secondary items rather than clipping words.
+UTC dates); fitting keeps 18 px type, omits lower-priority secondary items first,
+then shortens the primary by whole words with an ellipsis to fit the width budget.
 NOAA scales are labelled as current. The verified configured call sign appears
 only in the private runtime header; golden/live evidence uses CALL SIGN.
 Every NOAA/NASA/FCC request sets Ventanal's User-Agent independently of its client.
@@ -95,7 +96,8 @@ band names, 38 px pills, 32 px forecast days and 24/20 px forecast lines.
 Captions remain at least 18 px. The sun is 340 px; band rows have 28 px gaps.
 The 90 px Kp plot retains its full 0–9 scale and reference line. Measured text
 bounds enforce 28 px between major rows, 20 px forecast/alert clearance and
-24 px alert/bottom-bar clearance. The 3-DAY segment spans the full forecast.
+24 px alert/bottom-bar clearance. The 3-DAY segment ends six pixels before the bottom elbow; forecast rows
+retain their size and clearance independently of the shorter sidebar segment.
 
 
 ## Publication runbook
