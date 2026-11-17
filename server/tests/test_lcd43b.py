@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
 
-"""lcd43b device profile: frame format, letterbox geometry and manifests."""
+"""LCD frame format, native weather layout, artwork and device manifests."""
 
 from dataclasses import replace
 from datetime import datetime
@@ -23,7 +23,8 @@ from ventanal.devices import lcd43b
 from ventanal.manifest import read_manifest, write_manifest
 from ventanal.quantize import Canvas
 from ventanal.serve import make_server
-from ventanal.text import fit, font
+from ventanal.art.compose import compose
+from test_weather_render import sample  # shared deterministic weather fixture
 
 TZ = ZoneInfo('America/New_York')
 NOW = datetime(2026, 11, 15, 6, 0, tzinfo=TZ)
@@ -85,7 +86,7 @@ def test_decode_frame_roundtrip_and_rejects_bad_frames():
 
 
 def test_letterbox_geometry():
-    frame = lcd43b.letterbox(solid_canvas((0, 255, 0)).rgb)
+    frame = lcd43b._letterbox_solar(solid_canvas((0, 255, 0)).rgb)
     assert frame.size == (800, 480)
     pixels = frame.load()
     assert pixels[0, 0] == (0, 0, 0)
@@ -96,35 +97,70 @@ def test_letterbox_geometry():
     assert pixels[799, 479] == (0, 0, 0)
 
 
-def test_letterbox_draws_updated_readout_in_reserved_area():
-    frame = lcd43b.letterbox(solid_canvas((0, 0, 0)).rgb, NOW, clock_24h=True)
-    region = np.asarray(frame.crop((574, 12, 708, 66)))
-    assert region.shape == (54, 134, 3)
-    assert (region != 0).any()
+@pytest.mark.parametrize('clock_24h', [True, False])
+def test_lcd_frames_have_no_updated_readout(clock_24h):
+    image = Image.new('RGB', (1600, 1200), (80, 110, 140))
+    frame = lcd43b.render_art(image, {'title': 'Snow'}, NOW, clock_24h)
+    assert frame.size == (800, 480)
+    assert frame.crop((550, 0, 800, 80)).tobytes() == compose(
+        image, size=(800, 480)).crop((550, 0, 800, 80)).tobytes()
+    assert frame.crop((0, 445, 600, 480)).tobytes() != compose(
+        image, size=(800, 480)).crop((0, 445, 600, 480)).tobytes()
+    assert frame.tobytes() == lcd43b.render_art(
+        image, {'title': 'Snow'}, NOW.replace(hour=18), not clock_24h).tobytes()
+
+
+def lcd_sample(sample, **changes):
+    from ventanal.devices.lcd_weather import render_lcd_weather
+    w, alerts, radar, lines, place, coords, now, config = sample
+    return render_lcd_weather(w, alerts, radar, replace(config, **changes), now,
+                              lines=lines, place=place, coords=coords)
+
+
+def test_lcd_weather_is_native_full_screen(sample):
+    from ventanal.devices.lcd_lcars import CLOCK_GAP, LCD_COLOURS, TOPBAR_H
+    assert TOPBAR_H == 26
+    assert CLOCK_GAP == (548, 0, 204, 26)
+    image = lcd_sample(sample)
+    assert image.size == (800, 480) and image.mode == 'RGB'
+    from PIL import ImageColor
+    assert image.getpixel((10, 240)) == ImageColor.getrgb(LCD_COLOURS['gold'])
+    x, y, w, h = CLOCK_GAP
+    assert not np.asarray(image.crop((x, y, x+w, y+h))).any()
+    assert image.getpixel((770, 13)) == ImageColor.getrgb('#ff7700')
+
+
+def test_lcd_weather_golden(sample):
+    image = lcd_sample(sample)
+    with Image.open(Path(__file__).parent / 'golden/lcd43b/weather.png') as expected:
+        assert image.tobytes() == expected.convert('RGB').tobytes()
+
+
+def test_lcd_weather_no_overlap(sample):
+    from ventanal.devices.lcd_weather import weather_layout
+    from ventanal.weather.data import Alert
+    w, _, _, _, _, _, now, config = sample
+    alert = Alert('Long advisory headline ' * 18, '', 'Minor', None)
+    layout = weather_layout(w, [alert], config, now)
+    assert len(layout['advisory_lines']) == 3
+    fx0, fy0, fx1, fy1 = layout['forecast_bbox']
+    ax0, ay0, ax1, ay1 = layout['advisory_bbox']
+    assert fy1 < ay0 < ay1 < 458
+    assert 140 <= ax0 < ax1 <= 786
+    assert len(w.days) == 7
+    args = list(sample)
+    args[1] = [alert]
+    assert lcd_sample(args).size == (800, 480)
 
 
 @pytest.mark.parametrize('clock_24h', [True, False])
-def test_art_renders_native_800x480_with_credit_and_readout(clock_24h):
-    candidate = dict(source='met', object_id='1', title='Snow', artist='Artist',
-                     date='1900', museum='Met')
-    image = Image.new('RGB', (1600, 1200), (0, 0, 0))
-    frame = lcd43b.render_art(image, candidate, NOW, clock_24h=clock_24h)
-    assert frame.size == (800, 480)
-    pixels = np.asarray(frame)
-    assert (pixels[445:480, :600] != 0).any()   # credit band and text
-    assert (pixels[0:45, 700:800] != 0).any()   # updated readout, top right
+def test_device_manifest_has_clock_24h(tmp_path, monkeypatch, clock_24h):
+    value = cfg(tmp_path, clock_24h=clock_24h)
+    run_device_tick(monkeypatch, value, screens={})
+    assert read_manifest(lcd43b.device_dir(value))['clock_24h'] is clock_24h
 
 
-def test_updated_time_respects_12_hour_clock():
-    candidate = dict(source='met', object_id='1')
-    twelve = lcd43b.render_art(Image.new('RGB', (16, 12)), candidate,
-                               NOW.replace(hour=18), clock_24h=False)
-    twenty = lcd43b.render_art(Image.new('RGB', (16, 12)), candidate,
-                               NOW.replace(hour=18), clock_24h=True)
-    assert twelve.tobytes() != twenty.tobytes()
-
-
-def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=()):
+def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=(), weather_failure=False):
     """Drive lcd43b.tick with controlled screen sources."""
     published = {
         'version': 1,
@@ -143,8 +179,12 @@ def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=()):
     })())
     monkeypatch.setattr(jobs, 'fetch_candidate',
                         lambda candidate, client, c: art_image)
-    monkeypatch.setattr(jobs, 'weather_canvas',
-                        lambda *a: solid_canvas((0, 255, 0)))
+    def weather_frame(*args):
+        if weather_failure:
+            raise RuntimeError('offline')
+        return Image.new('RGB', (800, 480), (0, 255, 0))
+
+    monkeypatch.setattr(lcd43b, 'weather_frame', weather_frame)
     if not solar:
         monkeypatch.setattr(devices.lcd43b, '_solar_allowed',
                             lambda c, n: False)
@@ -231,10 +271,8 @@ def test_failed_screen_keeps_previous_device_entry(tmp_path, monkeypatch):
     root = value.output_dir / 'devices' / 'lcd43b'
     previous = json.loads((root / 'manifest.json').read_text())
 
-    from ventanal import jobs
-    monkeypatch.setattr(jobs, 'weather_canvas',
-                        lambda *a: (_ for _ in ()).throw(RuntimeError('offline')))
-    run_device_tick(monkeypatch, value, screens={'art': manifest_for(value, 'art')})
+    run_device_tick(monkeypatch, value, screens={'art': manifest_for(value, 'art')},
+                    weather_failure=True)
     assert json.loads((root / 'manifest.json').read_text()) == previous
 
 
@@ -377,6 +415,8 @@ def test_epaper_outputs_unchanged_after_a_successful_publish(tmp_path, monkeypat
                             lambda *a: solid_canvas((8, 8, 8)))
         monkeypatch.setattr(jobs, 'fetch_candidate',
                             lambda candidate, client, c: Image.new('RGB', (16, 12)))
+        monkeypatch.setattr(lcd43b, 'weather_frame',
+                            lambda *a: Image.new('RGB', (800, 480)))
         with httpx.Client() as client:
             jobs.tick(value, NOW, client)
         e_paper = {}
@@ -402,39 +442,6 @@ def test_epaper_outputs_unchanged_after_a_successful_publish(tmp_path, monkeypat
                       f"{entry['url'].rsplit('/', 1)[1]}"]
         assert entry['size'] == len(data) == 768016
         assert entry['sha256'] == hashlib.sha256(data).hexdigest()
-
-
-def test_readouts_render_complete_timestamps(monkeypatch):
-    """The update readout must always render its whole text.
-
-    The worst-case 12-hour label once truncated to 'UPDATED 12:5…' inside
-    the art readout's fixed box: the label must now fit completely in both
-    reserved boxes, and the rendered pixels must be exactly the complete
-    label (an ellipsis can never match a bypassed fitter).
-    """
-    worst = NOW.replace(hour=0, minute=59)   # 'UPDATED 12:59 AM'
-    face = font('antonio-bold', 16)          # the production readout face
-    label = lcd43b._updated_text(worst, clock_24h=False)
-    assert label == 'UPDATED 12:59 AM'
-    for name, rect in (('art', lcd43b.ART_READOUT),
-                       ('letterbox', lcd43b.READOUT)):
-        assert fit(label, face, rect[2]) == label, name
-    # What renders is exactly that complete label: render once through the
-    # production fitter and once with the fitter bypassed — a truncating
-    # readout can never match its own complete text.
-    art_source = Image.new('RGB', (16, 12))
-    letterbox_source = solid_canvas((0, 128, 0)).rgb
-    produced = {'art': lcd43b.render_art(art_source, {}, worst,
-                                        clock_24h=False),
-                'letterbox': lcd43b.letterbox(letterbox_source, worst,
-                                              clock_24h=False)}
-    monkeypatch.setattr(lcd43b, 'fit', lambda text, f, width: text)
-    complete = {'art': lcd43b.render_art(art_source, {}, worst,
-                                        clock_24h=False),
-                'letterbox': lcd43b.letterbox(letterbox_source, worst,
-                                              clock_24h=False)}
-    for name in produced:
-        assert produced[name].tobytes() == complete[name].tobytes(), name
 
 
 def test_device_manifest_request_time_solar_gate(tmp_path, monkeypatch):
@@ -615,3 +622,53 @@ def test_serve_device_routes(tmp_path):
         srv.shutdown()
         srv.server_close()
         thread.join()
+
+@pytest.mark.parametrize('label', ['off', 'en', 'es'])
+def test_lcd_weather_location_label(sample, monkeypatch, label):
+    from ventanal.devices import lcd_weather
+    calls = []
+    original = lcd_weather._location_marker
+
+    def marker(canvas, centre, colours, here_label):
+        calls.append(here_label)
+        return original(canvas, centre, colours, here_label)
+
+    monkeypatch.setattr(lcd_weather, '_location_marker', marker)
+    lcd_sample(sample, here_label=label)
+    assert calls == [label]
+
+
+@pytest.mark.parametrize('missing', [None, 'alerts', 'radar', 'basemap'])
+def test_lcd_weather_data_pipeline(sample, monkeypatch, missing):
+    from ventanal import jobs
+    from ventanal.devices import lcd_weather
+    w, alerts, radar, lines, place, coords, now, config = sample
+    calls = []
+
+    def provider(name, result):
+        def fetch(*args, **kwargs):
+            calls.append(name)
+            if name == missing:
+                raise RuntimeError('unavailable')
+            return result
+        return fetch
+
+    monkeypatch.setattr(jobs, 'geocode', provider('geocode', (*coords, place)))
+    monkeypatch.setattr(jobs, 'fetch_weather', provider('weather', w))
+    monkeypatch.setattr(jobs, 'fetch_alerts', provider('alerts', alerts))
+    monkeypatch.setattr(jobs, 'fetch_iem', provider('radar', radar))
+    monkeypatch.setattr(jobs, 'basemap', provider('basemap', lines))
+    image = lcd_weather.weather_frame(replace(config, radar='iem'), now, object())
+    assert calls == ['geocode', 'weather', 'alerts', 'radar', 'basemap']
+    expected = lcd_weather.render_lcd_weather(
+        w, [] if missing == 'alerts' else alerts,
+        None if missing == 'radar' else radar, config, now,
+        lines={} if missing == 'basemap' else lines, place=place, coords=coords)
+    assert image.tobytes() == expected.tobytes()
+
+
+def test_lcd_solar_has_no_updated_readout():
+    source = solid_canvas((12, 100, 150))
+    expected = Image.new('RGB', (800, 480))
+    expected.paste(source.rgb.resize((640, 480), Image.Resampling.LANCZOS), (80, 0))
+    assert lcd43b._letterbox_solar(source).tobytes() == expected.tobytes()

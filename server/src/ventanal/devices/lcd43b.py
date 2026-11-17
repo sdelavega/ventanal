@@ -24,6 +24,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from ventanal.art.compose import compose
 from ventanal.manifest import read_manifest, write_manifest
+from ventanal.devices.lcd_weather import weather_frame
 from ventanal.text import fit, font, renderable
 
 LCD_W, LCD_H = 800, 480
@@ -44,20 +45,6 @@ def device_url(cfg) -> str:
 def device_dir(cfg) -> Path:
     """Output directory that mirrors the device's URL path."""
     return cfg.output_dir / 'devices' / cfg.device_id
-
-# Weather and solar reuse the renderers' 1600x1200 full-colour canvas,
-# downscaled to 640x480 and centred on a black 800x480 frame.
-CONTENT_W, CONTENT_H = 640, 480
-CONTENT_X = (LCD_W - CONTENT_W) // 2
-CONTENT_Y = 0
-_SCALE = CONTENT_W / 1600
-# The reserved top-right readout rectangle, mapped from the renderers'
-# WEATHER_READOUT (1236, 30, 334, 136) through the letterbox transform.
-READOUT = (CONTENT_X + round(1236 * _SCALE), round(30 * _SCALE),
-           round(334 * _SCALE), round(136 * _SCALE))
-# The art screen composes natively at 800x480, so its small readout gets
-# its own corner box scaled from the full-frame layout.
-ART_READOUT = (690, 6, 110, 30)
 
 log = logging.getLogger(__name__)
 
@@ -84,47 +71,18 @@ def decode_frame(data: bytes) -> np.ndarray:
     return np.stack((red, green, blue), axis=-1)
 
 
-def _updated_text(now, clock_24h: bool) -> str:
-    stamp = now.strftime('%H:%M') if clock_24h else now.strftime('%I:%M %p').lstrip('0')
-    return f'UPDATED {stamp}'
-
-
-def _draw_updated(frame: Image.Image, rect, now, clock_24h: bool) -> None:
-    """Draw a small black pill with the white update readout in rect.
-
-    Antonio Bold 16 keeps the worst-case 12-hour label ('UPDATED 12:59 AM')
-    complete inside both reserved boxes — 20 px truncated it to
-    'UPDATED 12:5…' (pinned by test_readouts_render_complete_timestamps).
-    """
-    x, y, w, _h = rect
-    face = font('antonio-bold', 16)
-    label = fit(_updated_text(now, clock_24h), face, w)
-    if not label:
-        return
-    draw = ImageDraw.Draw(frame)
-    px, py = x + w - 6, y + (rect[3] // 2)
-    left, top, right, bottom = face.getbbox(label, anchor='rm')
-    draw.rounded_rectangle((px + left - 10, py + top - 7,
-                             px + right + 10, py + bottom + 7),
-                            radius=13, fill=(0, 0, 0))
-    draw.text((px, py), label, font=face, fill='white', anchor='rm')
-
-
-def letterbox(source, now=None, clock_24h: bool = True) -> Image.Image:
-    """Downscale a 1600x1200 render to 640x480 on a black 800x480 frame."""
+def _letterbox_solar(source) -> Image.Image:
+    """Temporary solar path until Task 3; the server adds no readout."""
     image = source.rgb if hasattr(source, 'rgb') else source
     if image.size != (1600, 1200):
         raise ValueError('letterbox source must be 1600x1200')
-    frame = Image.new('RGB', (LCD_W, LCD_H), (0, 0, 0))
-    frame.paste(image.resize((CONTENT_W, CONTENT_H), Image.Resampling.LANCZOS),
-                (CONTENT_X, CONTENT_Y))
-    if now is not None:
-        _draw_updated(frame, READOUT, now, clock_24h)
+    frame = Image.new('RGB', (LCD_W, LCD_H))
+    frame.paste(image.resize((640, 480), Image.Resampling.LANCZOS), (80, 0))
     return frame
 
 
 def render_art(image: Image.Image, credit, now, clock_24h: bool = True) -> Image.Image:
-    """Compose native 800x480 art with the soft-shade credit and readout."""
+    """Compose native 800x480 art with the soft-shade credit; the board draws time."""
     backdrop = compose(image, size=(LCD_W, LCD_H))
     title_font, secondary_font = font('inter-bold', 12), font('inter', 11)
     title = renderable(credit.get('title') or '', 'inter-bold') or 'Untitled'
@@ -151,7 +109,6 @@ def render_art(image: Image.Image, credit, now, clock_24h: bool = True) -> Image
     draw.text((14, 474), title, font=title_font, fill='white', anchor='ls')
     draw.text((14 + title_font.getlength(title), 474), secondary,
               font=secondary_font, fill='white', anchor='ls')
-    _draw_updated(backdrop, ART_READOUT, now, clock_24h)
     return backdrop
 
 
@@ -187,9 +144,7 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
         return render_art(_art_image(cfg, client, credit), credit,
                           now, cfg.clock_24h)
     if name == 'weather':
-        from ventanal import jobs
-        return letterbox(jobs.weather_canvas(cfg, now, client),
-                         now, cfg.clock_24h)
+        return weather_frame(cfg, now, client)
     if name == 'solar':
         from ventanal.solar.data import fetch_solar
         from ventanal.solar.render import render_solar
@@ -200,7 +155,7 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
             coords = (lat, lon)
         canvas = render_solar(fetch_solar(client, cfg.cache_dir, now),
                               cfg.ham_call_sign, coords, now, cfg)
-        return letterbox(canvas, now, cfg.clock_24h)
+        return _letterbox_solar(canvas)
     raise ValueError(f'unknown screen: {name}')
 
 
@@ -277,6 +232,7 @@ def tick(cfg, now, client) -> dict:
     spares = _render_spares(cfg, now, client, out, base_url)
     manifest = {
         'version': 1,
+        'clock_24h': cfg.clock_24h,
         'screens': {name: screens[name] for name in SCREENS if name in screens},
         'quiet': {'start': cfg.quiet_start, 'end': cfg.quiet_end},
     }
