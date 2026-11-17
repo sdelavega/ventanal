@@ -114,16 +114,17 @@ def test_lcd_solar_still_gated(tmp_path, monkeypatch):
     from ventanal.solar.licence import Verification
     from ventanal.solar import data as solar_data
     from test_solar import sample as solar_data_sample
-    allowed = True
     monkeypatch.setattr('ventanal.solar.licence.verify',
-                        lambda *a: Verification(allowed, 'test licence'))
+                        lambda *a: Verification(True, 'test licence'))
     value = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
     monkeypatch.setattr(lcd43b, 'weather_frame',
                         lambda *a: Image.new('RGB', (800, 480)))
     monkeypatch.setattr(solar_data, 'fetch_solar', lambda *a: solar_data_sample())
     lcd43b.tick(value, NOW, None)
     assert 'solar' in read_manifest(lcd43b.device_dir(value))['screens']
-    allowed = False
+    # Explicitly revoke the licence for the second publication phase.
+    monkeypatch.setattr('ventanal.solar.licence.verify',
+                        lambda *a: Verification(False, 'test licence'))
     monkeypatch.setattr(solar_data, 'fetch_solar',
                         lambda *a: pytest.fail('unauthorised solar fetch'))
     lcd43b.tick(value, NOW, None)
@@ -167,6 +168,8 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
     else:
         data = replace(data, alerts=[], scales={})
     boxes = []
+    shapes = []
+    pastes = []
     original = ImageDraw.ImageDraw.text
 
     def capture(draw, xy, text, *args, **kwargs):
@@ -174,7 +177,26 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
         boxes.append((text, box))
         return original(draw, xy, text, *args, **kwargs)
 
+    def capture_shape(method):
+        original_shape = getattr(ImageDraw.ImageDraw, method)
+
+        def capture(draw, xy, *args, **kwargs):
+            shapes.append((method, xy))
+            return original_shape(draw, xy, *args, **kwargs)
+
+        return capture
+
+    original_paste = Image.Image.paste
+
+    def capture_paste(image, source, box, *args, **kwargs):
+        if isinstance(source, Image.Image):
+            pastes.append((*box, box[0]+source.width, box[1]+source.height))
+        return original_paste(image, source, box, *args, **kwargs)
+
     monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    for method in ('rounded_rectangle', 'line'):
+        monkeypatch.setattr(ImageDraw.ImageDraw, method, capture_shape(method))
+    monkeypatch.setattr(Image.Image, 'paste', capture_paste)
     config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
     image = render_lcd_solar(data, config, NOW)
     for text, (x0, y0, x1, y1) in boxes:
@@ -182,6 +204,31 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
     for i, (text, a) in enumerate(boxes):
         for other, b in boxes[i+1:]:
             assert a[2] <= b[0] or b[2] <= a[0] or a[3] <= b[1] or b[3] <= a[1], (text, other)
+    sun, = pastes
+    pills = [xy for kind, xy in shapes
+             if kind == 'rounded_rectangle' and xy[0] >= 270 and 218 <= xy[1] < 310]
+    bars = [xy for kind, xy in shapes
+            if kind == 'rounded_rectangle' and xy[1] >= 317]
+    lines = [xy for kind, xy in shapes if kind == 'line']
+    assert len(pills) == 8 and len(bars) == 8
+    assert sun == (582, 84, 768, 270)
+    assert max(box[2] for box in pills) < sun[0]
+    for x0, y0, x1, y1 in pills:
+        assert 140 <= x0 < x1 <= 786 and 26 <= y0 < y1 < 458
+    for x0, y0, x1, y1 in bars + lines:
+        assert 140 <= x0 < x1 <= 786 and 317 <= y0 <= y1 <= 344
+
+    caption = [box for text, box in boxes
+               if text.startswith(('PLANETARY KP', 'G1 (KP 5)'))]
+    forecast = [box for text, box in boxes
+                if text.startswith(('KP MAX', 'R1')) or box[0] >= 140 and 375 <= box[1] < 400]
+    alert = [box for _, box in boxes if box[1] >= 430]
+    assert len(caption) == 2 and len(forecast) == 9 and alert
+    assert min(box[1] for box in forecast) - max(box[3] for box in caption) >= 10
+    assert min(box[1] for box in alert) - max(box[3] for box in forecast) >= 10
+    assert 458 - max(box[3] for box in alert) >= 10
+    from ventanal.devices.lcd_solar import SECTIONS
+    assert 430 - (SECTIONS[-1][0] + SECTIONS[-1][1]) == 6
     assert image.size == (800, 480)
 
 
