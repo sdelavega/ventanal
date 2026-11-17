@@ -203,7 +203,17 @@ void runRefresh(const char* hostUrl, const char* deviceId,
         watchdog.feed();
         const FrameInfo* info = published[slot];
         if (!info || !info->present) {
-            result.dropSlot[slot] = true;   // applied by the main loop
+            // Dropped screens: erase the cached frame HERE, on the worker —
+            // a ~750 KB LittleFS erase takes over a second of flash time
+            // and must never stall the touch poll in loop().
+            result.dropSlot[slot] = true;
+            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
+            const String temporary = path + ".tmp";
+            if (LittleFS.exists(path)) {
+                LittleFS.remove(path);
+                log("cache removed slot=%s\n", SLOT_NAMES[slot]);
+            }
+            LittleFS.remove(temporary);
             continue;
         }
         if (!strcmp(currentIds[slot], info->id)

@@ -165,6 +165,7 @@ int main() {
         urlResponses["http://host" + weather.url] = weatherFrame;
         sizeFromResponse = true;
         char currentIds[lcd::SCREEN_SLOTS][17] = {};
+        files["/solar.vnr"] = std::vector<uint8_t>(64, 0x5A);   // stale cache
         lcd::RefreshResult result;
         CountingWatchdog watchdog;
         lcd::runRefresh("http://host", "lcd43b", currentIds, result, watchdog);
@@ -175,6 +176,9 @@ int main() {
         for (int slot = 3; slot < lcd::SCREEN_SLOTS; ++slot)
             assert(result.dropSlot[slot]);   // unpublished spare slots
         assert(files.count("/art.vnr") && files.count("/weather.vnr"));
+        // The worker erased the dropped cache file (never in loop()).
+        assert(!files.count("/solar.vnr"));
+        assert(strstr(Serial.output.c_str(), "cache removed slot=solar"));
         assert(!strcmp(result.frameIds[0], art.info.id));
         assert(!strcmp(result.frameIds[1], weather.info.id));
 
@@ -272,8 +276,8 @@ int main() {
         assert(!lcd::applyRefresh(state, screenIndex, spareCursor, prefs,
                                   failed, false));
 
-        // A dropped slot removes the cache file and clears its id.
-        files["/solar.vnr"] = {1};
+        // A dropped slot clears its id here; the worker already erased the
+        // cache file (flash erases must never run in loop()).
         strcpy(state.cachedIds[2], "cccccccccccccccc");
         lcd::RefreshResult dropped;
         dropped.manifestOk = true;
@@ -281,9 +285,10 @@ int main() {
         dropped.dropSlot[2] = true;
         lcd::applyRefresh(state, screenIndex, spareCursor, prefs, dropped,
                           false);
-        assert(!files.count("/solar.vnr"));
         assert(!state.cachedIds[2][0]);
-        assert(strstr(Serial.output.c_str(), "cache removed slot=solar"));
+        char ids[lcd::SCREEN_SLOTS][17] = {};
+        lcd::loadCacheIds(prefs, ids);
+        assert(!ids[2][0]);            // the NVS entry cleared too
 
         // A shrunk screen list normalises the selection and persists it.
         published.spareCount = 0;

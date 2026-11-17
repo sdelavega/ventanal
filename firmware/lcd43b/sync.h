@@ -124,13 +124,8 @@ inline bool applyRefresh(RefreshState& state, int& screenIndex,
                     sizeof state.cachedIds[slot]);
             saveCacheId(prefs, slot, state.cachedIds[slot]);
         } else if (result.dropSlot[slot]) {
-            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
-            const String temporary = path + ".tmp";
-            if (LittleFS.exists(path)) {
-                LittleFS.remove(path);
-                log("cache removed slot=%s\n", SLOT_NAMES[slot]);
-            }
-            LittleFS.remove(temporary);
+            // The worker already erased the cache file (flash erases never
+            // run in loop()); here only the bookkeeping follows.
             state.cachedIds[slot][0] = 0;
             saveCacheId(prefs, slot, "");
         }

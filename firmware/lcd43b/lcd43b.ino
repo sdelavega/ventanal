@@ -201,10 +201,12 @@ void backlightRefresh() {
 class TaskWatchdog : public lcd::Watchdog {
 public:
     void arm() {
+        // The Arduino core starts its own TWDT, so reconfigure it here
+        // (quietly); a system without one initialises it fresh instead.
         const esp_task_wdt_config_t config{lcd::WATCHDOG_TIMEOUT_MS, 0, true};
-        const esp_err_t result = esp_task_wdt_init(&config);
+        const esp_err_t result = esp_task_wdt_reconfigure(&config);
         if (result == ESP_ERR_INVALID_STATE)
-            ESP_ERROR_CHECK(esp_task_wdt_reconfigure(&config));
+            ESP_ERROR_CHECK(esp_task_wdt_init(&config));
         else
             ESP_ERROR_CHECK(result);
     }
