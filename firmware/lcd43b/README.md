@@ -176,6 +176,7 @@ fake `esp_lcd`, and the diagnostic gesture sequence.
 Multi-device security (per-device keys/counters for HTTPS + signed manifests
 against the owner's secured host), pairing UI, and running the profile on
 the render Pi (the frame's unpaid art department).
+
 ## Hardware facts
 
 Task 1 USB-only probe (2026-11-17), with **no Li-ion cell connected**.
@@ -195,6 +196,7 @@ All circuit references below are to **PDF page 1**; pages 2-3 are board layouts.
 | `BACKLIGHT_PWM_GPIO`, `BACKLIGHT_PWM_CHANNEL` | `-1`, `-1` | No hardware PWM channel. Brightness must use software pixel scaling. |
 | `RTC_PCF85063` | `true` | U3 PCF85063ATL, `SDA`/`SCL` shared on GPIO8/9 at 400 kHz; measured at `0x51`. |
 | `RTC_I2C_ADDRESS` | `0x51` | Calendar read/write/read verification passed; control register restored. |
+| `RTC_INT_GPIO` | `6` | U3 PCF85063 INT pin 4 connects directly to U9 ESP32 GPIO6 (`IO6` / `RTC_INT`). |
 
 The installed vendor `ESP32_Display_Panel/src/board/supported/waveshare/BOARD_WAVESHARE_ESP32_S3_TOUCH_LCD_4_3_B.h`
 also selects `SWITCH_EXPANDER`, active-high output 2, GPIO8/9 and 400 kHz.
@@ -224,8 +226,10 @@ valid wall time or retention. Later clock code must reject OS/unset dates,
 show no time until synchronized, and set the RTC from trusted time.
 
 RTC backup uses the distinct `V_BAT` / BAT1 supply through D16, diode-ORed
-with 3V3 through D15; `RTC_INT` routes to CH422G OC1, not a direct ESP32
-interrupt. Main-cell operation, charging and runtime require a Li-ion cell
+with 3V3 through D15. The schematic's embedded netlist lists `IO6` pins
+`U3-4` and `U9-6`: `RTC_INT` connects PCF85063 INT directly to ESP32 GPIO6.
+CH422G OC1 is the DO1 isolated output via R25; its IO6/IO7/OC2/OC3 are N.C.
+Main-cell operation, charging and runtime require a Li-ion cell
 to confirm; RTC backup retention needs a verified backup supply and a
 power-removal test. Neither was tested on USB alone. A cell cannot add the
 missing sense connections: show **no battery percentage**, do not infer USB
