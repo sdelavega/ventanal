@@ -22,8 +22,45 @@
 
 #include "manifest.h"
 #include "screens.h"
+#include "board.h"
+#include "settings.h"
 
 namespace lcd {
+
+// Settings use their own namespace and a dedicated Preferences handle (never
+// pass the live ventanal handle). Explicit wire bytes avoid struct padding/ABI
+// drift; checksum rejects corruption, version/length reject incompatible data.
+inline uint32_t settingsChecksum(const uint8_t* b) {
+    uint32_t h=2166136261u;
+    for(int i=0;i<8;++i) h=(h^b[i])*16777619u;
+    return h;
+}
+inline void saveSettings(Preferences& prefs, const DeviceSettings& s) {
+    if(!validSettings(s) || !prefs.begin("lcdset",false)) return;
+    uint8_t b[12]={1,s.brightness,s.timeoutMin,
+        uint8_t(s.showArt | (s.showWeather<<1) | (s.showSolar<<2)),
+        uint8_t(s.batteryFullMv),uint8_t(s.batteryFullMv>>8),0,0};
+    const uint32_t hash=settingsChecksum(b);
+    for(int i=0;i<4;++i) b[8+i]=uint8_t(hash>>(8*i));
+    prefs.putBytes("settings",b,sizeof b); prefs.end();
+}
+inline bool loadSettings(Preferences& prefs, DeviceSettings& s) {
+    s=defaultSettings(POWER_SOURCE_DETECTABLE);
+    if(!prefs.begin("lcdset",true)) return false;
+    uint8_t b[12]={};
+    const bool read=prefs.getBytesLength("settings")==sizeof b
+        && prefs.getBytes("settings",b,sizeof b)==sizeof b;
+    prefs.end();
+    uint32_t hash=0;
+    for(int i=0;i<4;++i) hash|=uint32_t(b[8+i])<<(8*i);
+    if(!read || b[0]!=1 || b[3]>7 || b[6] || b[7] || hash!=settingsChecksum(b)) return false;
+    DeviceSettings candidate;
+    candidate.brightness=b[1]; candidate.timeoutMin=b[2];
+    candidate.showArt=b[3]&1; candidate.showWeather=b[3]&2; candidate.showSolar=b[3]&4;
+    candidate.batteryFullMv=int(b[4])|(int(b[5])<<8);
+    if(!validSettings(candidate)) return false;
+    s=candidate; return true;
+}
 
 // "no quiet window stored" marker for the u16 keys.
 constexpr uint16_t QUIET_NONE = 0xFFFF;

@@ -168,6 +168,19 @@ int main() {
             assert(fb[y*FB_W+x]==(x>=550 && y<80?0xabcd:0x1234));
         auto n=calls.size(); assert(!panel.blitRegion(550,0,251,80,region.data())); assert(calls.size()==n);
     }
+    {
+        Panel panel; assert(panel.begin([](bool) { return true; }));
+        std::vector<uint16_t> source(FB_W*FB_H,0xffff), staging(source.size());
+        assert(panel.blitDimmed(source.data(),staging.data(),25));
+        assert(source[0]==0xffff);
+        for(int i=0;i<FB_W*FB_H;++i) assert(fb[i]==0x39e7);
+        std::vector<uint16_t> region(250*80,0xffff), scratch(region.size());
+        assert(panel.blitRegionDimmed(550,0,250,80,region.data(),scratch.data(),25));
+        for(int i=0;i<FB_W*FB_H;++i) assert(fb[i]==0x39e7); // no brighter clock rectangle
+        assert(region[0]==0xffff);
+        assert(panel.blitRegionDimmed(550,0,250,80,region.data(),scratch.data(),25));
+        assert(fb[550]==0x39e7); // repeated redraw does not compound dimming
+    }
     puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover,"
          " anti-flicker bounce config passed");
     return 0;

@@ -118,6 +118,22 @@ int main() {
         lcd::normalizeSelection(index, cursor, true, 2);
         assert(cursor == 0);
     }
+    {
+        auto s=lcd::defaultSettings(false); s.showArt=false;
+        int slots[6];
+        assert(lcd::activeSlots(true,3,s,slots,6)==2 && slots[0]==1 && slots[1]==2);
+        assert(lcd::spareTargets(true,3,s,slots,6)==0);
+        s.showWeather=false; // only Solar enabled, then licence vanishes
+        assert(lcd::activeSlots(false,3,s,slots,6)==5 && slots[0]==0 && slots[1]==1);
+        assert(lcd::spareTargets(false,3,s,slots,6)==0);
+        s.showWeather=true;
+        int index=0,cursor=0;
+        lcd::remapSelection(index,cursor,0,false,3,s);
+        assert(lcd::screenSlot(index,false,3,s)==1);
+        index=1; s.showArt=true;
+        lcd::remapSelection(index,cursor,4,false,3,s);
+        assert(lcd::screenSlot(index,false,3,s)==4); // retain visible slot
+    }
     puts("lcd43b screens: active-slot list, normalisation, bounds passed");
     return 0;
 }

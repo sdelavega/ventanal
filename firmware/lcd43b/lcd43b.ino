@@ -93,6 +93,8 @@ Gt911 touch{Wire};
 Panel panel;
 lcd::TouchPoller touchPoller{touch};
 Preferences prefs;
+Preferences settingsPrefs; // exclusively opened/closed by settings persistence
+lcd::DeviceSettings settings=lcd::defaultSettings(lcd::POWER_SOURCE_DETECTABLE);
 
 lcd::RefreshState state;   // manifest, cache ids, offline flag
 int screenIndex = 0;       // current screen within the screen list
@@ -246,11 +248,13 @@ int spareCount() { return state.manifest.spareCount; }
 bool setTouchResetLine(bool asserted) { return expander.setTouchReset(asserted); }
 bool setLcdResetLine(bool asserted) { return expander.setLcdReset(asserted); }
 
-int screenCount() { return lcd::screenCount(solarPublished(), spareCount()); }
-int spareBase() { return lcd::spareBase(solarPublished()); }
+int screenCount() {
+    int slots[lcd::SCREEN_SLOTS];
+    return lcd::activeSlots(solarPublished(),spareCount(),settings,slots,lcd::SCREEN_SLOTS);
+}
 
 int screenSlot(int index) {
-    return lcd::screenSlot(index, solarPublished(), spareCount());
+    return lcd::screenSlot(index, solarPublished(), spareCount(),settings);
 }
 
 void storeScreenIndex() { lcd::saveSelection(prefs, screenIndex, spareCursor); }
@@ -259,6 +263,7 @@ void storeScreenIndex() { lcd::saveSelection(prefs, screenIndex, spareCursor); }
 // them; minute ticks perform no filesystem I/O and no full-frame blits.
 uint16_t* clockBackground = nullptr;
 uint16_t* clockPixels = nullptr;
+uint16_t* clockDimmed = nullptr;
 int clockSlot = -1;
 time_t drawnMinute = -1;
 std::atomic<bool> ntpRtcPending{false};
@@ -268,9 +273,8 @@ bool renderClock() {
     tm local{}; const time_t now=time(nullptr); localtime_r(&now,&local);
     char timeText[16], dateText[24];
     const bool valid=lcd::formatClock(local,state.manifest.clock24h,timeText,sizeof timeText,dateText,sizeof dateText);
-    int mv=-1, percent=-1;
-    // This board has no voltage path. No ADC reads or invented percentage.
-    if constexpr(lcd::BATTERY_ADC_AVAILABLE) percent=lcd::batteryPercent(mv,4200);
+    // No voltage path on this board (board.h); batteryFullMv stays unused.
+    const int mv=-1, percent=-1;
     lcd::renderReadout(clockPixels,clockBackground,lcd::isLcarsSlot(clockSlot),
                        timeText,dateText,percent,lcd::batteryLevel(mv,percent));
     lcd::log("readout valid=%d time=%s date=%s h24=%d battery=none\n",
@@ -281,9 +285,9 @@ bool renderClock() {
 void tickClock() {
     if(clockSlot<0 || !state.drawn || time(nullptr)/60==drawnMinute) return;
     const bool valid=renderClock(); const auto r=lcd::readoutRect(clockSlot);
-    const bool ok=panel.blitRegion(r.x,r.y,r.w,r.h,clockPixels);
-    lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d battery=none\n",
-             valid,lcd::SLOT_NAMES[clockSlot],r.x,r.y,r.w,r.h,ok);
+    const bool ok=panel.blitRegionDimmed(r.x,r.y,r.w,r.h,clockPixels,clockDimmed,settings.brightness);
+    lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
+             valid,lcd::SLOT_NAMES[clockSlot],r.x,r.y,r.w,r.h,ok,settings.brightness);
 }
 void seedRtc() {
     if constexpr(lcd::RTC_PCF85063) {
@@ -346,7 +350,7 @@ bool show(int index) {
                               red ? lcd::RGB565_RED : lcd::RGB565_WHITE);
     }
     clockSlot = -1;
-    if(ok && clockBackground && clockPixels) {
+    if(ok && clockBackground && clockPixels && clockDimmed) {
         clockSlot=slot;
         const auto r=lcd::readoutRect(slot);
         for(int y=0;y<r.h;++y)
@@ -354,13 +358,13 @@ bool show(int index) {
         renderClock();
         lcd::pasteReadout(pixels,clockPixels,r);
     }
-    panel.blit(pixels);
+    panel.blitDimmed(pixels,pixels,settings.brightness);
     free(pixels);
     state.drawn = ok;
     if(ok) lcd::log("photo-ready slot=%s clock=board region-only-minute-redraw battery=none\n",lcd::SLOT_NAMES[slot]);
-    lcd::log("blit screen=%s id=%.16s cache=%s offline=%d ms=%lu\n",
+    lcd::log("blit screen=%s id=%.16s cache=%s offline=%d brightness=%u ms=%lu\n",
              lcd::SLOT_NAMES[slot], state.cachedIds[slot],
-             ok ? "frame" : "waiting", state.offline,
+             ok ? "frame" : "waiting", state.offline,settings.brightness,
              static_cast<unsigned long>(millis() - started));
     return ok;
 }
@@ -429,12 +433,13 @@ SemaphoreHandle_t refreshStaged;   // worker -> loop: result ready to copy
 SemaphoreHandle_t refreshCopied;   // loop -> worker: result applied
 volatile bool refreshBusy = false;
 bool refreshRequested = false;
+lcd::DeviceSettings refreshSettings; // copied before worker starts; immutable until it finishes
 lcd::RefreshResult refreshStaging;   // worker writes, loop copies while parked
 
 void refreshWorker(void*) {
     refreshWatchdog.subscribe();
     lcd::runRefresh(VENTANAL_HOST_URL, VENTANAL_DEVICE_ID, state.cachedIds,
-                    refreshStaging, refreshWatchdog);
+                    refreshStaging, refreshWatchdog,refreshSettings);
     refreshWatchdog.unsubscribe();
     xSemaphoreGive(refreshStaged);
     // Park until loop() has copied the result, so the staging buffer is
@@ -447,6 +452,7 @@ void refreshWorker(void*) {
 // backlight while it runs. At most one worker may be in flight.
 bool startRefresh(bool redraw) {
     if (refreshBusy) return false;
+    refreshSettings = settings;
     refreshRequested = redraw;
     lastFetchMs = millis();
     refreshBusy = true;
@@ -480,7 +486,7 @@ void applyFinishedRefresh() {
     }
     const bool redraw = lcd::applyRefresh(state, screenIndex, spareCursor,
                                           prefs, refreshStaging,
-                                          refreshRequested);
+                                          refreshRequested,settings);
     xSemaphoreGive(refreshCopied);
     refreshBusy = false;
     // A manifest that arrived but lost a frame it required is a failure for
@@ -500,6 +506,22 @@ void applyFinishedRefresh() {
     else if (refreshLabel.label() != lcd::RefreshLabel::None)
         show(screenIndex);   // redraw the cached frame with the label
     backlightRefresh();
+}
+
+// Task 6 calls this from the UI thread when a settings choice changes.
+// An in-flight worker finishes its immutable snapshot; the next pass uses the
+// new visibility so newly enabled screens get downloaded even after a toggle.
+bool settingsRefreshPending=false;
+bool applyDeviceSettings(const lcd::DeviceSettings& next) {
+    if(!lcd::validSettings(next)) return false;
+    const int previous=screenSlot(screenIndex);
+    settings=next;
+    lcd::saveSettings(settingsPrefs,settings);
+    lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
+    storeScreenIndex();
+    show(screenIndex);
+    settingsRefreshPending=true;
+    return true;
 }
 
 // --- Touch ----------------------------------------------------------------
@@ -523,9 +545,12 @@ void handleGesture(Gesture gesture, int x, int y) {
         show(screenIndex);
         break;
     case Gesture::DoubleTap:
-        if (spareCount()) {
-            screenIndex = spareBase() + spareCursor;
-            spareCursor = (spareCursor + 1) % spareCount();
+        {
+            int targets[lcd::SCREEN_SLOTS];
+            const int count=lcd::spareTargets(solarPublished(),spareCount(),settings,targets,lcd::SCREEN_SLOTS);
+            if(!count) break;
+            screenIndex = targets[spareCursor % count];
+            spareCursor = (spareCursor + 1) % count;
             lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
             show(screenIndex);
         }
@@ -629,8 +654,19 @@ void setup() {
     lcd::loadSelection(prefs, screenIndex, spareCursor);
     lcd::loadQuiet(prefs, state.manifest);
     lcd::loadPublishShape(prefs, state.manifest);
-    lcd::normalizeSelection(screenIndex, spareCursor, solarPublished(),
-                            spareCount());
+    // Saved indices refer to the persisted shape and persisted visibility.
+    lcd::loadSettings(settingsPrefs,settings);
+    int slots[lcd::SCREEN_SLOTS];
+    const int count=lcd::activeSlots(solarPublished(),spareCount(),settings,slots,lcd::SCREEN_SLOTS);
+    const int previous=screenIndex>=0 && screenIndex<count ? slots[screenIndex] : -1;
+    lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
+#ifdef VENTANAL_LCD_DIAG_SETTINGS
+    auto diagnostic=settings; diagnostic.brightness=50; diagnostic.showWeather=false;
+    settings=diagnostic; // deliberately RAM-only: normal build restores owner settings
+    lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
+#endif
+    lcd::log("settings brightness=%u timeout=%u art=%d weather=%d solar=%d\n",
+             settings.brightness,settings.timeoutMin,settings.showArt,settings.showWeather,settings.showSolar);
     // Initialise the configured timezone BEFORE any refresh (and independent
     // of connectivity): an offline reboot with retained RTC time evaluates
     // the persisted LOCAL quiet window in the configured zone, not UTC.
@@ -674,7 +710,8 @@ void setup() {
     seedRtc(); // after GT911 reset sequence; never reconfigure the shared bus
     clockBackground=static_cast<uint16_t*>(ps_malloc(250*80*2));
     clockPixels=static_cast<uint16_t*>(ps_malloc(250*80*2));
-    if(!clockBackground || !clockPixels) lcd::log("clock error=allocation\n");
+    clockDimmed=static_cast<uint16_t*>(ps_malloc(250*80*2));
+    if(!clockBackground || !clockPixels || !clockDimmed) lcd::log("clock error=allocation\n");
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
@@ -711,6 +748,8 @@ void loop() {
 #endif
     if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
         applyFinishedRefresh();
-    if (!refreshBusy && now - lastFetchMs >= REFRESH_MS) startRefresh(false);
+    if (!refreshBusy && (settingsRefreshPending || now - lastFetchMs >= REFRESH_MS)) {
+        if(startRefresh(false)) settingsRefreshPending=false;
+    }
     delay(2);
 }

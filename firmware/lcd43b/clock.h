@@ -26,7 +26,10 @@ inline bool formatClock(const tm& t, bool h24, char* time, size_t tn, char* date
     int n=h24 ? snprintf(time,tn,"%02d:%02d",t.tm_hour,t.tm_min)
               : snprintf(time,tn,"%d:%02d %s",t.tm_hour%12 ? t.tm_hour%12 : 12,t.tm_min,t.tm_hour<12?"AM":"PM");
     int d=snprintf(date,dn,"%s %d %s",days[t.tm_wday],t.tm_mday,months[t.tm_mon]);
-    return n>=0 && size_t(n)<tn && d>=0 && size_t(d)<dn;
+    if(n>=0 && size_t(n)<tn && d>=0 && size_t(d)<dn) return true;
+    if(tn) *time=0;
+    if(dn) *date=0;
+    return false;
 }
 inline int fromBcd(uint8_t b) { return (b&15)>9 || (b>>4)>9 ? -1 : (b>>4)*10+(b&15); }
 inline uint8_t toBcd(int n) { return uint8_t((n/10)*16+n%10); }

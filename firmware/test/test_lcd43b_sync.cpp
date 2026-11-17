@@ -92,6 +92,7 @@ std::string manifestBody(const Entry& art, const Entry& weather) {
 }
 
 void resetFakes() {
+    requestedUrls.clear();
     files.clear();
     preferences.clear();
     Serial.output.clear();
@@ -254,6 +255,33 @@ int main() {
         assert(readBytesCalls == 0);      // nothing re-downloaded
         assert(strstr(Serial.output.c_str(), "skipped=unchanged"));
         assert(!lcd::anyRequiredFrameFailed(again));   // nothing was required
+    }
+    {   // Hidden Art and spares are never requested; cached hidden files stay.
+        resetFakes();
+        auto frame=solidFrame(0xffff);
+        Entry art=makeEntry("art",frame), weather=makeEntry("weather",frame), spare=makeEntry("spare0",frame);
+        responseBody=manifestBody(art,weather);
+        responseBody.insert(responseBody.size()-1,",\"spares\":["+spare.body+"]");
+        urlResponses["http://host"+weather.url]=frame;
+        sizeFromResponse=true;
+        files["/art.vnr"]={1,2,3}; files["/spare0.vnr"]={4,5,6};
+        char ids[lcd::SCREEN_SLOTS][17]={};
+        auto settings=lcd::defaultSettings(false); settings.showArt=false;
+        lcd::RefreshResult result; CountingWatchdog watchdog;
+        lcd::runRefresh("http://host","lcd43b",ids,result,watchdog,settings);
+        assert(result.manifestOk && result.frameOk[1] && !lcd::anyRequiredFrameFailed(result));
+        assert(!result.frameOk[0] && !result.frameOk[3] && !result.dropSlot[0] && !result.dropSlot[3]);
+        assert(files["/art.vnr"]==std::vector<uint8_t>({1,2,3}));
+        assert(files["/spare0.vnr"]==std::vector<uint8_t>({4,5,6}));
+        assert(requestedUrls.size()==2 && requestedUrls[1]=="http://host"+weather.url);
+        // If Solar alone was enabled but is no longer published, download
+        // all published fallback screens so the board cannot get stuck.
+        requestedUrls.clear(); settings.showWeather=false;
+        urlResponses["http://host"+art.url]=frame;
+        urlResponses["http://host"+spare.url]=frame;
+        lcd::runRefresh("http://host","lcd43b",ids,result,watchdog,settings);
+        assert(result.frameOk[0] && result.frameOk[1] && result.frameOk[3]);
+        assert(requestedUrls.size()==4);
     }
     {   // Stalled transfers with the watchdog enabled: the manifest itself
         // arrives, every frame transfer gives up after its budget, the

@@ -11,6 +11,7 @@
 // screen and hide spare0 (pinned by test_lcd43b_screens).
 
 #include <cstdint>
+#include "settings.h"
 
 namespace lcd {
 
@@ -31,16 +32,45 @@ inline int spareBase(bool solarPresent) {
 // disagree with another about which cache backs a screen (pinned by
 // test_lcd43b_screens). Returns the list length; entries beyond capacity
 // are dropped.
-inline int activeSlots(bool solarPresent, int spareCount, int* slots,
-                       int capacity) {
+inline int activeSlots(bool solarPresent, int spareCount, const DeviceSettings& settings,
+                       int* slots, int capacity) {
     int count = 0;
     if (capacity <= 0) return 0;
-    slots[count++] = 0;                                  // art
-    if (count < capacity) slots[count++] = 1;            // weather
-    if (solarPresent && count < capacity) slots[count++] = 2;
-    for (int i = 0; i < spareCount && count < capacity; ++i)
+    const bool fallback=!settings.showArt && !settings.showWeather && !(solarPresent && settings.showSolar);
+    if (settings.showArt || fallback) slots[count++] = 0;
+    if ((settings.showWeather || fallback) && count < capacity) slots[count++] = 1;
+    if (solarPresent && (settings.showSolar || fallback) && count < capacity) slots[count++] = 2;
+    for (int i = 0; i < spareCount && i < 3 && (settings.showArt || fallback) && count < capacity; ++i)
         slots[count++] = 3 + i;
     return count;
+}
+
+inline int activeSlots(bool solarPresent, int spareCount, int* slots, int capacity) {
+    return activeSlots(solarPresent,spareCount,DeviceSettings{},slots,capacity);
+}
+inline int screenSlot(int index, bool solarPresent, int spareCount, const DeviceSettings& s) {
+    int slots[SCREEN_SLOTS];
+    const int n=activeSlots(solarPresent,spareCount,s,slots,SCREEN_SLOTS);
+    return index>=0 && index<n ? slots[index] : -1;
+}
+// Double-tap targets remain empty with Art disabled, including fallback.
+inline int spareTargets(bool solarPresent, int spareCount, const DeviceSettings& s,
+                        int* slots, int capacity) {
+    if(!s.showArt) return 0;
+    int active[SCREEN_SLOTS], n=activeSlots(solarPresent,spareCount,s,active,SCREEN_SLOTS), count=0;
+    for(int i=0;i<n && count<capacity;++i) if(active[i]>=3) slots[count++]=i;
+    return count;
+}
+// Preserve cache-slot identity across visibility/publication changes; if hidden
+// or removed select the first active screen. Also normalise double-tap cursor.
+inline void remapSelection(int& index, int& cursor, int previousSlot,
+                           bool solarPresent, int spareCount, const DeviceSettings& s) {
+    int slots[SCREEN_SLOTS];
+    const int n=activeSlots(solarPresent,spareCount,s,slots,SCREEN_SLOTS);
+    index=0;
+    for(int i=0;i<n;++i) if(slots[i]==previousSlot) index=i;
+    const int targets=spareTargets(solarPresent,spareCount,s,slots,SCREEN_SLOTS);
+    if(cursor<0 || cursor>=targets) cursor=0;
 }
 
 // Cache slot (0..SCREEN_SLOTS-1) for a screen index; negative when the

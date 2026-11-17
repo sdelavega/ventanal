@@ -214,7 +214,8 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
 
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
-                RefreshResult& result, Watchdog& watchdog) {
+                RefreshResult& result, Watchdog& watchdog,
+                const DeviceSettings& settings) {
     result = RefreshResult{};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
@@ -232,13 +233,19 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     for (int i = 0; i < result.manifest.spareCount; ++i)
         published[3 + i] = &result.manifest.spares[i];
 
+    bool visible[SCREEN_SLOTS]={}; int slots[SCREEN_SLOTS];
+    const int count=activeSlots(result.manifest.screens[2].present,result.manifest.spareCount,
+                                settings,slots,SCREEN_SLOTS);
+    for(int i=0;i<count;++i) visible[slots[i]]=true;
     uint8_t* buffer = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
     if (!buffer) {
         log("download error=allocation\n");
         // Every slot that required a download this pass just failed it:
         // the pass reports failure, not manifest-only success.
         for (int slot = 0; slot < SCREEN_SLOTS; ++slot)
-            if (published[slot] && published[slot]->present)
+            if (visible[slot] && published[slot] && published[slot]->present
+                && (strcmp(currentIds[slot],published[slot]->id)
+                    || !LittleFS.exists(String("/")+SLOT_NAMES[slot]+".vnr")))
                 result.frameFailed[slot] = true;
         return;
     }
@@ -258,6 +265,10 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             }
             LittleFS.remove(temporary);
             continue;
+        }
+        if (!visible[slot]) {
+            log("download slot=%s skipped=hidden\n", SLOT_NAMES[slot]);
+            continue; // keep hidden cached frames and ids
         }
         if (!strcmp(currentIds[slot], info->id)
             && LittleFS.exists(String("/") + SLOT_NAMES[slot] + ".vnr")) {

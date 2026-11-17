@@ -130,7 +130,8 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
 // stage a drop). Blocking by design — run it on the worker task.
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
-                RefreshResult& result, Watchdog& watchdog);
+                RefreshResult& result, Watchdog& watchdog,
+                const DeviceSettings& settings = DeviceSettings{});
 
 // Apply a finished pass to the live state (single writer: the main loop).
 // Persists the validated quiet window and publish shape, normalises the
@@ -139,14 +140,17 @@ void runRefresh(const char* hostUrl, const char* deviceId,
 // must be re-blitted.
 inline bool applyRefresh(RefreshState& state, int& screenIndex,
                         int& spareCursor, Preferences& prefs,
-                        const RefreshResult& result, bool requested) {
+                        const RefreshResult& result, bool requested,
+                        const DeviceSettings& settings = DeviceSettings{}) {
     const bool wasOffline = state.offline;
+    const int previousSlot=screenSlot(screenIndex,state.manifest.screens[2].present,
+                                      state.manifest.spareCount,settings);
     if (result.manifestOk) {
         state.manifest = result.manifest;
         saveQuiet(prefs, state.manifest);
         savePublishShape(prefs, state.manifest);
-        normalizeSelection(screenIndex, spareCursor, state.manifest.screens[2].present,
-                          state.manifest.spareCount);
+        remapSelection(screenIndex, spareCursor, previousSlot, state.manifest.screens[2].present,
+                          state.manifest.spareCount,settings);
         saveSelection(prefs, screenIndex, spareCursor);   // survive reboot
     }
     for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {

@@ -22,6 +22,10 @@ int main() {
         assert(!strcmp(time,h==0?"12:32 AM":h==12?"12:32 PM":"11:32 PM")); }
     t.tm_year=70; assert(!lcd::formatClock(t,true,time,sizeof time,date,sizeof date));
     assert(!*time && !*date);
+    t.tm_year=126;
+    assert(!lcd::formatClock(t,true,time,2,date,sizeof date) && !*time && !*date);
+    assert(!lcd::formatClock(t,true,time,sizeof time,date,2) && !*time && !*date);
+    assert(!lcd::formatClock(t,true,nullptr,0,date,sizeof date) && !*date);
     Bus bus; t.tm_year=126; t.tm_hour=14; t.tm_sec=49;
     assert(lcd::rtcEpoch(t)==1794925969);
     assert(lcd::writeRtc(bus,t)); tm out{};

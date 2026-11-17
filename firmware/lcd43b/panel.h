@@ -11,6 +11,7 @@
 #include <Arduino.h>
 #include <cstdint>
 #include <cstddef>
+#include "settings.h"
 
 extern "C" {
 #include "esp_lcd_panel_ops.h"
@@ -82,6 +83,19 @@ public:
     bool blit(const uint16_t* pixels) {
         return panel_ && esp_lcd_panel_draw_bitmap(panel_, 0, 0, WIDTH, HEIGHT,
                                                    pixels) == ESP_OK;
+    }
+
+    // The caller owns PSRAM staging. Sources (cache/composited readout) remain
+    // undimmed so repeated minute redraws and wake cannot accumulate dimming.
+    bool blitDimmed(const uint16_t* pixels, uint16_t* staging, uint8_t brightness) {
+        lcd::dimRgb565(pixels,staging,size_t(WIDTH)*HEIGHT,brightness);
+        return blit(staging);
+    }
+    bool blitRegionDimmed(int x, int y, int w, int h, const uint16_t* pixels,
+                          uint16_t* staging, uint8_t brightness) {
+        if(x<0 || y<0 || w<=0 || h<=0 || x+w>WIDTH || y+h>HEIGHT) return false;
+        lcd::dimRgb565(pixels,staging,size_t(w)*h,brightness);
+        return blitRegion(x,y,w,h,staging);
     }
 
     // Packed regional source, exclusive end coordinates (same contract as blit).

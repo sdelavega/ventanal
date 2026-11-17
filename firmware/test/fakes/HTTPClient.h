@@ -12,6 +12,7 @@ inline bool failBegin = false;
 inline std::string responseBody;
 inline std::string lastUserAgent;
 inline std::string lastUrl;
+inline std::vector<std::string> requestedUrls;
 inline std::map<std::string,std::string> lastHeaders;
 inline unsigned readDelay=0, streamTimeout=15000;
 inline size_t largestRead = 0;
@@ -62,6 +63,7 @@ public:
     void setConnectTimeout(unsigned) {}
     void setUserAgent(const char* value) { lastUserAgent=value; }
     int GET() {
+        requestedUrls.push_back(lastUrl);
         auto perUrl = urlResponses.find(lastUrl);
         if (perUrl != urlResponses.end()) response = perUrl->second;
         else if(!responseBody.empty()) response.assign(responseBody.begin(),responseBody.end());
