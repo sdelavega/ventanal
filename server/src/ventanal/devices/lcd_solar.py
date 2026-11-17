@@ -16,8 +16,8 @@ from ventanal.solar.render import (
 )
 from ventanal.text import fit, font, renderable
 
-SECTIONS = [(60, 145, 'sky', 'SOLAR'), (209, 104, 'gold', 'BANDS'),
-            (317, 54, 'light_gray', 'KP'), (375, 49, 'violet', '3-DAY')]
+SECTIONS = [(60, 145, 'sky', 'SOLAR'), (209, 113, 'gold', 'BANDS'),
+            (326, 54, 'light_gray', 'KP'), (384, 40, 'violet', '3-DAY')]
 
 
 def _text(draw, label, xy, size=14, colour='white', *, bold=False,
@@ -67,7 +67,7 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
     _text(d, 'DAY', (326, 218), 13, 'light_gray', anchor='ms')
     _text(d, 'NIGHT', (462, 218), 13, 'light_gray', anchor='ms')
     for i, (band, day, night) in enumerate(est.bands):
-        y = 224 + i*19
+        y = 224 + i*21
         _text(d, band, (150, y+14), 17, 'gold', bold=True, width=100)
         for x, rating in [(270, day), (406, night)]:
             colour = {'Good': 'green', 'Fair': 'gold', 'Poor': 'red'}[rating]
@@ -75,7 +75,7 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
                                 fill=LCD_COLOURS[colour])
             _text(d, rating, (x+56, y+13), 13, 'black', bold=True, anchor='ms')
     _text(d, 'HF CONDITIONS, MUF AND NOISE ARE ESTIMATES',
-          (150, 310), 12, 'gold', width=400)
+          (150, 322), 12, 'gold', width=400)
 
     sun = crop_sun(data.sun).resize((186, 186), Image.Resampling.LANCZOS)
     mask = Image.new('L', sun.size)
@@ -90,8 +90,8 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
           anchor='ms', width=218)
 
     # Reserve a full-width chart; threshold is drawn over all eight bars.
-    x, y, width, height = 172, 317, 612, 27
-    for tick in (0, 3, 6, 9):
+    x, y, width, height = 172, 330, 612, 23
+    for tick in (0, 9):
         ty = y + height - tick/9*height
         d.line((x, ty, x+width, ty), fill=LCD_COLOURS['gray'])
         _text(d, tick, (164, ty+4), 11, 'light_gray', anchor='rs')
@@ -101,11 +101,11 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
         bar_h = max(2, min(9, max(0, k))/9*height)
         d.rounded_rectangle((bx, y+height-bar_h, bx+52, y+height),
                             radius=2, fill=LCD_COLOURS[_k_colour(k)])
-        _text(d, stamp[11:13], (bx+26, 356), 11, anchor='ms')
+        _text(d, stamp[11:13], (bx+26, 365), 11, anchor='ms')
     threshold = y + height - 5/9*height
     d.line((x, threshold, x+width, threshold), fill=LCD_COLOURS['gold'])
-    _text(d, 'PLANETARY KP · 3-HOUR INTERVALS · UTC', (150, 367), 11, 'light_gray')
-    _text(d, 'G1 (KP 5)', (785, 367), 11, 'gold', anchor='rs')
+    _text(d, 'PLANETARY KP · 3-HOUR INTERVALS · UTC', (150, 376), 11, 'light_gray')
+    _text(d, 'G1 (KP 5)', (785, 376), 11, 'gold', anchor='rs')
 
     for i, (date, k, r, probability, g) in enumerate(forecast_days(data)):
         bx = 150+i*214
@@ -113,12 +113,12 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
             date = datetime.fromisoformat(date).strftime('%a %d')
         except (ValueError, TypeError):
             date = 'UNKNOWN'
-        _text(d, date, (bx, 393), 17, 'gold', bold=True, width=204)
+        _text(d, date, (bx, 398), 12, 'gold', bold=True, width=204)
         _text(d, f'KP MAX {kp_notation(k)} · {forecast_label(k, g)}',
-              (bx, 407), 14, width=204)
+              (bx, 409), 11, width=204)
         _text(d, f'R1–R2 {r if r is not None else "?"}% · '
               f'S1 {probability if probability is not None else "?"}%',
-              (bx, 421), 12, 'light_gray', width=204)
+              (bx, 421), 11, 'light_gray', width=204)
     label, message = alert_summary(data.alerts)
     if label:
         _text(d, label, (150, 446), 16, 'gold', bold=True, width=72)

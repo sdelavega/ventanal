@@ -208,7 +208,7 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
     pills = [xy for kind, xy in shapes
              if kind == 'rounded_rectangle' and xy[0] >= 270 and 218 <= xy[1] < 310]
     bars = [xy for kind, xy in shapes
-            if kind == 'rounded_rectangle' and xy[1] >= 317]
+            if kind == 'rounded_rectangle' and xy[1] >= 326]
     lines = [xy for kind, xy in shapes if kind == 'line']
     assert len(pills) == 8 and len(bars) == 8
     assert sun == (582, 84, 768, 270)
@@ -216,7 +216,20 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
     for x0, y0, x1, y1 in pills:
         assert 140 <= x0 < x1 <= 786 and 26 <= y0 < y1 < 458
     for x0, y0, x1, y1 in bars + lines:
-        assert 140 <= x0 < x1 <= 786 and 317 <= y0 <= y1 <= 344
+        assert 140 <= x0 < x1 <= 786 and 330 <= y0 <= y1 <= 353
+
+    axis = sorted((box for _, box in boxes
+                   if box[2] == 164 and box[1] >= 310), key=lambda box: box[1])
+    assert len(axis) >= 2
+    for upper, lower in zip(axis, axis[1:]):
+        assert lower[1] - upper[3] >= 2
+    row_tops = sorted({box[1] for box in pills})
+    assert len(row_tops) == 4
+    assert all(lower - upper >= 21 for upper, lower in zip(row_tops, row_tops[1:]))
+    hf_caption, = [box for text, box in boxes if text.startswith('HF CONDITIONS')]
+    # Pillow rectangles include their bottom pixel; text bboxes exclude it.
+    assert hf_caption[1] - (max(box[3] for box in pills) + 1) >= 6
+    assert min(line[1] for line in lines) - hf_caption[3] >= 6
 
     caption = [box for text, box in boxes
                if text.startswith(('PLANETARY KP', 'G1 (KP 5)'))]
