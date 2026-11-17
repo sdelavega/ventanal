@@ -407,7 +407,7 @@ def test_solar_layout_clearance(monkeypatch, storm):
     assert render.LAYOUT['chart'][1]-bounds['HF CONDITIONS, MUF AND NOISE ARE ESTIMATES'][3]>=28
     assert min(b[1] for b in forecast)-bounds['PLANETARY KP · 3-HOUR INTERVALS · UTC'][3]>=28
     fy,fh=render.LAYOUT['sidebar'][-1][:2]
-    # The bottom elbow gap takes precedence over spanning all forecast lines.
+    # Forecast content stays fixed while the sidebar clears the bottom elbow.
     assert fy<=min(b[1] for b in forecast)
     assert fy+fh==994-6
     rows=render.LAYOUT['sidebar']
@@ -602,7 +602,7 @@ def test_sidebar_ink_maximises_simulated_panel_lightness(monkeypatch, screen, ca
         background_l=to_oklab(mean)[0]
         lightness=to_oklab(np.asarray(cfg.panel_rgb)[:2])[:,0]
         expected=cfg.panel_rgb[int(np.argmax(abs(lightness-background_l)))]
-        assert inks[max(y+22,y+h-12) if screen=='solar' else y+h-12]==expected
+        assert inks[y+h-12]==expected
     assert len(inks)==len(segments)
 
 
@@ -668,20 +668,42 @@ def test_alert_relevance_prioritises_hf_and_severity():
     assert 'GEOMAGNETIC STORM G1' in message and 'ELECTRON' not in message
 
 
-def test_short_sidebar_label_stays_in_its_segment(monkeypatch):
+def test_sidebar_labels_stay_inside_segments_and_near_content_rows(monkeypatch):
     from pathlib import Path
     from ventanal.solar import render
     from ventanal.text import font
     original=render._text
     seen=[]
+    rows={label:(y,h) for y,h,_,label in render.LAYOUT['sidebar']}
+    content_ranges={'SOLAR FLUX':(244,338), 'GEOMAG':(356,470),
+                    'HF BANDS':(522,783), 'KP 24 H':(814,947), '3-DAY':(1008,1060)}
     def capture(canvas,text,xy,px,colour,**kw):
-        if text=='3-DAY':
-            y,h,_,_=render.LAYOUT['sidebar'][-1]
-            _,top,_,bottom=font('antonio-bold',px).getbbox(text,anchor='rs')
+        if text in rows:
+            y,h=rows[text]
+            assert xy[1]==y+h-12
+            left,top,right,bottom=font('antonio-bold',px).getbbox(text,anchor='rs')
+            assert 30<=xy[0]+left<xy[0]+right<260
             assert y<=xy[1]+top<xy[1]+bottom<y+h
+            row_top,row_bottom=content_ranges[text]
+            assert row_top-32<=xy[1]<=row_bottom+12
             seen.append(text)
         return original(canvas,text,xy,px,colour,**kw)
     monkeypatch.setattr(render,'_text',capture)
     cfg=load_config(Path(__file__).parents[1]/'ventanal.example.toml')
     render.render_solar(sample(),'CALL SIGN',(41.7,-72.7),NOW,cfg)
-    assert seen==['3-DAY']
+    assert seen==list(rows)
+    assert render.LAYOUT['bands']==(330,522,66)
+    assert render.LAYOUT['chart']==(365,814,1200,90)
+    assert render.LAYOUT['forecast']==(330,1008,415)
+    assert render.LAYOUT['alert']==(330,1082,1240,22)
+
+
+def test_sidebar_balanced_segment_rectangles():
+    from ventanal.solar.render import LAYOUT
+    assert LAYOUT['sidebar']==(
+        (212,126,'sky','SOLAR FLUX'), (344,146,'red','GEOMAG'),
+        (496,264,'gold','HF BANDS'), (766,114,'sky','KP 24 H'),
+        (886,102,'violet','3-DAY'))
+    assert min(h for _,h,_,_ in LAYOUT['sidebar'])>=102
+    assert {ny-(y+h) for (y,h,_,_),(ny,_,_,_) in
+            zip(LAYOUT['sidebar'],LAYOUT['sidebar'][1:])}=={6}

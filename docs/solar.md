@@ -96,8 +96,10 @@ band names, 38 px pills, 32 px forecast days and 24/20 px forecast lines.
 Captions remain at least 18 px. The sun is 340 px; band rows have 28 px gaps.
 The 90 px Kp plot retains its full 0–9 scale and reference line. Measured text
 bounds enforce 28 px between major rows, 20 px forecast/alert clearance and
-24 px alert/bottom-bar clearance. The 3-DAY segment ends six pixels before the bottom elbow; forecast rows
-retain their size and clearance independently of the shorter sidebar segment.
+24 px alert/bottom-bar clearance. Sidebar segments use (y, height) pairs
+(212, 126), (344, 146), (496, 264), (766, 114), and (886, 102), with
+six-pixel gaps and label baselines at y + height − 12. The 3-DAY segment ends
+six pixels before the bottom elbow at y=994. Content rows retain their positions.
 
 
 ## Publication runbook

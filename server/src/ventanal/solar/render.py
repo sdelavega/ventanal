@@ -16,7 +16,7 @@ from ventanal.solar.data import forecast_days
 SOLAR_READOUT=Readout(1236,30,334,136,'lcars')
 # Sidebar segments have 6 px gaps; the last ends 6 px before the bottom elbow.
 LAYOUT = {
-    'sidebar': ((212,126,'sky','SOLAR FLUX'),(344,146,'red','GEOMAG'),(496,306,'gold','HF BANDS'),(808,146,'sky','KP 24 H'),(960,28,'violet','3-DAY')),
+    'sidebar': ((212,126,'sky','SOLAR FLUX'),(344,146,'red','GEOMAG'),(496,264,'gold','HF BANDS'),(766,114,'sky','KP 24 H'),(886,102,'violet','3-DAY')),
     'sun': (1170,224,340), 'bands': (330,522,66),
     'chart': (365,814,1200,90), 'forecast': (330,1008,415),
     'alert': (330,1082,1240,22),
@@ -99,9 +99,7 @@ def render_solar(s,call,coords,now,cfg):
         _text(c,str(label).upper(),(x,y),size,ink[color],bold=bold,max_w=width,anchor=anchor)
     draw_frame(c, [(y,h,color) for y,h,color,_ in LAYOUT['sidebar']],accent=m['orange'])
     for y,h,color,label in LAYOUT['sidebar']:
-        # Keep the short 3-DAY label inside its segment above the elbow gap.
-        baseline=max(y+22,y+h-12)
-        _text(c,label,(248,baseline),22,sidebar_ink(color,cfg.panel_rgb),bold=True,anchor='rs')
+        _text(c,label,(248,y+h-12),22,sidebar_ink(color,cfg.panel_rgb),bold=True,anchor='rs')
     text('SOLAR CONDITIONS',330,148,52,'yellow',True)
     text(f'{call} · {grid_square(*coords)} · {now.astimezone(timezone.utc):%d %b %Y %H:%M} UTC · NOAA SWPC · NASA SDO',332,194,24,width=1238)
     def metric(label,value,x,y,size,color='white'):
