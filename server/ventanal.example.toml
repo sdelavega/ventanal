@@ -85,3 +85,10 @@ token = ""
 [ham]
 # Optional US amateur call sign; verified locally against FCC status/expiry and ZIP5.
 call_sign = ""
+
+[devices]
+# Optional full-colour render profile for the Waveshare ESP32-S3-Touch-LCD-4.3B.
+# When enabled, each tick also publishes raw RGB565 800x480 frames and a
+# per-device manifest under <output_dir>/devices/lcd43b/ (served at
+# /devices/lcd43b/manifest.json). The e-paper outputs are unchanged.
+lcd43b = false

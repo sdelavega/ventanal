@@ -208,7 +208,17 @@ def tick(
     # The timer and manual invocations share the manifest's single-writer lock.
     with (cfg.cache_dir / "tick.lock").open("a") as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        return _tick_locked(cfg, now, client, force_art, force_spares, force_weather)
+        result = _tick_locked(cfg, now, client, force_art, force_spares, force_weather)
+        if cfg.lcd43b:
+            # Optional full-colour profiles publish under the same lock so
+            # they can never race the six-colour e-paper manifest.
+            from ventanal.devices import lcd43b
+
+            try:
+                lcd43b.tick(cfg, now, client)
+            except Exception as exc:
+                log.warning("lcd43b device publish failed: %s", exc)
+        return result
 
 
 def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):

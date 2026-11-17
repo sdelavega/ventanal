@@ -57,6 +57,7 @@ class Config:
     quiet_end: str = "06:00"
     include_monotone: bool = False
     screen_fit_only: bool = False
+    lcd43b: bool = False
     credentials: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
 
@@ -234,6 +235,13 @@ def validate_config(data: dict) -> Config:
     if full_mv is not None and (type(full_mv) is not int or not 4000 <= full_mv <= 4300):
         raise ConfigError("battery.full_mv: expected 4000–4300 mV")
 
+    devices = data.get("devices", {})
+    if not isinstance(devices, dict):
+        raise ConfigError("devices.section: expected a table")
+    lcd43b = devices.get("lcd43b", False)
+    if type(lcd43b) is not bool:
+        raise ConfigError("devices.lcd43b: expected a boolean")
+
     from ventanal.solar.licence import normalize_call
     ham = data.get("ham", {})
     if not isinstance(ham, dict) or not isinstance(ham.get("call_sign", ""), str):
@@ -247,6 +255,7 @@ def validate_config(data: dict) -> Config:
         battery_full_mv=full_mv,
         include_monotone=art.get('include_monotone', False),
         screen_fit_only=art.get('screen_fit_only', False),
+        lcd43b=lcd43b,
         credentials=credentials,
         https_host=shost, https_port=int(sport),
         quiet_start=_clock(schedule.get("quiet_start", "23:00"), "schedule.quiet_start"),

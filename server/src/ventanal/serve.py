@@ -38,7 +38,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         def transport(self):
             if not active(): return True
             path = unquote(urlsplit(self.path).path)
-            board = path == '/manifest.json' or path.startswith('/frames/')
+            board = (path == '/manifest.json' or path.startswith('/frames/')
+                      or path.startswith('/devices/'))
             if not isinstance(self.connection, ssl.SSLSocket):
                 if board or path.startswith('/previews/'):
                     self.send_error(403)
@@ -60,10 +61,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         def do_GET(self):
             if not self.transport(): return
             path = unquote(urlsplit(self.path).path)
-            if ui is not None and not re.fullmatch(r'/(?:manifest\.json|frames/.*|previews/.*)', path):
+            if ui is not None and not re.fullmatch(r'/(?:manifest\.json|frames/.*|previews/.*|devices/[a-z0-9-]+(?:/(?:manifest\.json|frames/.*|previews/.*))?)', path):
                 ui.handle(self, path)
                 return
-            if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnf|previews/[A-Za-z0-9_-]+\.png)', path):
+            if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnf|previews/[A-Za-z0-9_-]+\.png|devices/[a-z0-9-]+/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnr))', path):
                 self.send_error(404)
                 return
             if path == '/manifest.json' and cache_dir is not None:
@@ -111,7 +112,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             with source:
                 self.send_response(200)
                 suffix = target.suffix
-                self.send_header('Content-Type', {'.json': 'application/json', '.vnf': 'application/octet-stream', '.png': 'image/png'}[suffix])
+                self.send_header('Content-Type', {'.json': 'application/json', '.vnf': 'application/octet-stream', '.vnr': 'application/octet-stream', '.png': 'image/png'}[suffix])
                 self.send_header('Content-Length', str(source.seek(0, 2)))
                 self.send_header('Cache-Control', 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable')
                 self.end_headers()

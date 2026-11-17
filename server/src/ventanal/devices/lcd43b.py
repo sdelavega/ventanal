@@ -1,0 +1,286 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+
+"""Full-colour 800x480 profile for the Waveshare ESP32-S3-Touch-LCD-4.3B.
+
+The board renders raw RGB565 frames over an 800x480 parallel LCD; no
+six-colour quantization applies. Frames use the VNR1 format: a 16-byte
+header (magic, little-endian width and height, eight zero bytes) followed
+by little-endian RGB565 pixels. The per-device manifest mirrors the main
+manifest's schema (id/url/size) and adds the full SHA-256 so the firmware
+can hash-verify every download.
+"""
+
+import hashlib
+import json
+import logging
+import os
+import struct
+
+import numpy as np
+from PIL import Image, ImageDraw, ImageFilter
+
+from ventanal.art.compose import compose
+from ventanal.manifest import read_manifest, write_manifest
+from ventanal.text import fit, font, renderable
+
+LCD_W, LCD_H = 800, 480
+FRAME_SIZE = 16 + LCD_W * LCD_H * 2  # VNR1 header + RGB565 pixels: 768016
+_HEADER = struct.pack('<4sHH8x', b'VNR1', LCD_W, LCD_H)
+
+DEVICE_URL = '/devices/lcd43b'
+SCREENS = ('art', 'weather', 'solar')
+SPARES = 3
+RETAIN = 4
+
+# Weather and solar reuse the renderers' 1600x1200 full-colour canvas,
+# downscaled to 640x480 and centred on a black 800x480 frame.
+CONTENT_W, CONTENT_H = 640, 480
+CONTENT_X = (LCD_W - CONTENT_W) // 2
+CONTENT_Y = 0
+_SCALE = CONTENT_W / 1600
+# The reserved top-right readout rectangle, mapped from the renderers'
+# WEATHER_READOUT (1236, 30, 334, 136) through the letterbox transform.
+READOUT = (CONTENT_X + round(1236 * _SCALE), round(30 * _SCALE),
+           round(334 * _SCALE), round(136 * _SCALE))
+# The art screen composes natively at 800x480, so its small readout gets
+# its own corner box scaled from the full-frame layout.
+ART_READOUT = (690, 6, 110, 30)
+
+log = logging.getLogger(__name__)
+
+
+def encode_frame(image: Image.Image) -> bytes:
+    """Encode an RGB 800x480 image as a little-endian RGB565 VNR1 frame."""
+    if image.mode != 'RGB' or image.size != (LCD_W, LCD_H):
+        raise ValueError('frame source must be an RGB 800x480 image')
+    pixels = np.asarray(image, dtype=np.uint8)
+    value = ((pixels[..., 0].astype(np.uint16) >> 3) << 11
+             | (pixels[..., 1].astype(np.uint16) >> 2) << 5
+             | (pixels[..., 2].astype(np.uint16) >> 3))
+    return _HEADER + value.astype('<u2').tobytes()
+
+
+def decode_frame(data: bytes) -> np.ndarray:
+    """Validate a VNR1 frame and return its 480x800x3 RGB888 pixels."""
+    if len(data) != FRAME_SIZE or data[:16] != _HEADER:
+        raise ValueError('invalid VNR1 frame size or header')
+    packed = np.frombuffer(data, dtype='<u2', offset=16).reshape(LCD_H, LCD_W)
+    red = ((packed >> 11) & 0x1F).astype(np.uint8) << 3
+    green = ((packed >> 5) & 0x3F).astype(np.uint8) << 2
+    blue = (packed & 0x1F).astype(np.uint8) << 3
+    return np.stack((red, green, blue), axis=-1)
+
+
+def _updated_text(now, clock_24h: bool) -> str:
+    stamp = now.strftime('%H:%M') if clock_24h else now.strftime('%I:%M %p').lstrip('0')
+    return f'UPDATED {stamp}'
+
+
+def _draw_updated(frame: Image.Image, rect, now, clock_24h: bool) -> None:
+    """Draw a small black pill with the white update readout in rect."""
+    x, y, w, _h = rect
+    face = font('antonio-bold', 20)
+    label = fit(_updated_text(now, clock_24h), face, w)
+    if not label:
+        return
+    draw = ImageDraw.Draw(frame)
+    px, py = x + w - 6, y + (rect[3] // 2)
+    left, top, right, bottom = face.getbbox(label, anchor='rm')
+    draw.rounded_rectangle((px + left - 10, py + top - 7,
+                             px + right + 10, py + bottom + 7),
+                            radius=13, fill=(0, 0, 0))
+    draw.text((px, py), label, font=face, fill='white', anchor='rm')
+
+
+def letterbox(source, now=None, clock_24h: bool = True) -> Image.Image:
+    """Downscale a 1600x1200 render to 640x480 on a black 800x480 frame."""
+    image = source.rgb if hasattr(source, 'rgb') else source
+    if image.size != (1600, 1200):
+        raise ValueError('letterbox source must be 1600x1200')
+    frame = Image.new('RGB', (LCD_W, LCD_H), (0, 0, 0))
+    frame.paste(image.resize((CONTENT_W, CONTENT_H), Image.Resampling.LANCZOS),
+                (CONTENT_X, CONTENT_Y))
+    if now is not None:
+        _draw_updated(frame, READOUT, now, clock_24h)
+    return frame
+
+
+def render_art(image: Image.Image, credit, now, clock_24h: bool = True) -> Image.Image:
+    """Compose native 800x480 art with the soft-shade credit and readout."""
+    backdrop = compose(image, size=(LCD_W, LCD_H))
+    title_font, secondary_font = font('inter-bold', 12), font('inter', 11)
+    title = renderable(credit.get('title') or '', 'inter-bold') or 'Untitled'
+    fields = [renderable(credit.get(key) or '', 'inter')
+              for key in ('artist', 'date', 'museum')]
+    available = 772
+    title = fit(title, title_font, available * .6)
+    remaining = available - int(title_font.getlength(title))
+    # Preserve the artist, dropping museum and then date before fitting.
+    while True:
+        secondary = ' · '.join(value for value in fields if value)
+        secondary = '   ' + secondary if secondary else ''
+        if secondary_font.getlength(secondary) <= remaining or len(fields) == 1:
+            break
+        fields.pop()
+    secondary = fit(secondary, secondary_font, remaining)
+    width = title_font.getlength(title) + secondary_font.getlength(secondary)
+    mask = Image.new('L', backdrop.size)
+    ImageDraw.Draw(mask).rounded_rectangle((0, 458, 14 + width + 20, 480),
+                                           15, fill=150)
+    backdrop.paste(Image.new('RGB', backdrop.size), (0, 0),
+                   mask.filter(ImageFilter.GaussianBlur(7)))
+    draw = ImageDraw.Draw(backdrop)
+    draw.text((14, 474), title, font=title_font, fill='white', anchor='ls')
+    draw.text((14 + title_font.getlength(title), 474), secondary,
+              font=secondary_font, fill='white', anchor='ls')
+    _draw_updated(backdrop, ART_READOUT, now, clock_24h)
+    return backdrop
+
+
+def _solar_allowed(cfg, now) -> bool:
+    if not cfg.ham_call_sign:
+        return False
+    from ventanal.solar.licence import verify
+    try:
+        return verify(cfg.cache_dir / 'fcc.sqlite3', cfg.ham_call_sign,
+                      cfg.zip, now).ok
+    except Exception as exc:
+        log.warning('lcd43b solar licence check failed: %s', exc)
+        return False
+
+
+def _art_image(cfg, client, credit):
+    """Fetch the artwork behind a published credit from the shared pool."""
+    source, object_id = credit.get('source'), credit.get('object_id')
+    if not source or not object_id:
+        raise ValueError('published credit lacks source/object_id')
+    from ventanal import jobs
+    pool = jobs.ArtPool(cfg.cache_dir / 'art.sqlite3')
+    candidate = pool.get(source, object_id)
+    if candidate is None:
+        raise ValueError(f'artwork {source}:{object_id} absent from the pool')
+    return jobs.fetch_candidate(candidate, client, cfg)
+
+
+def _render_screen(cfg, name, now, client) -> Image.Image:
+    if name == 'art':
+        credit = (read_manifest(cfg.output_dir)['screens']
+                  .get('art', {}).get('credit') or {})
+        return render_art(_art_image(cfg, client, credit), credit,
+                          now, cfg.clock_24h)
+    if name == 'weather':
+        from ventanal import jobs
+        return letterbox(jobs.weather_canvas(cfg, now, client),
+                         now, cfg.clock_24h)
+    if name == 'solar':
+        from ventanal.solar.data import fetch_solar
+        from ventanal.solar.render import render_solar
+        from ventanal.weather.data import geocode
+        coords = (cfg.latitude, cfg.longitude)
+        if None in coords:
+            lat, lon, _ = geocode(cfg, client, cfg.cache_dir)
+            coords = (lat, lon)
+        canvas = render_solar(fetch_solar(client, cfg.cache_dir, now),
+                              cfg.ham_call_sign, coords, now, cfg)
+        return letterbox(canvas, now, cfg.clock_24h)
+    raise ValueError(f'unknown screen: {name}')
+
+
+def _publish_frame(out, name: str, data: bytes, now) -> dict:
+    """Atomically publish an encoded frame and return its manifest entry."""
+    digest = hashlib.sha256(data).hexdigest()
+    ident = digest[:16]
+    frames = out / 'frames'
+    frames.mkdir(parents=True, exist_ok=True)
+    path = frames / f'{name}-{ident}.vnr'
+    temporary = frames / f'.{name}-{ident}.tmp'
+    temporary.write_bytes(data)
+    os.replace(temporary, path)
+    # Prune old frames, always preserving the frame just published.
+    superseded = sorted(
+        (old for old in frames.glob(f'{name}-*.vnr') if old != path),
+        key=lambda old: old.stat().st_mtime_ns,
+        reverse=True,
+    )
+    for old in superseded[RETAIN - 1:]:
+        old.unlink(missing_ok=True)
+    return {
+        'id': ident,
+        'url': f'{DEVICE_URL}/frames/{name}-{ident}.vnr',
+        'size': len(data),
+        'sha256': digest,
+        'rendered': now.isoformat(timespec='seconds'),
+    }
+
+
+def _read_device_manifest(out) -> dict:
+    try:
+        manifest = json.loads((out / 'manifest.json').read_text(encoding='utf-8'))
+        if not isinstance(manifest, dict):
+            raise ValueError('expected a JSON object')
+        return manifest
+    except (OSError, ValueError):
+        return {}
+
+
+def tick(cfg, now, client) -> dict:
+    """Render and publish the lcd43b profile's screens; failures are per-screen.
+
+    The caller holds the tick lock, so the device manifest cannot race the
+    e-paper manifest. A failed screen keeps the previous device entry.
+    """
+    if now.utcoffset() is None:
+        raise ValueError('now must be timezone-aware')
+    out = cfg.output_dir / 'devices' / 'lcd43b'
+    previous = _read_device_manifest(out)
+    screens = previous.get('screens') if isinstance(previous.get('screens'), dict) else {}
+    screens = dict(screens)
+    for name in ('art', 'weather'):
+        try:
+            screens[name] = _publish_frame(out, name,
+                                           encode_frame(_render_screen(cfg, name, now, client)),
+                                           now)
+        except Exception as exc:
+            log.warning('lcd43b %s render failed; previous frame retained: %s',
+                        name, exc)
+    if _solar_allowed(cfg, now):
+        try:
+            screens['solar'] = _publish_frame(
+                out, 'solar', encode_frame(_render_screen(cfg, 'solar', now, client)), now)
+        except Exception as exc:
+            log.warning('lcd43b solar render failed; previous frame retained: %s', exc)
+    else:
+        screens.pop('solar', None)
+    spares = _render_spares(cfg, now, client, out)
+    manifest = {
+        'version': 1,
+        'screens': {name: screens[name] for name in SCREENS if name in screens},
+        'quiet': {'start': cfg.quiet_start, 'end': cfg.quiet_end},
+    }
+    if spares:
+        manifest['spares'] = spares
+    write_manifest(out, manifest)
+    return manifest
+
+
+def _render_spares(cfg, now, client, out) -> list:
+    """Mirror the owner's published spare slots at 800x480, best effort."""
+    from ventanal import jobs
+    entries = read_manifest(cfg.output_dir).get('spares')
+    if not isinstance(entries, list):
+        return []
+    spares = []
+    previous = _read_device_manifest(out).get('spares')
+    previous = previous if isinstance(previous, list) else []
+    for index, entry in enumerate(entries[:SPARES]):
+        credit = entry.get('credit') or {} if isinstance(entry, dict) else {}
+        try:
+            image = _art_image(cfg, client, credit)
+            data = encode_frame(render_art(image, credit, now, cfg.clock_24h))
+            spares.append(_publish_frame(out, f'spare{index}', data, now))
+        except Exception as exc:
+            if index < len(previous):
+                spares.append(previous[index])
+            log.warning('lcd43b spare %d render failed: %s', index, exc)
+    return spares
