@@ -108,6 +108,21 @@ int main() {
         assert(lcd::parseClock("0600") == -1);
         assert(lcd::parseClock("") == -1);
     }
-    puts("lcd43b manifest: schema, spares, quiet hours, rejection passed");
+    {   // Quiet hours apply only once the wall clock is trustworthy: before
+        // the first NTP sync (year 1970) the backlight stays on regardless
+        // of the persisted window — defined, safe behaviour for a
+        // USB-powered display (pinned again by test_lcd43b_persist).
+        lcd::DeviceManifest manifest;
+        manifest.quietStart = 1380;
+        manifest.quietEnd = 360;
+        assert(!lcd::quietApplies(1970, 1410, manifest));   // unsynced clock
+        assert(!lcd::quietApplies(2022, 1410, manifest));  // still implausible
+        assert(lcd::quietApplies(2026, 1410, manifest));   // 23:30, in window
+        assert(!lcd::quietApplies(2026, 720, manifest));   // noon, outside
+        manifest.quietStart = -1;                           // no window stored
+        assert(!lcd::quietApplies(2026, 1410, manifest));
+    }
+    puts("lcd43b manifest: schema, spares, quiet hours, pre-sync, rejection"
+         " passed");
     return 0;
 }

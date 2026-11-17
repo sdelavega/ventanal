@@ -90,9 +90,14 @@ def _updated_text(now, clock_24h: bool) -> str:
 
 
 def _draw_updated(frame: Image.Image, rect, now, clock_24h: bool) -> None:
-    """Draw a small black pill with the white update readout in rect."""
+    """Draw a small black pill with the white update readout in rect.
+
+    Antonio Bold 16 keeps the worst-case 12-hour label ('UPDATED 12:59 AM')
+    complete inside both reserved boxes — 20 px truncated it to
+    'UPDATED 12:5…' (pinned by test_readouts_render_complete_timestamps).
+    """
     x, y, w, _h = rect
-    face = font('antonio-bold', 20)
+    face = font('antonio-bold', 16)
     label = fit(_updated_text(now, clock_24h), face, w)
     if not label:
         return

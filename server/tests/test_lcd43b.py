@@ -23,6 +23,7 @@ from ventanal.devices import lcd43b
 from ventanal.manifest import read_manifest, write_manifest
 from ventanal.quantize import Canvas
 from ventanal.serve import make_server
+from ventanal.text import fit, font
 
 TZ = ZoneInfo('America/New_York')
 NOW = datetime(2026, 11, 15, 6, 0, tzinfo=TZ)
@@ -335,6 +336,185 @@ def test_epaper_outputs_unchanged_when_enabled(tmp_path, monkeypatch):
     assert set(disabled) == set(enabled)
     for name, data in disabled.items():
         assert enabled[name] == data, name
+
+
+def test_epaper_outputs_unchanged_after_a_successful_publish(tmp_path, monkeypatch):
+    """A successful lcd43b publish must not perturb any e-paper artifact.
+
+    The same deterministic tick runs with the profile off and on (a fully
+    successful device publish, not the failure-isolation case above);
+    every artifact outside the device subtree must stay byte-identical.
+    """
+
+    from ventanal import jobs
+    from ventanal.art.sources import Candidate
+
+    def snapshots(enabled):
+        work = tmp_path / ('successful-on' if enabled else 'successful-off')
+        value = cfg(work, lcd43b=enabled)
+        value.cache_dir.mkdir(parents=True)
+        pool = jobs.ArtPool(value.cache_dir / 'art.sqlite3')
+        pool.add([Candidate('met', '1', 'Snow', 'Artist', '1900', 'Met',
+                            'https://example.test/art', 1800, 1200,
+                            kind='painting')], 'holiday-winter')
+        pool.set_refreshed(NOW)
+        monkeypatch.setattr(jobs, 'fetch_image',
+                            lambda *a: Image.new('RGB', (16, 12)))
+        monkeypatch.setattr(jobs, 'render_art',
+                            lambda *a: (solid_canvas((9, 9, 9)), {
+                                'title': 'Snow', 'source': 'met',
+                                'object_id': '1'}))
+        monkeypatch.setattr(jobs, 'quantize',
+                            lambda *a: np.zeros((1200, 1600), dtype=np.uint8))
+        monkeypatch.setattr(jobs, 'simulate',
+                            lambda *a: Image.new('RGB', (16, 12)))
+        monkeypatch.setattr(jobs, 'geocode', lambda *a: (40.01, -105.27, 'Boulder'))
+        monkeypatch.setattr(jobs, 'fetch_weather', lambda *a, **k: object())
+        monkeypatch.setattr(jobs, 'fetch_alerts', lambda *a: [])
+        monkeypatch.setattr(jobs, 'fetch_iem', lambda *a: None)
+        monkeypatch.setattr(jobs, 'basemap', lambda *a: {'states': [], 'counties': []})
+        monkeypatch.setattr(jobs, 'render_weather',
+                            lambda *a: solid_canvas((8, 8, 8)))
+        monkeypatch.setattr(jobs, 'fetch_candidate',
+                            lambda candidate, client, c: Image.new('RGB', (16, 12)))
+        with httpx.Client() as client:
+            jobs.tick(value, NOW, client)
+        e_paper = {}
+        device = {}
+        for path in sorted((value.output_dir).rglob('*')):
+            if path.is_file():
+                key = str(path.relative_to(value.output_dir))
+                (device if 'devices' in path.parts else e_paper)[key] = \
+                    path.read_bytes()
+        return e_paper, device
+
+    baseline, _ = snapshots(False)
+    e_paper, device = snapshots(True)
+    assert set(baseline) == set(e_paper)
+    for name, data in baseline.items():
+        assert e_paper[name] == data, name
+    # The device subtree really was published and is complete.
+    assert 'devices/lcd43b/manifest.json' in device
+    manifest = json.loads(device['devices/lcd43b/manifest.json'])
+    assert set(manifest['screens']) == {'art', 'weather'}
+    for entry in manifest['screens'].values():
+        data = device[f"devices/lcd43b/frames/"
+                      f"{entry['url'].rsplit('/', 1)[1]}"]
+        assert entry['size'] == len(data) == 768016
+        assert entry['sha256'] == hashlib.sha256(data).hexdigest()
+
+
+def test_readouts_render_complete_timestamps(monkeypatch):
+    """The update readout must always render its whole text.
+
+    The worst-case 12-hour label once truncated to 'UPDATED 12:5…' inside
+    the art readout's fixed box: the label must now fit completely in both
+    reserved boxes, and the rendered pixels must be exactly the complete
+    label (an ellipsis can never match a bypassed fitter).
+    """
+    worst = NOW.replace(hour=0, minute=59)   # 'UPDATED 12:59 AM'
+    face = font('antonio-bold', 16)          # the production readout face
+    label = lcd43b._updated_text(worst, clock_24h=False)
+    assert label == 'UPDATED 12:59 AM'
+    for name, rect in (('art', lcd43b.ART_READOUT),
+                       ('letterbox', lcd43b.READOUT)):
+        assert fit(label, face, rect[2]) == label, name
+    # What renders is exactly that complete label: render once through the
+    # production fitter and once with the fitter bypassed — a truncating
+    # readout can never match its own complete text.
+    art_source = Image.new('RGB', (16, 12))
+    letterbox_source = solid_canvas((0, 128, 0)).rgb
+    produced = {'art': lcd43b.render_art(art_source, {}, worst,
+                                        clock_24h=False),
+                'letterbox': lcd43b.letterbox(letterbox_source, worst,
+                                              clock_24h=False)}
+    monkeypatch.setattr(lcd43b, 'fit', lambda text, f, width: text)
+    complete = {'art': lcd43b.render_art(art_source, {}, worst,
+                                        clock_24h=False),
+                'letterbox': lcd43b.letterbox(letterbox_source, worst,
+                                              clock_24h=False)}
+    for name in produced:
+        assert produced[name].tobytes() == complete[name].tobytes(), name
+
+
+def test_device_manifest_request_time_solar_gate(tmp_path, monkeypatch):
+    """Device manifests must re-check the ham licence on every request.
+
+    Solar may be published while authorised and then go stale (licence
+    expiry, call sign removed): /devices/<id>/manifest.json must stop
+    advertising it at request time, fail closed, while the file on disk
+    keeps the published entry for when the licence is valid again.
+    """
+    from ventanal.config import load_config
+    from ventanal.solar.licence import Verification, verify
+
+    root = tmp_path / 'out'
+    device = root / 'devices' / 'lcd43b'
+    (device / 'frames').mkdir(parents=True)
+    (root / 'manifest.json').write_text('{}')
+    solar = {'id': 'c' * 16, 'url': '/devices/lcd43b/frames/solar.vnr',
+             'size': 768016, 'sha256': '3' * 64}
+    manifest = {
+        'version': 1,
+        'screens': {
+            'art': {'id': 'a' * 16, 'url': '/devices/lcd43b/frames/art.vnr',
+                    'size': 768016, 'sha256': '1' * 64},
+            'weather': {'id': 'b' * 16, 'url': '/devices/lcd43b/frames/weather.vnr',
+                        'size': 768016, 'sha256': '2' * 64},
+            'solar': solar,
+        },
+        'quiet': {'start': '23:00', 'end': '06:00'},
+    }
+    (device / 'manifest.json').write_text(json.dumps(manifest))
+
+    config_path = tmp_path / 'ventanal.toml'
+    config_path.write_text(
+        EXAMPLE.read_text()
+        .replace('/var/lib/ventanal', str(tmp_path / 'lib'))
+        .replace('/var/cache/ventanal', str(tmp_path / 'cache'))
+        .replace('lcd43b = false', 'lcd43b = true')
+        .replace('call_sign = ""', 'call_sign = "W1AW"'))
+    cfg = load_config(config_path)
+    cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def request():
+        srv = make_server(root, '127.0.0.1', 0, cache_dir=cfg.cache_dir,
+                          config_path=config_path)
+        thread = Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = HTTPConnection(*srv.server_address)
+            conn.request('GET', '/devices/lcd43b/manifest.json')
+            response = conn.getresponse()
+            body = json.loads(response.read())
+            conn.close()
+            return body
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join()
+
+    # Licence valid: solar is advertised.
+    monkeypatch.setattr('ventanal.solar.licence.verify',
+                        lambda *a, **k: Verification(True, 'ok'))
+    assert 'solar' in request()['screens']
+    # Licence expired: solar must be filtered at request time.
+    monkeypatch.setattr('ventanal.solar.licence.verify',
+                        lambda *a, **k: Verification(False, 'expired'))
+    assert 'solar' not in request()['screens']
+    # Call sign removed from the configuration: fail closed.
+    config_path.write_text(config_path.read_text()
+                           .replace('call_sign = "W1AW"', 'call_sign = ""'))
+    assert 'solar' not in request()['screens']
+    # The published file itself is untouched for when the licence returns.
+    assert 'solar' in json.loads(
+        (device / 'manifest.json').read_text())['screens']
+    # Licence valid again (call sign restored): solar is advertised once more.
+    config_path.write_text(config_path.read_text()
+                           .replace('call_sign = ""', 'call_sign = "W1AW"'))
+    monkeypatch.setattr('ventanal.solar.licence.verify',
+                        lambda *a, **k: Verification(True, 'ok'))
+    assert 'solar' in request()['screens']
 
 
 def test_serve_device_routes(tmp_path):

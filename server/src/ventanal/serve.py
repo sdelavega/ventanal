@@ -30,6 +30,20 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     def active():
         return ui is not None and ui.auth.mode == 'password' and ui.security.ready
 
+    def solar_allowed(cfg) -> bool:
+        """Request-time ham gate, shared by the manifest routes: solar may
+        only be advertised while the licence check passes. Everything else
+        (no call sign, expired or inactive licence, unreadable database)
+        fails closed — a stale published entry must not keep advertising."""
+        from ventanal.solar.licence import verify
+        if not cfg.ham_call_sign:
+            return False
+        try:
+            return verify(cfg.cache_dir / 'fcc.sqlite3', cfg.ham_call_sign,
+                           cfg.zip, datetime.now(timezone.utc)).ok
+        except Exception:
+            return False
+
     class Handler(BaseHTTPRequestHandler):
         @property
         def protocol_version(self):
@@ -96,6 +110,27 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
                 except (OSError, ValueError, KeyError):
                     self.send_error(503); return
+                ui.respond(self, 200, body, 'application/json'); return
+            if (ui is not None and config_path is not None
+                    and re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path)):
+                # Device manifests re-check the ham licence on every
+                # request, fail closed like the main manifest above: a
+                # solar screen published while authorised must stop being
+                # advertised once the licence expires or the call sign is
+                # removed from the configuration.
+                try:
+                    with (root / path.lstrip('/')).open() as f:
+                        manifest = json.load(f)
+                    if not isinstance(manifest, dict):
+                        raise ValueError('expected a JSON object')
+                except (OSError, ValueError):
+                    self.send_error(404); return
+                from ventanal.config import load_config
+                screens = manifest.get('screens')
+                if not solar_allowed(load_config(config_path)) and isinstance(screens, dict):
+                    screens.pop('solar', None)
+                body = json.dumps(manifest, ensure_ascii=False,
+                                  separators=(',', ':')).encode()
                 ui.respond(self, 200, body, 'application/json'); return
             if active() and path.startswith('/previews/'):
                 ui.handle(self, path); return

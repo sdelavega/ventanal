@@ -16,3 +16,5 @@ inline int esp_task_wdt_add_user(const char*,esp_task_wdt_user_handle_t* h) {
 }
 inline unsigned watchdogFeeds=0;
 inline int esp_task_wdt_reset_user(esp_task_wdt_user_handle_t) { ++watchdogFeeds; return 0; }
+inline bool watchdogUserDeleted=false;
+inline int esp_task_wdt_delete_user(esp_task_wdt_user_handle_t) { watchdogUserDeleted=true; return 0; }

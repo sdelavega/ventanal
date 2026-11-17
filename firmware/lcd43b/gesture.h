@@ -47,7 +47,8 @@ private:
         Idle,          // no touch
         Down,          // first press held; may become a long press
         WaitSecond,   // released; waiting for the second press or timeout
-        SecondDown,    // second press held; any release is a double tap
+        SecondDown,    // second press held: release is a double tap, but
+                       // holding it past LONG_PRESS_MS refreshes first
         Locked,        // long press fired; ignore until release
     };
 
@@ -68,7 +69,10 @@ private:
             }
             break;
         case State::WaitSecond:
-            if (down) state_ = State::SecondDown;
+            if (down) {
+                secondStart_ = nowMs;
+                state_ = State::SecondDown;
+            }
             break;
         case State::SecondDown:
             if (!down) {
@@ -84,7 +88,11 @@ private:
     }
 
     Gesture expire(uint32_t nowMs) {
-        if (state_ == State::Down && nowMs - pressStart_ >= LONG_PRESS_MS) {
+        // A long press refreshes from either press: holding the second
+        // press past the window takes precedence over its double tap.
+        if ((state_ == State::Down || state_ == State::SecondDown)
+            && nowMs - (state_ == State::Down ? pressStart_ : secondStart_)
+                   >= LONG_PRESS_MS) {
             state_ = State::Locked;
             return Gesture::Refresh;
         }
@@ -100,6 +108,7 @@ private:
     bool raw_ = false;
     uint32_t candidateSince_ = 0;
     uint32_t pressStart_ = 0;
+    uint32_t secondStart_ = 0;
     uint32_t releaseStart_ = 0;
     int pressX_ = 0;
 };

@@ -33,8 +33,12 @@ struct FakeFS {
     bool begin(bool,const char*,int,const char*) { return !failBegin; }
     void end() {}
     bool exists(const char* p) { return files.count(p); }
+    bool exists(const String& p) { return exists(p.c_str()); }
     File open(const char* p, const char* mode) { bool ok = files.count(p); if (*mode=='w') { files[p].clear(); ok=true; } return File(p, ok); }
+    File open(const String& p, const char* mode) { return open(p.c_str(), mode); }
     bool remove(const char* p) { return files.erase(p); }
+    bool remove(const String& p) { return remove(p.c_str()); }
     bool rename(const char* a, const char* b) { if(failRename) return false; files[b]=files[a]; files.erase(a); return true; }
+    bool rename(const String& a, const String& b) { return rename(a.c_str(), b.c_str()); }
 };
 inline FakeFS LittleFS;

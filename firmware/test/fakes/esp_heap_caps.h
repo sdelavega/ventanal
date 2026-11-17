@@ -12,3 +12,10 @@ inline void* heap_caps_malloc(size_t n, unsigned caps) {
     return p;
 }
 inline void heap_caps_free(void* p) { if (p) --liveAllocations; std::free(p); }
+// PSRAM allocation as the lcd43b sync engine uses it (plain heap here).
+inline void* ps_malloc(size_t n) {
+    if (failAllocation) return nullptr;
+    void* p = std::malloc(n);
+    if (p) ++liveAllocations;
+    return p;
+}

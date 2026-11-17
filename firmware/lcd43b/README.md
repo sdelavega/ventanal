@@ -66,34 +66,73 @@ Building with `-DVENTANAL_LCD_DIAG_GESTURES=1` (added to
 synthetic touch sequence (`diag.h`) through the production classifier a
 couple of seconds after the first refresh, logging every gesture
 (`next`, `double`, `previous`, `refresh`) and screen change without a finger
-on the panel — the blocking refresh gesture runs last. The sequence and its
-ordering are pinned by `test_lcd43b_diag`. Use it only for captures and
-hardware bring-up; production images leave the flag off.
+on the panel — the sequence and its ordering are pinned by `test_lcd43b_diag`.
+Use it only for captures and hardware bring-up; production images leave the
+flag off.
+
+Building with `-DVENTANAL_LCD_DIAG_TOUCH=1` instead logs the raw GT911
+view rate-limited (`touch raw=<report> status=0x.. contact=.. x=.. y=..`:
+every report change plus at most one line per second while a finger is
+held) alongside the usual `gesture=` lines, so a five-minute capture shows
+exactly what the controller reports for real touches. The two diagnostic
+flags cannot be combined (the sketch rejects that build).
 
 ## Behaviour
 
 - Connects Wi-Fi, syncs NTP, fetches `/devices/<id>/manifest.json` every
   10 minutes (and on a long-press refresh), downloads changed frames with
   SHA-256 verification into LittleFS, and blits them to the panel.
+- **A refresh runs on a short-lived FreeRTOS worker task**, so touch
+  polling (every 10 ms) and the backlight keep being serviced while
+  Wi-Fi waits, NTP waits and up to six 60 s frame transfers run. The
+  worker is supervised by the **task watchdog** (30 s window, fed on
+  every progress step): a wedged network call resets the board instead of
+  freezing refreshes. The worker only performs network and staging I/O;
+  all state changes are applied by `loop()` (`sync.h`, single writer).
+- **Frame downloads are bounded**: every read is capped by the frame
+  bytes still missing (the PSRAM buffer can never overflow) and a
+  response that keeps sending past the advertised length is rejected
+  (`excess=1`) rather than accepted as a prefix (`test_lcd43b_sync`,
+  under AddressSanitizer).
 - Touch (GT911): tap right half = next screen, tap left half = previous
   screen, double tap = next spare artwork (when spares are published),
-  press >= 1.5 s = refresh now. All edges debounced 30 ms.
-- Backlight off during the manifest's quiet hours, on otherwise; any touch
-  lights it for 60 s during quiet hours.
-- Offline: keeps showing the cached screen with a small OFFLINE mark.
-- Cache state (screen ids) persists in NVS; frames cache in LittleFS.
+  press >= 1.5 s = refresh now — from **either** press: a second press
+  held past the window refreshes rather than doubling. All edges are
+  debounced 30 ms.
+- GT911 reports arrive every ~10-15 ms, slower than the 10 ms poll:
+  "no new report" keeps the previous contact state (only a valid
+  zero-point report is a release), and the point data is read **before**
+  the status register is acknowledged so the controller can never replace
+  a report mid-read (`touch.h`, `test_lcd43b_touch`).
+- Backlight off during the manifest's quiet hours, on otherwise; any
+  touch lights it for 60 s during quiet hours. The validated quiet window
+  **persists in NVS**, so an offline reboot during quiet hours still
+  honours it; before the clock is trustworthy (first NTP sync) the
+  backlight stays on — defined, safe behaviour for a USB-powered board.
+- Offline: keeps showing the cached screen with a small OFFLINE mark
+  (drawn/erased whenever the offline state changes, including after a
+  failed scheduled refresh).
+- Cache state (screen ids, selection, quiet window, publish shape)
+  persists in NVS; frames cache in LittleFS. A shrunk screen list (solar
+  dropping out overnight) normalises the persisted selection to art and
+  the spare cursor to spare0.
 
 ## Private configuration
 
-Never commit private values. Copy `config.example.h` to `config.h`, or build
-with `-DVENTANAL_LCD_CONFIG="<absolute path>"` pointing at a header kept
-outside the repository (e.g. under `.superpowers/`):
+Never commit private values. The `VENTANAL_LCD_CONFIG` build flag is the
+**only** private-configuration path — the sketch has no local `config.h`
+fallback. Keep the private header outside the repository (e.g. under
+`.superpowers/`, which is git-ignored):
 
 ```sh
 arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,FlashMode=qio,USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default' \
   --build-property 'compiler.cpp.extra_flags=-DVENTANAL_LCD_CONFIG="/path/to/private_config.h"' \
   --build-path /tmp/lcd43b firmware/lcd43b
 ```
+
+`config.example.h` documents the keys; `VENTANAL_DEVICE_ID` and
+`VENTANAL_TZ` are optional and fall back to defaults when the private
+header omits them.
 
 Upload to `/dev/cu.usbmodem101` with esptool (via `arduino-cli upload`) and
 capture serial at 115200 baud. The sketch partition table
@@ -121,11 +160,16 @@ outputs are unchanged.
 make -C firmware/test test   # includes test_lcd43b_* units
 ```
 
-Covered: gesture classifier halves/double/long-press/debounce, bundled
-SHA-256 against FIPS 180-4 vectors, VNR1 header/hash validation, device
-manifest parsing/quiet hours, overlay pixel clipping, the panel blit
-arguments and vertical-line pattern against a fake `esp_lcd`, and the
-diagnostic gesture sequence.
+Covered: gesture classifier halves/double/long-press (either press)/
+debounce, the GT911 register protocol and 10-15 ms report cadence through
+the production driver (`test_lcd43b_touch`), the bounded downloader with
+excess rejection and stall budgets under the task-watchdog contract plus
+AddressSanitizer (`test_lcd43b_sync`), persisted quiet hours/publish
+shape/cache ids/selection including an offline boot during quiet hours
+(`test_lcd43b_persist`), bundled SHA-256 against FIPS 180-4 vectors, VNR1
+header/hash validation, device manifest parsing/quiet hours/pre-sync
+behaviour, overlay pixel clipping, the panel blit arguments against a
+fake `esp_lcd`, and the diagnostic gesture sequence.
 
 ## Phase 2 (not yet)
 

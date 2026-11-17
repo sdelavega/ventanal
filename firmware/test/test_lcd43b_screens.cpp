@@ -11,6 +11,7 @@
 
 #include <cassert>
 #include <cstdio>
+#include <initializer_list>
 
 namespace {
 
@@ -73,6 +74,50 @@ int main() {
         for (int index = 0; index < lcd::screenCount(false, 3); ++index)
             assert(mapsToValidSlot(index, false, 3));
     }
-    puts("lcd43b screens: solar-absent indexing, spare mapping, bounds passed");
+    {   // The ONE explicit active-slot list: index i maps to slots[i], so
+        // every screen lookup agrees about which cache slot backs it.
+        for (bool solar : {false, true}) {
+            for (int spares = 0; spares <= 3; ++spares) {
+                int slots[lcd::SCREEN_SLOTS];
+                const int count = lcd::activeSlots(solar, spares, slots,
+                                                   lcd::SCREEN_SLOTS);
+                assert(count == lcd::screenCount(solar, spares));
+                for (int index = 0; index < count; ++index)
+                    assert(lcd::screenSlot(index, solar, spares) == slots[index]
+                           && mapsToValidSlot(index, solar, spares));
+                assert(lcd::activeSlots(solar, spares, slots, 0) == 0);
+                assert(lcd::activeSlots(solar, spares, slots, 2) == 2);
+            }
+        }
+    }
+    {   // Persisted selection normalises to the current list: an index past
+        // the end self-heals to art (the round-1 rule), a stale spare cursor
+        // to spare0.
+        int index = 5, cursor = 2;
+        lcd::normalizeSelection(index, cursor, true, 3);
+        assert(index == 5 && cursor == 2);      // solar+3 spares: still valid
+        lcd::normalizeSelection(index, cursor, false, 3);   // solar dropped
+        assert(index == 0 && cursor == 2);      // 5 past count 5 -> art
+        lcd::normalizeSelection(index, cursor, true, 3);
+        index = 3;
+        lcd::normalizeSelection(index, cursor, false, 1);  // spares shrunk
+        assert(index == 0 && cursor == 0);      // 3 past count 3 -> art
+        index = 1;
+        lcd::normalizeSelection(index, cursor, false, 0);  // no spares left
+        assert(index == 1 && cursor == 0);      // weather still in range
+        index = 9;
+        lcd::normalizeSelection(index, cursor, false, 0);
+        assert(index == 0);                     // far out of range -> art
+        index = -3;
+        lcd::normalizeSelection(index, cursor, true, 2);
+        assert(index == 0);
+        cursor = 5;
+        lcd::normalizeSelection(index, cursor, true, 2);
+        assert(cursor == 0);
+        cursor = -1;
+        lcd::normalizeSelection(index, cursor, true, 2);
+        assert(cursor == 0);
+    }
+    puts("lcd43b screens: active-slot list, normalisation, bounds passed");
     return 0;
 }

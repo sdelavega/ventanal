@@ -1,6 +1,7 @@
 .superpowers/
 server/ventanal.toml
 firmware/ventanal/config.h
+firmware/lcd43b/config.h
 __pycache__/
 .venv/
 *.egg-info/

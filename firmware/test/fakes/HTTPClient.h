@@ -16,29 +16,41 @@ inline std::map<std::string,std::string> lastHeaders;
 inline unsigned readDelay=0, streamTimeout=15000;
 inline size_t largestRead = 0;
 inline size_t readBytesCalls = 0;
+// lcd43b sync test additions (defaults keep the e-paper tests unchanged):
+inline std::map<std::string,std::vector<uint8_t>> urlResponses; // per-URL body
+inline bool sizeFromResponse = false;  // getSize() reports the body size
+inline bool stallBody = false;         // connected, but no bytes ever arrive
 class WiFiClient {
     size_t pos = 0;
 public:
     void resetResponse() { pos=0; }
     void setTimeout(unsigned ms) { streamTimeout=ms; }
-    int available() { return std::min(size_t(1460),response.size()-pos); }
+    int available() { if (stallBody) return 0; return std::min(size_t(1460),response.size()-pos); }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
     int read(uint8_t* b, size_t n) { fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
-    bool connected() { return pos < response.size(); }
+    bool connected() { if (stallBody) return true; return pos < response.size(); }
 };
 class HTTPClient {
     WiFiClient* client = nullptr;
+    WiFiClient inlineClient;   // body for the single-argument begin()
 public:
     bool begin(WiFiClient& c, const char* url) { lastUrl=url; client=&c; c.resetResponse(); return !failBegin; }
     bool begin(WiFiClient& c, const String& u) { return begin(c, u.c_str()); }
+    bool begin(const char* url) { lastUrl=url; client=&inlineClient; inlineClient.resetResponse(); return !failBegin; }
+    bool begin(const String& u) { return begin(u.c_str()); }
     void setReuse(bool) {}
     void addHeader(const char* k,const char* v) { lastHeaders[k]=v; }
     String getString() { return responseBody; }
     void setTimeout(unsigned) {}
     void setConnectTimeout(unsigned) {}
     void setUserAgent(const char* value) { lastUserAgent=value; }
-    int GET() { if(!responseBody.empty()) response.assign(responseBody.begin(),responseBody.end()); return status; }
-    int getSize() { return advertisedSize; }
+    int GET() {
+        auto perUrl = urlResponses.find(lastUrl);
+        if (perUrl != urlResponses.end()) response = perUrl->second;
+        else if(!responseBody.empty()) response.assign(responseBody.begin(),responseBody.end());
+        return status;
+    }
+    int getSize() { return sizeFromResponse ? int(response.size()) : advertisedSize; }
     WiFiClient* getStreamPtr() { return client; }
     bool connected() { return client->connected(); }
     void end() {}

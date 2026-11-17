@@ -4,9 +4,10 @@
 
 // Placeholder configuration for the Waveshare ESP32-S3-Touch-LCD-4.3B.
 //
-// Copy this file to config.h (or point the build flag
+// The sketch has NO local private-config fallback: point the build flag
 //   -DVENTANAL_LCD_CONFIG="<absolute path>"
-// at a private header outside the repository) and fill in your own values.
+// at a private header kept outside the repository (for example under
+// .superpowers/, which is git-ignored) and fill in your own values there.
 // Never commit, print or log the private copy.
 
 #define VENTANAL_WIFI_SSID "your-network-name"

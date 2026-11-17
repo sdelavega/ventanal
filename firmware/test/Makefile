@@ -5,7 +5,7 @@ ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJs
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean
-test: build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens
+test: build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist
 	./build/test_budget
 	./build/test_extras
 	./build/test_longpress
@@ -36,6 +36,9 @@ test: build/test_budget build/test_extras build/test_longpress build/test_solar 
 	./build/test_lcd43b_panel
 	./build/test_lcd43b_diag
 	./build/test_lcd43b_screens
+	./build/test_lcd43b_touch
+	./build/test_lcd43b_sync
+	./build/test_lcd43b_persist
 
 build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
@@ -165,3 +168,21 @@ build/test_lcd43b_manifest: test_lcd43b_manifest.cpp ../lcd43b/manifest.h ../lcd
 build/test_lcd43b_overlay: test_lcd43b_overlay.cpp ../lcd43b/overlay.h ../lcd43b/gfxfont.h ../ventanal/fonts/Antonio-Regular.h ../ventanal/fonts/Inter-Medium.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_overlay.cpp $(LDFLAGS) -o $@
+
+# GT911 driver + classifier integration: the fake controller (fakes/gt911)
+# sits behind a fake TwoWire, so the production Gt911 register protocol and
+# the 10-15 ms report cadence are exercised for real.
+build/test_lcd43b_touch: test_lcd43b_touch.cpp ../lcd43b/touch.h ../lcd43b/gt911.h ../lcd43b/gesture.h fakes/gt911/Wire.h fakes/Arduino.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes/gt911 -Ifakes test_lcd43b_touch.cpp $(LDFLAGS) -o $@
+
+# The production downloader/refresh engine. AddressSanitizer doubles as an
+# overflow tripwire: a read that ever passed the frame end would abort.
+build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp $(LDFLAGS) -fsanitize=address -o $@
+
+# Persisted state (quiet hours, publish shape, cache ids, selection).
+build/test_lcd43b_persist: test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_persist.cpp $(LDFLAGS) -o $@

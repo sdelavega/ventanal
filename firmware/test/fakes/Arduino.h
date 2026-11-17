@@ -18,6 +18,11 @@ struct SerialFake {
         if constexpr(sizeof...(values)==0) output+=format;
         else { char buffer[512]; std::snprintf(buffer,sizeof buffer,format,values...); output+=buffer; }
     }
+    size_t write(const uint8_t* bytes, size_t length) {
+        output.append(reinterpret_cast<const char*>(bytes), length);
+        return length;
+    }
+    explicit operator bool() const { return true; }
 };
 inline SerialFake Serial;
 

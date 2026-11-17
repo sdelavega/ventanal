@@ -67,7 +67,8 @@ int main() {
         assert(f.tick(false, 400, 240) == Gesture::None);  // release settles
         assert(completeTap(f, 100, 100) == Gesture::Previous);   // reusable
     }
-    {   // The second press can be held long; it stays a double tap.
+    {   // A second press held beyond the long-press window refreshes too:
+        // long press takes precedence over the double tap.
         Feeder f;
         f.tick(true, 500, 240);
         f.tick(true, 500, 240);
@@ -75,9 +76,10 @@ int main() {
         f.tick(false, 500, 240);
         f.tick(true, 500, 240);
         assert(f.tick(true, 500, 240) == Gesture::None);
-        assert(f.tick(true, 500, 240, 2000) == Gesture::None);
-        assert(f.tick(false, 500, 240) == Gesture::None);
-        assert(f.tick(false, 500, 240) == Gesture::DoubleTap);
+        assert(f.tick(true, 500, 240, 2000) == Gesture::Refresh);
+        assert(f.tick(false, 500, 240) == Gesture::None);  // raw release
+        assert(f.tick(false, 500, 240) == Gesture::None);  // unlocks
+        assert(completeTap(f, 700, 100) == Gesture::Next);  // reusable
     }
     {   // Bounce pulses shorter than the debounce window never press.
         Feeder f;

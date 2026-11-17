@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Stephen de la Vega
+#pragma once
+
+// The lcd43b refresh engine, host-tested (test_lcd43b_sync). A refresh
+// pass runs on a short-lived FreeRTOS worker task so loop() keeps polling
+// touch and servicing the backlight while Wi-Fi waits, NTP waits and up to
+// six 60 s frame transfers run (Important fix: refresh used to block the
+// loop for the whole pass). The worker performs only network I/O and the
+// .tmp/rename frame staging; every state change below is applied by the
+// main loop through applyRefresh, so UI state has a single writer.
+
+#include <LittleFS.h>
+#include <Preferences.h>
+
+#include <cstddef>
+#include <cstdint>
+#include <cstring>
+
+#include "frame.h"
+#include "log.h"
+#include "manifest.h"
+#include "persist.h"
+#include "screens.h"
+
+namespace lcd {
+
+// Slot names double as the LittleFS cache file names (art, weather, solar,
+// spare0..2).
+inline const char* const SLOT_NAMES[SCREEN_SLOTS] = {
+    "art", "weather", "solar", "spare0", "spare1", "spare2"};
+
+// Budgets (ms). The transfer budget bounds each stalled frame download;
+// the watchdog timeout must exceed the longest blocking call (one HTTP
+// GET with its connect + header timeouts).
+constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
+constexpr uint32_t NTP_TIMEOUT_MS = 10000;
+constexpr uint32_t HTTP_TIMEOUT_MS = 10000;
+constexpr uint32_t TRANSFER_BUDGET_MS = 60000;
+constexpr size_t CHUNK_BYTES = 32768;
+constexpr uint32_t WATCHDOG_TIMEOUT_MS = 30000;
+
+// Watchdog hooks the refresh worker feeds while it runs; the sketch wires
+// this to the ESP-IDF task watchdog (subscribed per worker run), host
+// tests to observers. Feeding happens on every progress step, so a
+// wedged worker stops feeding and the task watchdog resets the board.
+class Watchdog {
+public:
+    virtual ~Watchdog() = default;
+    virtual void feed() = 0;
+};
+
+// What one refresh pass found. Everything here is staged by the worker
+// and applied by the main loop.
+struct RefreshResult {
+    bool wifiOk = false;
+    bool timeOk = false;
+    bool manifestOk = false;
+    DeviceManifest manifest{};
+    // Per cache slot: a verified frame was committed (with its new id), or
+    // the screen vanished from the manifest (drop the cached frame). A
+    // failed download stages neither — the previous cache entry stays.
+    bool frameOk[SCREEN_SLOTS] = {};
+    char frameIds[SCREEN_SLOTS][17] = {};
+    bool dropSlot[SCREEN_SLOTS] = {};
+};
+
+// Live sketch state that applyRefresh manages. `offline` reflects the
+// last applied refresh (none has failed at boot), so a boot blit shows no
+// OFFLINE mark until a refresh actually fails.
+struct RefreshState {
+    DeviceManifest manifest{};
+    char cachedIds[SCREEN_SLOTS][17] = {};
+    bool offline = false;
+    bool drawn = false;   // set by the caller after a successful blit
+};
+
+// Redraw decision after a refresh pass (pinned by test_lcd43b_sync): the
+// screen must be re-blitted when asked, when new content arrived, while
+// nothing valid has ever been drawn, and whenever the OFFLINE mark would
+// change (a failed scheduled refresh after a successful display used to
+// leave the old frame without its offline indication).
+inline bool redrawNeeded(bool requested, bool newContent, bool drawn,
+                         bool offlineChanged) {
+    return requested || newContent || !drawn || offlineChanged;
+}
+
+// Download one frame into buffer (FRAME_BYTES; PSRAM on the board) with
+// every read bounded by the frame bytes still missing, then hash-verify
+// it and stage-commit it to /<slotName>.vnr via .tmp+rename. A response
+// that keeps sending past the advertised frame length is rejected
+// (excess) — the buffer can never overflow and a longer body can never be
+// accepted as its own prefix. Failures leave the previous cache alone.
+bool downloadFrame(const char* hostUrl, const FrameInfo& info,
+                   const char* slotName, uint8_t* buffer, Watchdog& watchdog);
+
+// One full refresh pass: Wi-Fi, NTP, the device manifest, then every
+// changed frame (unchanged slots stage their current id; absent screens
+// stage a drop). Blocking by design — run it on the worker task.
+void runRefresh(const char* hostUrl, const char* deviceId,
+                const char currentIds[SCREEN_SLOTS][17],
+                RefreshResult& result, Watchdog& watchdog);
+
+// Apply a finished pass to the live state (single writer: the main loop).
+// Persists the validated quiet window and publish shape, normalises the
+// selection to the (possibly shrunk) screen list, commits staged cache
+// ids, removes dropped slots' cache files, and returns whether the screen
+// must be re-blitted.
+inline bool applyRefresh(RefreshState& state, int& screenIndex,
+                        int& spareCursor, Preferences& prefs,
+                        const RefreshResult& result, bool requested) {
+    const bool wasOffline = state.offline;
+    if (result.manifestOk) {
+        state.manifest = result.manifest;
+        saveQuiet(prefs, state.manifest);
+        savePublishShape(prefs, state.manifest);
+        normalizeSelection(screenIndex, spareCursor, state.manifest.screens[2].present,
+                          state.manifest.spareCount);
+        saveSelection(prefs, screenIndex, spareCursor);   // survive reboot
+    }
+    for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
+        if (result.frameOk[slot]) {
+            strlcpy(state.cachedIds[slot], result.frameIds[slot],
+                    sizeof state.cachedIds[slot]);
+            saveCacheId(prefs, slot, state.cachedIds[slot]);
+        } else if (result.dropSlot[slot]) {
+            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
+            const String temporary = path + ".tmp";
+            if (LittleFS.exists(path)) {
+                LittleFS.remove(path);
+                log("cache removed slot=%s\n", SLOT_NAMES[slot]);
+            }
+            LittleFS.remove(temporary);
+            state.cachedIds[slot][0] = 0;
+            saveCacheId(prefs, slot, "");
+        }
+    }
+    state.offline = !result.manifestOk;
+    return redrawNeeded(requested, result.manifestOk, state.drawn,
+                        state.offline != wasOffline);
+}
+
+}  // namespace lcd

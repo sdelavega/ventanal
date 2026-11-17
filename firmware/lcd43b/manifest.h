@@ -106,4 +106,18 @@ inline bool inQuietMinutes(int minuteOfDay, int start, int end) {
                        : (minuteOfDay >= start || minuteOfDay < end);
 }
 
+// The earliest wall-clock year the firmware treats as trustworthy: before
+// the first NTP sync the ESP32 reports 1970, so quiet hours would darken
+// the panel at nonsense times. Until the clock is valid the backlight
+// stays on — defined, safe behaviour for a USB-powered display (pinned by
+// test_lcd43b_manifest and test_lcd43b_persist).
+constexpr int MIN_VALID_YEAR = 2023;
+
+// True when the (possibly persisted) quiet window darkens the panel right
+// now: the window must be valid and the clock trustworthy.
+inline bool quietApplies(int year, int minuteOfDay, const DeviceManifest& m) {
+    if (!m.quietValid() || year < MIN_VALID_YEAR) return false;
+    return inQuietMinutes(minuteOfDay, m.quietStart, m.quietEnd);
+}
+
 }  // namespace lcd

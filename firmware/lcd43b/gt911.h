@@ -18,6 +18,19 @@ public:
     static constexpr uint8_t PRIMARY = 0x5D;
     static constexpr uint8_t SECONDARY = 0x14;
 
+    // One polled read of the controller. The sketch polls at 10 ms while
+    // the controller reports a fresh point only every ~10-15 ms, so the
+    // three outcomes must stay distinct (pinned by test_lcd43b_touch):
+    //   NoUpdate - buffer-status bit clear: no new report; the caller
+    //               must KEEP the previous contact state;
+    //   Contact   - a ready report with >= 1 point (coords clamped to the
+    //               800x480 panel); the report was read BEFORE 0x814E was
+    //               acknowledged, so the controller cannot replace it
+    //               mid-read;
+    //   Release   - a ready report with zero points;
+    //   Error      - I2C failure; keep the previous contact state.
+    enum class Report : uint8_t { NoUpdate, Contact, Release, Error };
+
     explicit Gt911(TwoWire& bus) : bus_(&bus) {}
 
     // Reset the controller via the CH422G EXIO1 line and pick its address.
@@ -36,24 +49,32 @@ public:
         return false;
     }
 
-    // Poll the first touch point. True while a finger is down, with its
-    // position clamped to the 800x480 panel; the status buffer is always
-    // acknowledged so stale points cannot accumulate.
-    bool read(int& x, int& y) {
+    Report read(int& x, int& y, uint8_t* rawStatus = nullptr) {
         uint8_t status = 0;
-        if (!readRegister(0x814E, &status, 1)) return false;
+        if (!readRegister(0x814E, &status, 1)) return Report::Error;
+        if (rawStatus) *rawStatus = status;
+        if (!(status & 0x80)) return Report::NoUpdate;   // buffer not ready
+        bool contact = false;
+        int pointX = 0, pointY = 0;
+        if (status & 0x0F) {
+            uint8_t point[6] = {};   // track id, x lo/hi, y lo/hi, size lo
+            if (!readRegister(0x814F, point, sizeof point)) return Report::Error;
+            pointX = int(point[1]) | int(point[2]) << 8;
+            pointY = int(point[3]) | int(point[4]) << 8;
+            if (pointX < 0) pointX = 0;
+            if (pointY < 0) pointY = 0;
+            if (pointX > 799) pointX = 799;
+            if (pointY > 479) pointY = 479;
+            contact = true;
+        }
+        // Acknowledge only after the point data is consumed, so the
+        // controller can never overwrite a report mid-read.
         uint8_t clear = 0;
-        writeRegister(0x814E, &clear, 1);
-        if (!(status & 0x80) || !(status & 0x0F)) return false;
-        uint8_t point[6] = {};
-        if (!readRegister(0x814F, point, sizeof point)) return false;
-        x = int(point[1]) | int(point[2]) << 8;
-        y = int(point[3]) | int(point[4]) << 8;
-        if (x < 0) x = 0;
-        if (y < 0) y = 0;
-        if (x > 799) x = 799;
-        if (y > 479) y = 479;
-        return true;
+        if (!writeRegister(0x814E, &clear, 1)) return Report::Error;
+        if (!contact) return Report::Release;
+        x = pointX;
+        y = pointY;
+        return Report::Contact;
     }
 
     uint8_t address() const { return address_; }
