@@ -303,8 +303,13 @@ void setBacklight(bool on) {
     lcd::log("backlight on=%d\n", on);
 }
 
+// Log label transitions only (captures stay quiet while nothing changes).
+lcd::RefreshLabel lastLoggedLabel = lcd::RefreshLabel::None;
+
 // Log every label transition so captures prove the feedback cycle.
 void logRefreshLabel() {
+    if (refreshLabel.label() == lastLoggedLabel) return;
+    lastLoggedLabel = refreshLabel.label();
     const char* text = lcd::refreshLabelText(refreshLabel.label());
     lcd::log("label=%s\n", text ? text : "none");
 }
@@ -389,11 +394,13 @@ bool startRefresh(bool redraw) {
 void applyFinishedRefresh() {
     const int previousIndex = screenIndex;
     // Did anything the screen shows change? frameOk slots that merely
-    // re-stage the current id (skipped=unchanged) are not new content.
+    // re-stage the current id (skipped=unchanged) are not new content,
+    // and a drop only counts when the slot had something to lose: solar
+    // (and unpublished spares) are re-staged as drops on every pass.
     bool changed = false;
     if (refreshStaging.manifestOk) {
         for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
-            if (refreshStaging.dropSlot[slot]
+            if ((refreshStaging.dropSlot[slot] && state.cachedIds[slot][0])
                 || (refreshStaging.frameOk[slot]
                     && strcmp(refreshStaging.frameIds[slot],
                               state.cachedIds[slot]))) {
