@@ -89,6 +89,8 @@ call_sign = ""
 [devices]
 # Optional full-colour render profile for the Waveshare ESP32-S3-Touch-LCD-4.3B.
 # When enabled, each tick also publishes raw RGB565 800x480 frames and a
-# per-device manifest under <output_dir>/devices/lcd43b/ (served at
-# /devices/lcd43b/manifest.json). The e-paper outputs are unchanged.
+# per-device manifest under <output_dir>/devices/<id>/ (served at
+# /devices/<id>/manifest.json). The e-paper outputs are unchanged.
+# Optional id must match the board's VENTANAL_DEVICE_ID (default "lcd43b").
 lcd43b = false
+# id = "lcd43b"

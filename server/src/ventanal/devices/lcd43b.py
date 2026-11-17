@@ -17,6 +17,8 @@ import logging
 import os
 import struct
 
+from pathlib import Path
+
 import numpy as np
 from PIL import Image, ImageDraw, ImageFilter
 
@@ -32,6 +34,16 @@ DEVICE_URL = '/devices/lcd43b'
 SCREENS = ('art', 'weather', 'solar')
 SPARES = 3
 RETAIN = 4
+
+
+def device_url(cfg) -> str:
+    """Publish URL prefix for the configured device id."""
+    return f'/devices/{cfg.device_id}'
+
+
+def device_dir(cfg) -> Path:
+    """Output directory that mirrors the device's URL path."""
+    return cfg.output_dir / 'devices' / cfg.device_id
 
 # Weather and solar reuse the renderers' 1600x1200 full-colour canvas,
 # downscaled to 640x480 and centred on a black 800x480 frame.
@@ -187,7 +199,7 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
     raise ValueError(f'unknown screen: {name}')
 
 
-def _publish_frame(out, name: str, data: bytes, now) -> dict:
+def _publish_frame(out, base_url: str, name: str, data: bytes, now) -> dict:
     """Atomically publish an encoded frame and return its manifest entry."""
     digest = hashlib.sha256(data).hexdigest()
     ident = digest[:16]
@@ -207,7 +219,7 @@ def _publish_frame(out, name: str, data: bytes, now) -> dict:
         old.unlink(missing_ok=True)
     return {
         'id': ident,
-        'url': f'{DEVICE_URL}/frames/{name}-{ident}.vnr',
+        'url': f'{base_url}/frames/{name}-{ident}.vnr',
         'size': len(data),
         'sha256': digest,
         'rendered': now.isoformat(timespec='seconds'),
@@ -232,13 +244,17 @@ def tick(cfg, now, client) -> dict:
     """
     if now.utcoffset() is None:
         raise ValueError('now must be timezone-aware')
-    out = cfg.output_dir / 'devices' / 'lcd43b'
+    out = device_dir(cfg)
+    base_url = device_url(cfg)
     previous = _read_device_manifest(out)
     screens = previous.get('screens') if isinstance(previous.get('screens'), dict) else {}
     screens = dict(screens)
+    # Stale entries published under a previous device id are unreachable.
+    screens = {name: entry for name, entry in screens.items()
+               if entry.get('url', '').startswith(f'{base_url}/frames/')}
     for name in ('art', 'weather'):
         try:
-            screens[name] = _publish_frame(out, name,
+            screens[name] = _publish_frame(out, base_url, name,
                                            encode_frame(_render_screen(cfg, name, now, client)),
                                            now)
         except Exception as exc:
@@ -247,12 +263,13 @@ def tick(cfg, now, client) -> dict:
     if _solar_allowed(cfg, now):
         try:
             screens['solar'] = _publish_frame(
-                out, 'solar', encode_frame(_render_screen(cfg, 'solar', now, client)), now)
+                out, base_url, 'solar',
+                encode_frame(_render_screen(cfg, 'solar', now, client)), now)
         except Exception as exc:
             log.warning('lcd43b solar render failed; previous frame retained: %s', exc)
     else:
         screens.pop('solar', None)
-    spares = _render_spares(cfg, now, client, out)
+    spares = _render_spares(cfg, now, client, out, base_url)
     manifest = {
         'version': 1,
         'screens': {name: screens[name] for name in SCREENS if name in screens},
@@ -264,7 +281,7 @@ def tick(cfg, now, client) -> dict:
     return manifest
 
 
-def _render_spares(cfg, now, client, out) -> list:
+def _render_spares(cfg, now, client, out, base_url) -> list:
     """Mirror the owner's published spare slots at 800x480, best effort."""
     from ventanal import jobs
     entries = read_manifest(cfg.output_dir).get('spares')
@@ -278,7 +295,7 @@ def _render_spares(cfg, now, client, out) -> list:
         try:
             image = _art_image(cfg, client, credit)
             data = encode_frame(render_art(image, credit, now, cfg.clock_24h))
-            spares.append(_publish_frame(out, f'spare{index}', data, now))
+            spares.append(_publish_frame(out, base_url, f'spare{index}', data, now))
         except Exception as exc:
             if index < len(previous):
                 spares.append(previous[index])

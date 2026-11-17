@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+# ESP32-S3-Touch-LCD-4.3B: 16 MB flash. App 4 MiB, LittleFS 11.9 MB.
+# Name,     Type, SubType, Offset,   Size
+nvs,        data, nvs,     0x9000,   0x5000
+otadata,    data, ota,     0xe000,   0x2000
+factory,    app,  factory, 0x10000,  0x400000
+littlefs,   data, spiffs,  0x410000, 0xBF0000

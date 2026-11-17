@@ -58,6 +58,7 @@ class Config:
     include_monotone: bool = False
     screen_fit_only: bool = False
     lcd43b: bool = False
+    device_id: str = "lcd43b"
     credentials: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
 
 
@@ -241,6 +242,9 @@ def validate_config(data: dict) -> Config:
     lcd43b = devices.get("lcd43b", False)
     if type(lcd43b) is not bool:
         raise ConfigError("devices.lcd43b: expected a boolean")
+    device_id = devices.get("id", "lcd43b")
+    if not isinstance(device_id, str) or not re.fullmatch(r"[a-z0-9-]{1,15}", device_id):
+        raise ConfigError("devices.id: expected a lowercase device slug")
 
     from ventanal.solar.licence import normalize_call
     ham = data.get("ham", {})
@@ -256,6 +260,7 @@ def validate_config(data: dict) -> Config:
         include_monotone=art.get('include_monotone', False),
         screen_fit_only=art.get('screen_fit_only', False),
         lcd43b=lcd43b,
+        device_id=device_id,
         credentials=credentials,
         https_host=shost, https_port=int(sport),
         quiet_start=_clock(schedule.get("quiet_start", "23:00"), "schedule.quiet_start"),

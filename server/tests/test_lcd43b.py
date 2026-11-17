@@ -256,6 +256,7 @@ def test_tick_gates_on_config(tmp_path, monkeypatch):
 
 def test_config_devices_section(tmp_path):
     assert load_config(EXAMPLE).lcd43b is False
+    assert load_config(EXAMPLE).device_id == 'lcd43b'
     path = tmp_path / 'enabled.toml'
     path.write_text(EXAMPLE.read_text().replace('lcd43b = false',
                                                  'lcd43b = true'))
@@ -265,6 +266,24 @@ def test_config_devices_section(tmp_path):
                                                'lcd43b = "yes"'))
     with pytest.raises(ConfigError, match='devices.lcd43b'):
         load_config(bad)
+    bad_id = tmp_path / 'bad-id.toml'
+    bad_id.write_text(EXAMPLE.read_text().replace(
+        'lcd43b = false', 'lcd43b = false\nid = "Not A Slug"'))
+    with pytest.raises(ConfigError, match='devices.id'):
+        load_config(bad_id)
+
+
+def test_device_id_configures_publish_path(tmp_path, monkeypatch):
+    value = cfg(tmp_path, device_id='lcd43b-1')
+    run_device_tick(monkeypatch, value,
+                    screens={'art': manifest_for(value, 'art'),
+                             'weather': manifest_for(value, 'weather')})
+    manifest = json.loads((value.output_dir / 'devices' / 'lcd43b-1'
+                          / 'manifest.json').read_text())
+    assert manifest['screens']['art']['url'].startswith(
+        '/devices/lcd43b-1/frames/')
+    assert (value.output_dir / 'devices' / 'lcd43b-1' / 'frames').is_dir()
+    assert not (value.output_dir / 'devices' / 'lcd43b').exists()
 
 
 def test_epaper_outputs_unchanged_when_enabled(tmp_path, monkeypatch):
