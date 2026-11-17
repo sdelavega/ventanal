@@ -281,10 +281,10 @@ bool show(int index) {
         lcd::drawOfflineMark(pixels, lcd::WIDTH, lcd::HEIGHT);
     }
     if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
+        const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
+                      || refreshLabel.label() == lcd::RefreshLabel::Failed;
         lcd::drawRefreshLabel(pixels, lcd::WIDTH, lcd::HEIGHT, text,
-                              refreshLabel.label() == lcd::RefreshLabel::Offline
-                                  ? lcd::RGB565_RED
-                                  : lcd::RGB565_WHITE);
+                              red ? lcd::RGB565_RED : lcd::RGB565_WHITE);
     }
     panel.blit(pixels);
     free(pixels);
@@ -414,13 +414,17 @@ void applyFinishedRefresh() {
                                           refreshRequested);
     xSemaphoreGive(refreshCopied);
     refreshBusy = false;
+    // A manifest that arrived but lost a frame it required is a failure for
+    // feedback: DOWNLOAD FAILED (red), never UP TO DATE over stale artwork.
+    const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
     if (refreshRequested)
-        refreshLabel.finish(millis(), !refreshStaging.manifestOk, changed);
+        refreshLabel.finish(millis(), !refreshStaging.manifestOk, changed,
+                            frameFailed);
     else if (redraw)
         refreshLabel.clear();   // a scheduled redraw replaces the held label
     logRefreshLabel();
-    lcd::log("refresh fetch=%lu ok=%d offline=%d\n", fetchCounter++,
-             refreshStaging.manifestOk, state.offline);
+    lcd::log("refresh fetch=%lu ok=%d offline=%d failed=%d\n", fetchCounter++,
+             refreshStaging.manifestOk, state.offline, frameFailed);
     if (screenIndex != previousIndex)   // normalised to a shrunk list
         lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
     if (redraw) show(screenIndex);

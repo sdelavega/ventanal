@@ -92,6 +92,8 @@ enum class RefreshLabel : uint8_t {
     Refreshing,  // gesture accepted: fetching now
     UpToDate,    // fetch finished, nothing changed (held ~2 s)
     Offline,     // fetch failed (held ~2 s, red like the OFFLINE mark)
+    Failed,      // manifest ok, but a required frame failed (held ~2 s, red):
+                 // UP TO DATE would lie over stale cached artwork
 };
 
 constexpr uint32_t REFRESH_LABEL_HOLD_MS = 2000;   // ~2 s
@@ -101,6 +103,7 @@ inline const char* refreshLabelText(RefreshLabel label) {
     case RefreshLabel::Refreshing: return "REFRESHING...";
     case RefreshLabel::UpToDate: return "UP TO DATE";
     case RefreshLabel::Offline: return "OFFLINE";
+    case RefreshLabel::Failed: return "DOWNLOAD FAILED";
     default: break;
     }
     return nullptr;
@@ -129,10 +132,15 @@ public:
         label_ = RefreshLabel::Refreshing;
         sinceMs_ = nowMs;
     }
-    // offline: the fetch failed -> OFFLINE styling. changed: new content
-    // simply redraws, no label. Otherwise: UP TO DATE for the hold.
-    void finish(uint32_t nowMs, bool offline, bool changed) {
+    // offline: the fetch itself failed -> OFFLINE styling. frameFailed: the
+    // manifest arrived but a frame it required did not -> DOWNLOAD FAILED
+    // (the pass is a failure for feedback, whatever else it staged). changed:
+    // new content simply redraws, no label. Otherwise: UP TO DATE for the
+    // hold.
+    void finish(uint32_t nowMs, bool offline, bool changed,
+                bool frameFailed) {
         label_ = offline ? RefreshLabel::Offline
+                : frameFailed ? RefreshLabel::Failed
                 : changed ? RefreshLabel::None
                           : RefreshLabel::UpToDate;
         sinceMs_ = nowMs;
@@ -140,7 +148,8 @@ public:
     void clear() { label_ = RefreshLabel::None; }
     // True when the hold expired this tick (the caller redraws clean).
     bool tick(uint32_t nowMs) {
-        if (label_ != RefreshLabel::UpToDate && label_ != RefreshLabel::Offline)
+        if (label_ != RefreshLabel::UpToDate && label_ != RefreshLabel::Offline
+            && label_ != RefreshLabel::Failed)
             return false;
         if (nowMs - sinceMs_ < REFRESH_LABEL_HOLD_MS) return false;
         label_ = RefreshLabel::None;

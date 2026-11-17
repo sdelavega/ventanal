@@ -64,28 +64,43 @@ int main() {
     {   // Refresh feedback label state machine (host-pinned): a refresh
         // gesture shows REFRESHING immediately; completion shows UP TO DATE
         // for ~2 s when nothing changed; a failed fetch shows OFFLINE
-        // styling; new content clears the label (the redraw speaks); and
-        // the hold expires so the cached frame is redrawn clean.
+        // styling; a manifest that arrived but lost a required frame shows
+        // DOWNLOAD FAILED (the pass is a failure — UP TO DATE would lie
+        // over stale artwork); new content clears the label (the redraw
+        // speaks); and the hold expires so the cached frame redraws clean.
         lcd::RefreshLabelState label;
         assert(label.label() == lcd::RefreshLabel::None);
         assert(lcd::refreshLabelText(label.label()) == nullptr);
         label.begin(1000);                    // gesture: immediate feedback
         assert(label.label() == lcd::RefreshLabel::Refreshing);
         assert(!label.tick(2500));           // no hold timeout while refreshing
-        label.finish(3000, false, false);     // fetch ok, nothing new
+        label.finish(3000, false, false, false);   // fetch ok, nothing new
         assert(label.label() == lcd::RefreshLabel::UpToDate);
         assert(!label.tick(4500));           // hold not expired yet
         assert(label.tick(5100));            // ~2 s hold expired
         assert(label.label() == lcd::RefreshLabel::None);
         label.begin(7000);
-        label.finish(8000, true, false);      // fetch failed
+        label.finish(8000, true, false, false);    // fetch failed
         assert(label.label() == lcd::RefreshLabel::Offline);
         assert(label.tick(10100));
         label.begin(11000);
-        label.finish(11500, false, true);     // new content: redraw only
+        label.finish(11500, false, true, false);   // new content: redraw only
         assert(label.label() == lcd::RefreshLabel::None);
         assert(!label.tick(20000));
         label.begin(21000);
+        label.finish(21500, false, false, true);    // required frame lost
+        assert(label.label() == lcd::RefreshLabel::Failed);
+        assert(!strcmp(lcd::refreshLabelText(label.label()),
+                       "DOWNLOAD FAILED"));
+        assert(!label.tick(23000));           // hold not expired yet
+        assert(label.tick(23600));            // ~2 s hold expired, redrawn clean
+        assert(label.label() == lcd::RefreshLabel::None);
+        // Offline outranks a frame failure (the fetch itself never ran).
+        label.begin(24000);
+        label.finish(24500, true, false, true);
+        assert(label.label() == lcd::RefreshLabel::Offline);
+        label.clear();
+        label.begin(25000);
         label.clear();                        // a scheduled redraw replaces it
         assert(label.label() == lcd::RefreshLabel::None);
     }
@@ -103,14 +118,20 @@ int main() {
             for (int x = 260; x < lcd::WIDTH; ++x)     // nothing right of the badge
                 if (screen[y * lcd::WIDTH + x] == lcd::RGB565_WHITE) ++outside;
         assert(outside == 0);
-        // Red styling for the offline label, like the OFFLINE mark.
+        // Red styling for the offline and download-failed labels.
         memset(screen, 0, sizeof screen);
         lcd::drawRefreshLabel(screen, lcd::WIDTH, lcd::HEIGHT,
                               lcd::refreshLabelText(lcd::RefreshLabel::Offline),
                               lcd::RGB565_RED);
         assert(countColour(lcd::RGB565_RED) > 0);
+        memset(screen, 0, sizeof screen);
+        lcd::drawRefreshLabel(screen, lcd::WIDTH, lcd::HEIGHT,
+                              lcd::refreshLabelText(lcd::RefreshLabel::Failed),
+                              lcd::RGB565_RED);
+        assert(countColour(lcd::RGB565_RED) > 0);
         // Every label text fits the panel width at the overlay size.
-        for (const char* text : {"REFRESHING...", "UP TO DATE", "OFFLINE"})
+        for (const char* text : {"REFRESHING...", "UP TO DATE", "OFFLINE",
+                                 "DOWNLOAD FAILED"})
             assert(lcd::textWidth(Antonio_Regular18pt7b, text) < lcd::WIDTH - 32);
     }
     puts("lcd43b overlay: RGB565, OFFLINE mark, waiting screen, clipping,"

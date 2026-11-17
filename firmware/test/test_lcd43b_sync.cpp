@@ -16,6 +16,7 @@
 #include "../lcd43b/config.example.h"
 
 #include "Arduino.h"
+#include "esp_heap_caps.h"
 #include "esp_sntp.h"
 #include "HTTPClient.h"
 #include "LittleFS.h"
@@ -109,6 +110,10 @@ void resetFakes() {
     delayedFrom = 0;
     delayedUntilMs = 0;
     holdConnection = false;
+    reuse = true;
+    lastConnectionHeader.clear();
+    persistentServer = false;
+    failAllocation = false;
     fakeTz.clear();
 }
 
@@ -233,6 +238,7 @@ int main() {
         assert(strstr(Serial.output.c_str(), "cache removed slot=solar"));
         assert(!strcmp(result.frameIds[0], art.info.id));
         assert(!strcmp(result.frameIds[1], weather.info.id));
+        assert(!lcd::anyRequiredFrameFailed(result));   // nothing required failed
 
         // Second pass with the committed ids: both slots are skipped and
         // stage their current ids (no new downloads at all).
@@ -247,6 +253,7 @@ int main() {
         assert(!strcmp(again.frameIds[1], currentIds[1]));
         assert(readBytesCalls == 0);      // nothing re-downloaded
         assert(strstr(Serial.output.c_str(), "skipped=unchanged"));
+        assert(!lcd::anyRequiredFrameFailed(again));   // nothing was required
     }
     {   // Stalled transfers with the watchdog enabled: the manifest itself
         // arrives, every frame transfer gives up after its budget, the
@@ -274,10 +281,86 @@ int main() {
         assert(result.manifestOk);        // the manifest itself arrived
         assert(!result.frameOk[0] && !result.frameOk[1]);
         assert(!result.dropSlot[0] && !result.dropSlot[1]);
+        assert(result.frameFailed[0] && result.frameFailed[1]);   // required
+        assert(lcd::anyRequiredFrameFailed(result));   // the pass failed
         assert(!files.count("/art.vnr")); // nothing partial committed
         const uint32_t elapsed = fakeClock - started;
         assert(elapsed < 2 * lcd::TRANSFER_BUDGET_MS + 80000);   // bounded
         assert(watchdog.feeds > 30000);   // fed during both stalls
+    }
+    {   // Connection-close framing must actually ask for closure: the
+        // outgoing request carries Connection: close (keep-alive disabled),
+        // so a persistent-capable HTTP/1.1 server — one that keeps the
+        // socket open after the body under keep-alive — hangs up and the
+        // frame commits (round-4 Important 1: the default keep-alive made
+        // every such download time out on the close grace).
+        resetFakes();
+        const std::vector<uint8_t> frame = solidFrame(0x001F);
+        Entry art = makeEntry("art", frame);
+        response = frame;
+        advertisedSize = int(lcd::FRAME_BYTES);
+        persistentServer = true;      // stays open only under keep-alive
+        CountingWatchdog watchdog;
+        std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
+        assert(lcd::downloadFrame("http://host", art.info, "art",
+                                  buffer.data(), watchdog));
+        assert(lastConnectionHeader == "close");   // asked the server to close
+        assert(!reuse);                            // keep-alive disabled
+        assert(files.count("/art.vnr"));           // committed
+    }
+    {   // Manifest ok but a required frame fails: the failure is tracked per
+        // slot, separately from manifest success (round-4 Important 2 used
+        // to show UP TO DATE over stale artwork). Partial success across
+        // slots: art commits while weather's answer never delivers a body.
+        resetFakes();
+        const std::vector<uint8_t> artFrame = solidFrame(0xF800);
+        const std::vector<uint8_t> weatherFrame = solidFrame(0x07E0);
+        Entry art = makeEntry("art", artFrame);
+        Entry weather = makeEntry("weather", weatherFrame);
+        responseBody = manifestBody(art, weather);
+        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+            std::vector<uint8_t>(responseBody.begin(), responseBody.end());
+        urlResponses["http://host" + art.url] = artFrame;
+        // Weather's server answer truncates: no full body ever arrives.
+        urlResponses["http://host" + weather.url] =
+            std::vector<uint8_t>(1024, 0);
+        sizeFromResponse = true;
+        char currentIds[lcd::SCREEN_SLOTS][17] = {};
+        lcd::RefreshResult result;
+        CountingWatchdog watchdog;
+        lcd::runRefresh("http://host", "lcd43b", currentIds, result, watchdog);
+        assert(result.manifestOk);                 // the manifest itself arrived
+        assert(result.frameOk[0] && !result.frameOk[1]);
+        assert(!result.frameFailed[0]);            // art: required and done
+        assert(result.frameFailed[1]);            // weather: required, failed
+        assert(!result.frameFailed[2] && result.dropSlot[2]);   // drop != fail
+        assert(lcd::anyRequiredFrameFailed(result));   // pass is a failure
+        assert(files.count("/art.vnr"));          // the partial success kept
+        assert(lastConnectionHeader == "close");  // every request asks closure
+    }
+    {   // Allocation failure: every slot the manifest required this pass
+        // stages a frame failure, so the pass reports failure (not the
+        // UP TO DATE that a manifest-only success used to show).
+        resetFakes();
+        const std::vector<uint8_t> artFrame = solidFrame(0xF800);
+        const std::vector<uint8_t> weatherFrame = solidFrame(0x07E0);
+        Entry art = makeEntry("art", artFrame);
+        Entry weather = makeEntry("weather", weatherFrame);
+        responseBody = manifestBody(art, weather);
+        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+            std::vector<uint8_t>(responseBody.begin(), responseBody.end());
+        urlResponses["http://host" + art.url] = artFrame;
+        urlResponses["http://host" + weather.url] = weatherFrame;
+        sizeFromResponse = true;
+        failAllocation = true;                     // no staging buffer at all
+        char currentIds[lcd::SCREEN_SLOTS][17] = {};
+        lcd::RefreshResult result;
+        CountingWatchdog watchdog;
+        lcd::runRefresh("http://host", "lcd43b", currentIds, result, watchdog);
+        assert(result.manifestOk);
+        assert(result.frameFailed[0] && result.frameFailed[1]);   // required
+        assert(lcd::anyRequiredFrameFailed(result));
+        assert(!files.count("/art.vnr"));          // nothing committed
     }
     {   // Manifest failure: nothing staged, nothing downloaded.
         resetFakes();
@@ -290,6 +373,8 @@ int main() {
         assert(!result.manifestOk);
         for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
             assert(!result.frameOk[slot] && !result.dropSlot[slot]);
+        // A failed manifest is offline feedback, not a frame failure.
+        assert(!lcd::anyRequiredFrameFailed(result));
     }
     {   // applyRefresh: state transitions and the redraw decision.
         Preferences prefs;

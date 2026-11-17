@@ -63,11 +63,26 @@ struct RefreshResult {
     DeviceManifest manifest{};
     // Per cache slot: a verified frame was committed (with its new id), or
     // the screen vanished from the manifest (drop the cached frame). A
-    // failed download stages neither — the previous cache entry stays.
+    // failed download stages neither — the previous cache entry stays —
+    // but a slot whose required download failed (timeout, verification,
+    // commit or no staging buffer) sets frameFailed, so a manifest-only
+    // success can never report as a fully current pass (the sketch shows
+    // DOWNLOAD FAILED instead of UP TO DATE over stale artwork).
     bool frameOk[SCREEN_SLOTS] = {};
     char frameIds[SCREEN_SLOTS][17] = {};
     bool dropSlot[SCREEN_SLOTS] = {};
+    bool frameFailed[SCREEN_SLOTS] = {};
 };
+
+// True when the manifest arrived but at least one frame it required this
+// pass failed: the pass is a failure for feedback purposes even though
+// manifestOk is set (partial success across slots included).
+inline bool anyRequiredFrameFailed(const RefreshResult& result) {
+    if (!result.manifestOk) return false;
+    for (int slot = 0; slot < SCREEN_SLOTS; ++slot)
+        if (result.frameFailed[slot]) return true;
+    return false;
+}
 
 // Live sketch state that applyRefresh manages. `offline` reflects the
 // last applied refresh (none has failed at boot), so a boot blit shows no

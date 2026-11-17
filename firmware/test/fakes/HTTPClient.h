@@ -23,6 +23,11 @@ inline bool stallBody = false;         // connected, but no bytes ever arrive
 inline size_t delayedFrom = 0;          // bytes at/after this index only arrive
 inline unsigned delayedUntilMs = 0;     // once fakeClock passes this mark
 inline bool holdConnection = false;     // connected() stays true (no hang-up)
+// lcd43b connection-close framing (defaults keep every other test unchanged):
+inline bool reuse = true;               // keep-alive, the installed core default
+inline std::string lastConnectionHeader;   // Connection: header the request carries
+inline bool persistentServer = false;   // HTTP/1.1 server: keeps the socket open
+                                          // after the body ONLY under keep-alive
 class WiFiClient {
     size_t pos = 0;
 public:
@@ -40,7 +45,7 @@ public:
     }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
     int read(uint8_t* b, size_t n) { fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
-    bool connected() { if (stallBody || holdConnection) return true; return pos < response.size(); }
+    bool connected() { if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {
     WiFiClient* client = nullptr;
@@ -50,7 +55,7 @@ public:
     bool begin(WiFiClient& c, const String& u) { return begin(c, u.c_str()); }
     bool begin(const char* url) { lastUrl=url; client=&inlineClient; inlineClient.resetResponse(); return !failBegin; }
     bool begin(const String& u) { return begin(u.c_str()); }
-    void setReuse(bool) {}
+    void setReuse(bool r) { reuse = r; }   // the production code disables keep-alive
     void addHeader(const char* k,const char* v) { lastHeaders[k]=v; }
     String getString() { return responseBody; }
     void setTimeout(unsigned) {}
@@ -60,6 +65,11 @@ public:
         auto perUrl = urlResponses.find(lastUrl);
         if (perUrl != urlResponses.end()) response = perUrl->second;
         else if(!responseBody.empty()) response.assign(responseBody.begin(),responseBody.end());
+        // The request line the real client would put on the wire: without
+        // setReuse(false) this is "keep-alive" and a persistent server never
+        // hangs up (the round-4 framing bug).
+        lastConnectionHeader = reuse ? "keep-alive" : "close";
+        lastHeaders["Connection"] = lastConnectionHeader;
         return status;
     }
     int getSize() { return sizeFromResponse ? int(response.size()) : advertisedSize; }

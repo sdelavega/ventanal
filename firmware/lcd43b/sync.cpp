@@ -78,6 +78,10 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     const String url = String(hostUrl) + "/devices/" + deviceId
                      + "/manifest.json";
     http.begin(url);
+    // Connection-close framing: never keep-alive, so a persistent-capable
+    // HTTP/1.1 server hangs up after the body instead of holding the
+    // socket open past our timeouts (same as downloadFrame below).
+    http.setReuse(false);
     http.setTimeout(HTTP_TIMEOUT_MS);
     watchdog.feed();
     const int status = http.GET();
@@ -135,6 +139,12 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
     bool excess = false;
     HTTPClient http;
     http.begin(url);
+    // Connection-close framing: the body is framed by the server's hang-up
+    // (see the completion check below), so the request must ask for closure.
+    // The Arduino HTTPClient defaults to keep-alive; an HTTP/1.1 server or
+    // reverse proxy would then deliver a complete valid frame and keep the
+    // socket open, failing every download on the close grace.
+    http.setReuse(false);
     http.setTimeout(HTTP_TIMEOUT_MS);
     const uint32_t started = millis();
     watchdog.feed();
@@ -225,6 +235,11 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     uint8_t* buffer = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
     if (!buffer) {
         log("download error=allocation\n");
+        // Every slot that required a download this pass just failed it:
+        // the pass reports failure, not manifest-only success.
+        for (int slot = 0; slot < SCREEN_SLOTS; ++slot)
+            if (published[slot] && published[slot]->present)
+                result.frameFailed[slot] = true;
         return;
     }
     for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
@@ -256,6 +271,11 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
+        } else {
+            // This slot's download was required (id changed or cache
+            // missing) and it failed: track it separately from manifest
+            // success so the pass can never report as fully current.
+            result.frameFailed[slot] = true;
         }
     }
     free(buffer);
