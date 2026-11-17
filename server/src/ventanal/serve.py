@@ -118,8 +118,15 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 # solar screen published while authorised must stop being
                 # advertised once the licence expires or the call sign is
                 # removed from the configuration.
+                target = root / path.lstrip('/')
+                # The same path-resolution/symlink rejection as the shared
+                # route below: a symlinked manifest (or parent directory)
+                # must never open a file outside the publication root.
+                if target.resolve() != target:
+                    self.send_error(404)
+                    return
                 try:
-                    with (root / path.lstrip('/')).open() as f:
+                    with target.open() as f:
                         manifest = json.load(f)
                     if not isinstance(manifest, dict):
                         raise ValueError('expected a JSON object')

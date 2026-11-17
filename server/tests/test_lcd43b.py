@@ -517,6 +517,72 @@ def test_device_manifest_request_time_solar_gate(tmp_path, monkeypatch):
     assert 'solar' in request()['screens']
 
 
+def test_device_manifest_symlink_rejected(tmp_path):
+    """A configured server must apply the shared path-resolution/symlink
+    check before opening device manifests.
+
+    A symlinked devices/<id>/manifest.json — or a symlinked devices/<id>
+    parent directory — must never serve a file that resolves outside the
+    publication root: 404, fail closed, like every other route.
+    """
+    root = tmp_path / 'out'
+    (root / 'devices').mkdir(parents=True)
+    (root / 'manifest.json').write_text('{}')
+    secret = tmp_path / 'secret.json'
+    secret.write_text('{"version": 1, "screens": {}, "leaked": true}')
+
+    config_path = tmp_path / 'ventanal.toml'
+    config_path.write_text(
+        EXAMPLE.read_text()
+        .replace('/var/lib/ventanal', str(tmp_path / 'lib'))
+        .replace('/var/cache/ventanal', str(tmp_path / 'cache'))
+        .replace('lcd43b = false', 'lcd43b = true'))
+    cfg = load_config(config_path)
+    cfg.cache_dir.mkdir(parents=True, exist_ok=True)
+
+    def request(path):
+        srv = make_server(root, '127.0.0.1', 0, cache_dir=cfg.cache_dir,
+                          config_path=config_path)
+        thread = Thread(target=srv.serve_forever, daemon=True)
+        thread.start()
+        try:
+            conn = HTTPConnection(*srv.server_address)
+            conn.request('GET', path)
+            response = conn.getresponse()
+            body = response.read()
+            conn.close()
+            return response.status, body
+        finally:
+            srv.shutdown()
+            srv.server_close()
+            thread.join()
+
+    # Positive control: a real manifest under the publication root serves.
+    device = root / 'devices' / 'lcd43b'
+    device.mkdir()
+    (device / 'manifest.json').write_text('{"version": 1}')
+    status, _ = request('/devices/lcd43b/manifest.json')
+    assert status == 200
+
+    # Symlinked manifest.json pointing outside the publication root.
+    (device / 'manifest.json').unlink()
+    (device / 'manifest.json').symlink_to(secret)
+    status, body = request('/devices/lcd43b/manifest.json')
+    assert status == 404
+    assert b'leaked' not in body
+
+    # Symlinked parent directory: devices/<id> itself resolves outside.
+    (device / 'manifest.json').unlink()
+    device.rmdir()
+    (tmp_path / 'beyond').mkdir()
+    (tmp_path / 'beyond' / 'manifest.json').symlink_to(secret)
+    (root / 'devices' / 'elsewhere').symlink_to(tmp_path / 'beyond',
+                                                target_is_directory=True)
+    status, body = request('/devices/elsewhere/manifest.json')
+    assert status == 404
+    assert b'leaked' not in body
+
+
 def test_serve_device_routes(tmp_path):
     root = tmp_path / 'out'
     device = root / 'devices' / 'lcd43b'
