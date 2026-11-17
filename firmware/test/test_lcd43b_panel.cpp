@@ -138,6 +138,27 @@ int main() {
         assert(calls[0].y_end - calls[0].y_start == FB_H);
     }
 
-    puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover passed");
+    {   // Anti-flicker configuration (fix-r3-flicker.md): the DRAM bounce
+        // buffers are enlarged to WIDTH*20 pixels — 20 rows per buffer, an
+        // even divisor of the 480-row frame — so each PSRAM refill window
+        // spans 1 ms of panel drain instead of 0.5 ms and Wi-Fi/flash bus
+        // contention can no longer starve a row refill (the owner's
+        // dancing lines on the left edge). PCLK stays at Waveshare's own
+        // 16 MHz board value, the DMA burst stays at 64 bytes (the S3
+        // GDMA maximum), and the frame buffer stays in PSRAM. The core's
+        // CONFIG_LCD_RGB_RESTART_IN_VSYNC=y makes any residual underrun
+        // self-heal at the next VSYNC instead of persisting.
+        Panel panel;
+        assert(panel.begin([](bool) { return true; }));
+        assert(lastConfig.bounce_buffer_size_px == size_t(FB_W) * 20);
+        assert(lastConfig.bounce_buffer_size_px % size_t(FB_W) == 0);
+        assert(size_t(FB_W) * FB_H % lastConfig.bounce_buffer_size_px == 0);
+        assert(lastConfig.dma_burst_size == 64);
+        assert(lastConfig.timings.pclk_hz == 16 * 1000 * 1000);
+        assert(lastConfig.flags.fb_in_psram == 1);
+    }
+
+    puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover,"
+         " anti-flicker bounce config passed");
     return 0;
 }

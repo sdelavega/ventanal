@@ -51,7 +51,17 @@ public:
         static const int DATA[] = {14, 38, 18, 17, 10, 39, 0, 45,
                                    48, 47, 21, 1, 2, 42, 41, 40};
         for (int i = 0; i < 16; ++i) config.data_gpio_nums[i] = DATA[i];
-        config.bounce_buffer_size_px = WIDTH * 10;
+        // Anti-underrun configuration (the owner's "dancing horizontal
+        // lines on the left edge" = starved bounce-buffer refills):
+        // 20 rows per DRAM bounce buffer, an even divisor of the 480-row
+        // frame. At Waveshare's own 16 MHz PCLK the panel drains one
+        // buffer in 1 ms, twice the refill margin of the vendor's
+        // WIDTH*10 default, so Wi-Fi/flash PSRAM bus contention cannot
+        // starve a row start. The frame buffer stays in PSRAM; the
+        // 64-byte DMA burst is the S3 GDMA maximum; the core's
+        // CONFIG_LCD_RGB_RESTART_IN_VSYNC=y makes any residual underrun
+        // self-heal at the next VSYNC instead of persisting as a shift.
+        config.bounce_buffer_size_px = WIDTH * 20;
         config.dma_burst_size = 64;
         config.flags.fb_in_psram = 1;
         if (esp_lcd_new_rgb_panel(&config, &panel_) != ESP_OK) return false;
@@ -84,6 +94,10 @@ public:
         uint32_t* out = static_cast<uint32_t*>(buffer);
         for (size_t i = 0; i < words; ++i) out[i] = fill;
     }
+
+    // The esp_lcd handle, for diagnostics that talk to the driver
+    // directly (e.g. registering a VSYNC callback to measure underruns).
+    esp_lcd_panel_handle_t handle() const { return panel_; }
 
 private:
     esp_lcd_panel_handle_t panel_ = nullptr;

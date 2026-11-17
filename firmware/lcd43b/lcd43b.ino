@@ -65,7 +65,14 @@
 
 namespace {
 
+#ifdef VENTANAL_LCD_DIAG_PANEL
+// Underrun-stress builds (fix-r3-flicker.md): refresh every 30 s so a
+// short capture sees several Wi-Fi download + LittleFS commit cycles
+// against the live panel, and observe the VSYNC cadence (below).
+constexpr uint32_t REFRESH_MS = 30 * 1000UL;
+#else
 constexpr uint32_t REFRESH_MS = 10 * 60 * 1000UL;
+#endif
 constexpr uint32_t TOUCH_WAKE_MS = 60000;
 constexpr uint32_t TOUCH_POLL_MS = 10;
 constexpr uint32_t WORKER_STACK_BYTES = 16384;
@@ -98,6 +105,50 @@ uint32_t diagStartMs = 0;
 // plus at most one line per second while a finger is held.
 uint32_t lastRawLogMs = 0;
 lcd::TouchSample lastRawSample{};
+#endif
+
+#ifdef VENTANAL_LCD_DIAG_PANEL
+// Underrun observer (ISR context): the panel's timing generator emits one
+// VSYNC per frame (~39 fps at Waveshare's 16 MHz PCLK; one frame is
+// 820x500 pixel clocks = 25.6 ms). A starved bounce-buffer refill makes
+// the driver restart the DMA in VSYNC (the core enables
+// CONFIG_LCD_RGB_RESTART_IN_VSYNC), which is the only underrun
+// disturbance visible from the esp_lcd API: this core's driver exposes
+// no underrun counter and logs nothing at its ERROR-only log level.
+volatile uint32_t vsyncFrames = 0;
+volatile uint32_t vsyncLastMs = 0;
+volatile uint32_t vsyncMaxGapMs = 0;
+uint32_t vsyncReportMs = 0;
+uint32_t vsyncReportFrames = 0;
+
+bool panelVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t*,
+                void*) {
+    const uint32_t now = millis();
+    if (vsyncLastMs) {
+        const uint32_t gap = now - vsyncLastMs;
+        if (gap > vsyncMaxGapMs) vsyncMaxGapMs = gap;
+    }
+    vsyncLastMs = now;
+    ++vsyncFrames;
+    return false;
+}
+
+void panelVsyncReport(uint32_t now) {
+    if (now - vsyncReportMs < 15000) return;
+    const uint32_t frames = vsyncFrames;
+    const uint32_t maxGap = vsyncMaxGapMs;
+    const uint32_t window = vsyncReportMs ? (now - vsyncReportMs) / 1000 : 0;
+    const uint32_t previous = vsyncReportFrames;
+    vsyncReportMs = now;
+    vsyncReportFrames = frames;
+    vsyncMaxGapMs = 0;
+    lcd::log("panel vsync frames=%lu fps=%lu max_gap_ms=%lu\n",
+             static_cast<unsigned long>(frames - previous),
+             window ? static_cast<unsigned long>(
+                          (frames - previous) / window)
+                    : 0,
+             static_cast<unsigned long>(maxGap));
+}
 #endif
 
 #ifdef VENTANAL_LCD_DIAG_TOUCH
@@ -465,6 +516,22 @@ void setup() {
 #ifdef VENTANAL_LCD_DIAG_TOUCH
     touchBootDiag();
 #endif
+#ifdef VENTANAL_LCD_DIAG_PANEL
+    {   // Stress build: observe the VSYNC cadence and start with a cold
+        // frame cache so the first refresh re-downloads and re-commits
+        // all slots (real Wi-Fi payload plus LittleFS erase/program
+        // traffic) while the panel is streaming. The cache self-heals on
+        // the next accepted manifest.
+        esp_lcd_rgb_panel_event_callbacks_t callbacks = {};
+        callbacks.on_vsync = panelVsync;
+        if (esp_lcd_rgb_panel_register_event_callbacks(panel.handle(),
+                                                       &callbacks, nullptr)
+            != ESP_OK)
+            lcd::log("diag panel error=vsync-callback\n");
+        for (auto& id : state.cachedIds) id[0] = 0;
+        lcd::log("diag panel stress=cold-cache vsync=on\n");
+    }
+#endif
     refreshWatchdog.arm();
     refreshStaged = xSemaphoreCreateBinary();
     refreshCopied = xSemaphoreCreateBinary();
@@ -484,6 +551,9 @@ void loop() {
     const uint32_t now = millis();
     pollTouch(now);
     backlightRefresh();
+#ifdef VENTANAL_LCD_DIAG_PANEL
+    panelVsyncReport(now);
+#endif
     if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
         applyFinishedRefresh();
     if (!refreshBusy && now - lastFetchMs >= REFRESH_MS) startRefresh(false);
