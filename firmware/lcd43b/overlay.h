@@ -91,10 +91,9 @@ inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcar
     char pct[8]="";
     if(battery) snprintf(pct,sizeof pct,"%d%%",percent);
     if(lcars) {
-        const int pw=battery?textWidth(ClockDate,pct)+7:0;
-        const int dw=textWidth(ClockDate,date);
+        const int dateX=6+textWidth(ClockTime,time)+10;
         drawText(region,w,h,ClockTime,time,6,20,rgb565(255,170,0));
-        drawText(region,w,h,ClockDate,date,w-6-pw-dw,18,rgb565(153,150,186));
+        drawText(region,w,h,ClockDate,date,dateX,18,rgb565(153,150,186));
         if(battery) drawText(region,w,h,ClockDate,pct,w-6-textWidth(ClockDate,pct),18,batteryColour(lvl));
     } else {
         // Elliptical radial feather: 62% black at top-right, fully clear

@@ -790,6 +790,11 @@ void setup() {
     refreshCopied = xSemaphoreCreateBinary();
     show(screenIndex);            // cached frame, or the waiting screen
     startRefresh(true);
+#ifdef VENTANAL_LCD_DIAG_SETTINGS_PAGE
+    // Capture-only flag: exercise the normal Settings open route without
+    // changing or persisting any owner setting. Normal builds omit it.
+    handleGesture(Gesture::Next,600,20);
+#endif
 #ifdef VENTANAL_LCD_DIAG_GESTURES
     // Run the synthetic gesture sequence (host-tested in diag.h) a couple
     // of seconds after the first refresh, so a capture taken without

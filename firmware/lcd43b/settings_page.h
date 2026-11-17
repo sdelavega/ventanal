@@ -3,6 +3,7 @@
 #pragma once
 #include "settings.h"
 #include "overlay.h"
+#include "lcars_geometry.h"
 
 namespace lcd {
 enum class SettingsHit { None, Brightness25, Brightness50, Brightness75, Brightness100,
@@ -81,26 +82,30 @@ inline void settingsFooter(uint16_t* px,const char* text,int x,int baseline,uint
         }
     }
 }
+// Shape-only entry point allows a whole-frame comparison against the server.
+inline void drawSettingsChrome(uint16_t* px,bool labels=true) {
+    memset(px,0,size_t(WIDTH)*HEIGHT*2);
+    const auto orange=rgb565(255,119,0);
+    for(const auto& span:LCARS_ELBOWS)
+        for(int x=span.left;x<=span.right;++x) px[span.y*WIDTH+x]=orange;
+    settingsBox(px,{534,0,14,26},rgb565(255,170,0));
+    struct Section { int y,h; uint16_t colour; const char* label; };
+    const Section sections[] = {
+        {60,120,rgb565(221,187,255),"DISPLAY"},
+        {184,100,rgb565(170,170,255),"POWER"},
+        {288,138,rgb565(255,170,0),"SCREENS"}
+    };
+    for(const auto& section:sections) {
+        settingsBox(px,{0,section.y,100,section.h},section.colour);
+        if(labels) drawText(px,WIDTH,HEIGHT,SidebarLabel,section.label,
+                           92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
+    }
+}
 inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarListed,
                              bool batteryButton,const char* footer) {
-    memset(px,0,size_t(WIDTH)*HEIGHT*2);
-    const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0), violet=rgb565(221,187,255);
+    const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0);
     const auto sky=rgb565(170,170,255), light=rgb565(153,150,186), gray=rgb565(102,102,136);
-    settingsBox(px,{0,0,130,56},orange,26);
-    settingsBox(px,{65,0,483,26},orange);
-    settingsBox(px,{0,26,130,30},orange);
-    settingsBox(px,{100,26,60,30},0,24);
-    settingsBox(px,{752,0,48,26},orange,13);
-    settingsBox(px,{752,0,20,26},orange);
-    settingsBox(px,{0,60,100,120},violet);
-    settingsBox(px,{0,184,100,100},sky);
-    settingsBox(px,{0,288,100,138},gold);
-    settingsBox(px,{0,430,130,50},orange,25);
-    settingsBox(px,{0,430,100,25},orange);
-    settingsBox(px,{65,458,735,22},orange);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"DISPLAY",28,174,0);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"POWER",38,278,0);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"SCREENS",25,420,0);
+    drawSettingsChrome(px);
     drawText(px,WIDTH,HEIGHT,Antonio_Regular18pt7b,"SETTINGS",150,63,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"BRIGHTNESS",150,115,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"SCREEN OFF AFTER",150,219,gold);

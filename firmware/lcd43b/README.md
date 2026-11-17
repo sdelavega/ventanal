@@ -235,3 +235,26 @@ power-removal test. Neither was tested on USB alone. A cell cannot add the
 missing sense connections: show **no battery percentage**, do not infer USB
 from these expander bits, and use the design's undetectable-source timeout
 fallback (applies always, default Never).
+
+### Settings chrome regression fixture
+
+The Settings elbows and right cap use inclusive scanline spans baked from
+Pillow's non-antialiased server geometry. Regenerate both the firmware spans
+and the independent RGB565 RLE fixture with:
+
+```sh
+server/.venv/bin/python firmware/lcd43b/tools/lcars_geometry.py
+```
+
+`make -C firmware/test test` checks that generated files still match the
+current server and compares all 384,000 firmware chrome pixels against
+`firmware/test/fixtures/lcd43b-settings-chrome.rle`. Labels are excluded from
+both shape renders. The sidebar uses Antonio Bold at 13 px, right-aligned at
+x=92 with baseline six pixels above each section's bottom, matching the server.
+Regenerate its GFX glyphs with `firmware/lcd43b/tools/readout_fonts.py`.
+The Python check defaults to the server virtualenv; override `PYTHON` when needed.
+
+For a bounded hardware capture, `VENTANAL_LCD_DIAG_SETTINGS_PAGE=1` opens
+Settings through the normal gesture handler at boot, without changing saved
+settings. The normal build omits this flag. Weather, solar and Settings share
+the same clock: gold time at x=554, light-gray date ten pixels after the time.

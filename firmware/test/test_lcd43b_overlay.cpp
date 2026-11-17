@@ -168,9 +168,17 @@ int main() {
         assert(!memcmp(without,region,sizeof without));
         assert(region[0]==0xffff && region[79*250+249]==0xffff); // feather reaches clear edges
         assert(region[249]!=0xffff); // shade exists at top right
-        // Worst-case strings and optional percent fit without touching each other.
-        assert(6+lcd::textWidth(ClockTime,"12:59 PM")+6
-               <204-6-lcd::textWidth(ClockDate,"WED 30 NOV")-7-lcd::textWidth(ClockDate,"100%"));
+        // Exact glyph layout pins grouped time/date across both clock formats.
+        for(const char* time : {"2:32 PM","12:59 PM","14:32"}) {
+            uint16_t expected[204*26] = {};
+            const int dateX=6+lcd::textWidth(ClockTime,time)+10;
+            lcd::drawText(expected,204,26,ClockTime,time,6,20,lcd::rgb565(255,170,0));
+            lcd::drawText(expected,204,26,ClockDate,"WED 30 NOV",dateX,18,lcd::rgb565(153,150,186));
+            lcd::renderReadout(region,nullptr,true,time,"WED 30 NOV",-1,lcd::BatteryLevel::None);
+            assert(!memcmp(expected,region,sizeof expected));
+            assert(dateX+lcd::textWidth(ClockDate,"WED 30 NOV")+7
+                   <204-6-lcd::textWidth(ClockDate,"100%"));
+        }
     }
     assert(!lcd::isLcarsSlot(0) && lcd::isLcarsSlot(1) && lcd::isLcarsSlot(2) && !lcd::isLcarsSlot(3));
     puts("lcd43b overlay: RGB565, OFFLINE mark, waiting screen, clipping,"

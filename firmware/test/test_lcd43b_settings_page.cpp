@@ -4,7 +4,7 @@
 #include <cassert>
 #include <vector>
 #include <cstdio>
-int main() {
+int main(int argc,char** argv) {
     using namespace lcd;
     for (const auto& c : SETTINGS_CONTROLS) {
         assert(c.rect.h>=52);
@@ -43,5 +43,26 @@ int main() {
     for(int y=374;y<426;++y) for(int x=150;x<580;++x) assert(px[1+y*WIDTH+x]==0);
     drawSettingsPage(px.data()+1,s,true,true,"VENTANAL · TEST · OFFLINE · v1.0.0");
     assert(px[1+400*WIDTH+360]!=0); // generic calibration control is drawn
+    // Independent server draw_lcd_frame fixture, labels omitted consistently.
+    drawSettingsChrome(px.data()+1,false);
+    FILE* fixture=fopen("fixtures/lcd43b-settings-chrome.rle","rb"); assert(fixture);
+    size_t index=0;
+    unsigned char run[4];
+    while(fread(run,1,4,fixture)==4) {
+        const unsigned count=run[0]|(unsigned(run[1])<<8);
+        const uint16_t colour=run[2]|(unsigned(run[3])<<8);
+        assert(count && index+count<=size_t(WIDTH)*HEIGHT);
+        for(unsigned i=0;i<count;++i) assert(px[1+index++]==colour);
+    }
+    assert(feof(fixture) && index==size_t(WIDTH)*HEIGHT); fclose(fixture);
+    assert(px.front()==0x1234 && px.back()==0x1234);
+    if(argc==2) {
+        auto preview=defaultSettings(false);
+        drawSettingsPage(px.data()+1,preview,true,false,"VENTANAL · LCD43B · WI-FI OK · v1.0.0");
+        drawTopBarClock(px.data()+1,"2:32 PM","TUE 17 NOV",-1,BatteryLevel::None);
+        FILE* f=fopen(argv[1],"wb"); assert(f);
+        assert(fwrite(px.data()+1,2,WIDTH*HEIGHT,f)==size_t(WIDTH)*HEIGHT); fclose(f);
+    }
+    puts("lcd43b settings page: 384000 chrome pixels equal server fixture");
     puts("lcd43b settings page: controls, guards, idle, drawing bounds passed");
 }
