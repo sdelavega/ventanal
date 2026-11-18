@@ -105,11 +105,11 @@ def write_panel(path: Path, colours: list[tuple[int, int, int]]) -> None:
     from ventanal.settings import backup_config, prune_config_backups, read_document, replace_config, settings_lock
 
     backup_dir = path.parent / 'backups'
-    with settings_lock(backup_dir):
+    with settings_lock(path, backup_dir):
         original = read_document(path)
         updated = _replace_panel(original, colours)
         backup_config(backup_dir, original)
-        replace_config(path, updated.encode('utf-8'))
+        replace_config(path, updated.encode('utf-8'), backup_dir)
         prune_config_backups(backup_dir)
 
 

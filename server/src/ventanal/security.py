@@ -25,6 +25,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from ventanal.auth import private_write
+from ventanal.config import normalize_hostname
 from ventanal.manifest import reject_manifest_floats
 
 
@@ -33,6 +34,10 @@ def canonical(value):
 
 
 class SecurityStateBusy(RuntimeError):
+    pass
+
+
+class PreviousCertificateHeld(ValueError):
     pass
 
 
@@ -58,7 +63,10 @@ def host_names():
     names={socket.gethostname(),socket.getfqdn(),'localhost','127.0.0.1'}
     for name in tuple(names):
         try:
-            names.update(row[4][0] for row in socket.getaddrinfo(name,None))
+            for _, _, _, canonical_name, address in socket.getaddrinfo(name, None, flags=socket.AI_CANONNAME):
+                names.add(address[0])
+                if canonical_name:
+                    names.add(canonical_name)
         except OSError:
             pass
     # Discover the selected LAN interface without sending any traffic.
@@ -68,6 +76,15 @@ def host_names():
     except OSError:
         pass
     return sorted(names)
+
+
+def certificate_dns_names(certificate):
+    cert = x509.load_pem_x509_certificate(certificate.encode())
+    try:
+        san = cert.extensions.get_extension_for_class(x509.SubjectAlternativeName).value
+    except x509.ExtensionNotFound:
+        return frozenset()
+    return frozenset(filter(None, map(normalize_hostname, san.get_values_for_type(x509.DNSName))))
 
 
 class Security:
@@ -82,8 +99,10 @@ class Security:
         self.lock=RLock()
         self.state=json.loads(self.path.read_text()) if self.path.exists() else None
         self.context=None
+        self.dns_names = frozenset()
         if self.ready:
             self.context = self._make_context(self.state)
+            self.dns_names = certificate_dns_names(self.certificate)
             if not self.required.exists(): private_write(self.required,b'1')
 
     @property
@@ -124,8 +143,10 @@ class Security:
                 self.state=None
                 raise
 
-    def regenerate(self,names=None):
+    def regenerate(self,names=None, *, discard_previous=False):
         with self.lock:
+            if self.can_restore and not discard_previous:
+                raise PreviousCertificateHeld('A previous certificate is still saved for rollback.')
             key=ec.generate_private_key(ec.SECP256R1())
             names=names or host_names()
             sans=[]
@@ -167,8 +188,9 @@ class Security:
 
     def _replace_identity(self, state):
         context = self._make_context(state)
+        dns_names = certificate_dns_names(state['certificate'])
         private_write(self.path, canonical(state))
-        self.state, self.context = state, context
+        self.state, self.context, self.dns_names = state, context, dns_names
 
     def repair(self):
         with self.lock:

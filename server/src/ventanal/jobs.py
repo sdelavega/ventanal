@@ -195,6 +195,9 @@ def ensure_pool(cfg: Config, pool: ArtPool, client: httpx.Client, now: datetime)
     """Refresh stale pool contents and record cache freshness for all callers."""
     refreshed = pool.last_refresh()
     if refreshed is None or _elapsed(now, refreshed) > timedelta(hours=24):
+        retry_after = pool.retry_after()
+        if retry_after is not None and _elapsed(now, retry_after) < timedelta(0):
+            return 0
         return refresh_pool(cfg, pool, client, now.date(), now=now)
     return 0
 

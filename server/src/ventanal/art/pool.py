@@ -357,22 +357,35 @@ class ArtPool:
             )
 
     def last_refresh(self) -> datetime | None:
+        return self._refresh_time('last_refresh')
+
+    def retry_after(self) -> datetime | None:
+        return self._refresh_time('retry_after')
+
+    def _refresh_time(self, key) -> datetime | None:
         with closing(sqlite3.connect(self.db_path)) as db:
             row = db.execute(
-                "SELECT value FROM pool_metadata WHERE key = 'last_refresh'"
+                "SELECT value FROM pool_metadata WHERE key = ?", (key,)
             ).fetchone()
         return _aware(datetime.fromisoformat(row[0])) if row else None
 
     def set_refreshed(self, now: datetime) -> None:
-        timestamp = _aware(now).isoformat()
+        self._set_refresh_time('last_refresh', now)
+
+    def set_retry_after(self, when: datetime) -> None:
+        self._set_refresh_time('retry_after', when)
+
+    def _set_refresh_time(self, key, when):
         with closing(sqlite3.connect(self.db_path)) as db, db:
             db.execute(
                 """
-                INSERT INTO pool_metadata (key, value) VALUES ('last_refresh', ?)
+                INSERT INTO pool_metadata (key, value) VALUES (?, ?)
                 ON CONFLICT (key) DO UPDATE SET value = excluded.value
             """,
-                (timestamp,),
+                (key, _aware(when).isoformat()),
             )
+            if key == 'last_refresh':
+                db.execute("DELETE FROM pool_metadata WHERE key = 'retry_after'")
 
 
 def refresh_pool(cfg: Config, pool: ArtPool, client: httpx.Client, today: date, *, now: datetime | None = None) -> int:
@@ -394,6 +407,9 @@ def refresh_pool(cfg: Config, pool: ArtPool, client: httpx.Client, today: date, 
         if candidates:
             found_candidates = True
             added += pool.add(candidates, season.name)
+    attempt = now if now is not None else datetime.now(timezone.utc)
     if found_candidates:
-        pool.set_refreshed(now if now is not None else datetime.now(timezone.utc))
+        pool.set_refreshed(attempt)
+    else:
+        pool.set_retry_after(_aware(attempt) + timedelta(hours=1))
     return added

@@ -20,7 +20,7 @@ from ventanal.auth import private_write
 from ventanal.config import load_config
 from ventanal.manifest import read_manifest, publish
 from ventanal.palette import PANEL_INDEX
-from ventanal.settings import save_settings
+from ventanal.settings import ConfigWriteError, save_settings
 
 log = logging.getLogger(__name__)
 
@@ -245,6 +245,8 @@ def _handle(ui, h, path, post, values, token, send, redirect):
 def handle(ui, h, path, post, values, token, send, redirect):
     try:
         _handle(ui,h,path,post,values,token,send,redirect)
+    except ConfigWriteError as exc:
+        send(400,'Calibration',body(ui,token,str(exc),skip_measurement=True))
     except Exception as exc:
         if isinstance(exc, (ValueError, KeyError, TypeError)) and not isinstance(exc, MeasurementError):
             message = str(exc) if isinstance(exc,ValueError) and str(exc).startswith(('Upload ','Please upload the photo again','Photo expired','Select four','corners ','paper ','Paper rectangle','Invalid white','Current painting','Publish a painting','Measure and preview')) else 'Unable to process the photo. Check the corners and optional paper selection.'

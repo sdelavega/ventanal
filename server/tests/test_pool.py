@@ -240,7 +240,7 @@ def test_refresh_wrapping_season_skips_overlapping_starts(pool, monkeypatch):
     assert pool.last_refresh() is None
 
 
-def test_stale_refresh_retries_until_candidates_return(pool, monkeypatch):
+def test_stale_refresh_retries_after_one_hour_until_candidates_return(pool, monkeypatch):
     from ventanal.jobs import ensure_pool
 
     cfg = load_config(EXAMPLE)
@@ -250,13 +250,18 @@ def test_stale_refresh_retries_until_candidates_return(pool, monkeypatch):
     pool.add([artwork], 'holiday-winter')
     results = iter([[], [], [artwork], [artwork]])
     monkeypatch.setattr('ventanal.art.pool.search_all', lambda *a, **k: next(results))
+    retry = NOW + timedelta(hours=1)
     with httpx.Client() as client:
         assert ensure_pool(cfg, pool, client, NOW) == 0
         assert pool.last_refresh() == older
+        assert pool.retry_after() == retry
+        assert ensure_pool(cfg, pool, client, retry - timedelta(seconds=1)) == 0
+        assert pool.last_refresh() == older
         # Duplicates still prove the sources answered with candidates.
-        assert ensure_pool(cfg, pool, client, NOW) == 0
-        assert pool.last_refresh() == NOW
-        assert ensure_pool(cfg, pool, client, NOW) == 0
+        assert ensure_pool(cfg, pool, client, retry) == 0
+        assert pool.last_refresh() == retry
+        assert pool.retry_after() is None
+        assert ensure_pool(cfg, pool, client, retry) == 0
 
 
 def test_refresh_download_metadata_preserves_shown_history(pool):

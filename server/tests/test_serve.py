@@ -42,7 +42,7 @@ def test_get_only(server):
     conn.close()
 
 
-def test_oversized_manifest_returns_503_with_empty_body(server, monkeypatch, tmp_path):
+def test_oversized_manifest_returns_503_with_empty_body(server, monkeypatch, tmp_path, caplog):
     (tmp_path / 'manifest.json').write_text('{"version":1,"screens":{}}')
     monkeypatch.setattr('ventanal.serve.MAX_SERVED_MANIFEST_BYTES', 1)
     conn = HTTPConnection(*server.server_address, timeout=2)
@@ -54,6 +54,7 @@ def test_oversized_manifest_returns_503_with_empty_body(server, monkeypatch, tmp
         # The HTTP/1.0 request closes the connection, so inspect even bytes
         # accidentally written beyond the advertised zero-length body.
         assert response.fp.read() == b''
+        assert 'Oversize manifest (' in caplog.text and 'returning 503' in caplog.text
     finally:
         conn.close()
 

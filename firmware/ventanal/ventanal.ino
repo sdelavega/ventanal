@@ -394,7 +394,8 @@ bool storeChargeMarker(Preferences& prefs, uint8_t value) {
 void sleepCritical(Preferences& prefs, const State& state, int pct, bool chargeAttempted) {
     // Commit before the high-current refresh. An interrupted draw can leave
     // an incomplete screen, but must not repeat on the depleted battery.
-    if(!chargeAttempted && storeChargeMarker(prefs,1)) {
+    if(!chargeAttempted) {
+        storeChargeMarker(prefs,1);
         rememberPanel(state,pct,false,time(nullptr),2);
         drawChargeMe(display);
         refreshPanel();

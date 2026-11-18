@@ -146,8 +146,10 @@ int main() {
     batteryCount=0; display.voltage=3.3f;
     preferences.erase(chargeMarker);
     Preferences::failWriteKey=chargeMarker;
+    const auto beforeFailedMarker=display.refreshes;
     wake(ESP_SLEEP_WAKEUP_EXT0,true);
-    assert(charges==2 && !preferences.count(chargeMarker));
+    assert(charges==3 && display.refreshes==beforeFailedMarker+1);
+    assert(!preferences.count(chargeMarker));
     Preferences::failWriteKey="wdt-count";
     fakeReset=ESP_RST_BROWNOUT;
     const auto beforeFailedStrike=display.begins;

@@ -137,6 +137,10 @@ def _worker(cache, palette, museums):
     import httpx
     from ventanal.art.pool import ArtPool
     from ventanal.art.sources import fetch_image, failure_info
+    from ventanal.cache_access import cache_owner_error
+
+    if error := cache_owner_error(Path(cache), 'python -m ventanal.art.screen_fit …'):
+        raise SystemExit(error)
 
     # Use the same production kernel; persist its optional compilation across
     # short-lived workers in the service-writable image cache, not /opt.

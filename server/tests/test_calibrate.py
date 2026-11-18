@@ -105,6 +105,36 @@ def test_calibrate_cli_preserves_config(cli_config, tmp_path, capsys, write, hea
     assert not cli_config.cache_dir.exists()
 
 
+def test_calibrate_cli_as_root_points_to_service_user(cli_config, tmp_path, capsys, monkeypatch):
+    from types import SimpleNamespace
+    from ventanal import calibrate, settings
+    from ventanal.cli import main
+
+    photo = tmp_path / 'photo.png'
+    Image.new('RGB', (2, 2)).save(photo)
+    monkeypatch.setattr(calibrate, 'measure', lambda *_: KNOWN)
+    config = tmp_path / 'settings.toml'
+    original = Path('ventanal.example.toml').read_bytes()
+    config.write_bytes(original)
+    mode = config.stat().st_mode
+    lstat = Path.lstat
+
+    def service_owned(path, *args, **kwargs):
+        if path == config:
+            return SimpleNamespace(st_uid=123, st_mode=mode)
+        return lstat(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, 'lstat', service_owned)
+    monkeypatch.setattr(settings.os, 'geteuid', lambda: 0)
+    with pytest.raises(SystemExit) as error:
+        main(['calibrate', str(photo), '--config', str(config), '--corners', '0,0 1,0 1,1 0,1', '--write'])
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert 'run as the service user: sudo -u ventanal' in message
+    assert 'chown' not in message
+    assert config.read_bytes() == original
+
+
 def test_measure_uses_central_median():
     pixels = np.asarray(simulate(chart(), KNOWN)).copy()
     # Less than half the central area is contaminated, defeating a mean.

@@ -18,7 +18,8 @@ import tomlkit
 from ventanal.auth import Auth, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validate_password
 from ventanal.config import load_config, ConfigError
 from ventanal.manifest import read_manifest
-from ventanal.settings import FIELDS, SOURCE_REGISTRY, MUSEUMS, MUSEUM_LABELS, FIELD_HELP, OPTION_LABELS, READ_ONLY, ADVANCED, season_count, save_settings, read_document
+from ventanal.security import PreviousCertificateHeld
+from ventanal.settings import ConfigWriteError, FIELDS, SOURCE_REGISTRY, MUSEUMS, MUSEUM_LABELS, FIELD_HELP, OPTION_LABELS, READ_ONLY, ADVANCED, season_count, save_settings, read_document
 from ventanal.status import BoardStore, next_wake, showing, preview
 
 
@@ -250,6 +251,8 @@ class UI:
             battery_detail += form('/battery',token,'<input type="hidden" name="action" value="full">','Battery is full — set as 100%')
             battery_detail += form('/battery',token,'<input type="hidden" name="action" value="reset">','Reset to default')
         body = '<p>Server '+e(version('ventanal'))+'</p><script src="/static/battery.js" defer></script><div class="grid">'+''.join(f'<div class="tile"><div class="k">{e(k)}</div><div class="v">{e(v)}</div><div class="s">{e(s)}</div>'+ ('<progress max="100" value="'+str(board['bat'])+'" aria-label="Battery"></progress>' if k.startswith('BATTERY') and board and 'bat' in board else '')+(battery_detail if k.startswith('BATTERY') else '')+'</div>' for k,v,s in data)+'</div><div class="previews">'
+        if cfg.config_backup is not None:
+            body = f'<p class="error" role="status">Live config could not be parsed. Using backup {e(cfg.config_backup.name)}.</p>' + body
         from ventanal.solar.licence import verify
         solar_gate = verify(cfg.cache_dir/'fcc.sqlite3',cfg.ham_call_sign,cfg.zip,datetime.now(timezone.utc))
         for screen in ('art','weather','solar'):
@@ -403,12 +406,12 @@ class UI:
                             self.respond(h,403); return
                         if self.auth.mode == 'password' and (not change or not session['granted']):
                             redirect('/login'); return
-                        if not change and not self.auth.consume_setup_token(values.get('setup_token','')):
-                            self.respond(h,403); return
                         if change and not self.auth.verify(values.get('current','')): raise ValueError('Current password is incorrect.')
                         password, confirm = values.get('password',''), values.get('confirm','')
                         if not change:
                             validate_password(password,confirm)
+                            if not self.auth.consume_setup_token(values.get('setup_token','')):
+                                self.respond(h,403); return
                             self.enable_security()
                         self.auth.set_password(password,confirm)
                 except ValueError as exc: error=str(exc)
@@ -452,7 +455,8 @@ class UI:
                         self.enable_security()
                         self.auth.invalidate()
                         cookie=None; redirect('/login'); return
-                    elif action=='regenerate': self.security.regenerate()
+                    elif action=='regenerate':
+                        self.security.regenerate(discard_previous=values.get('discard_previous')=='yes')
                     elif action=='restore':
                         if not self.security.restore(): error=self.security.NO_PREVIOUS_CERTIFICATE
                     elif action=='repair': self.security.repair()
@@ -466,6 +470,7 @@ class UI:
                         profile, key = self.security.lcd_values(device)
                         lcd_values = device, profile, key
                     else: self.respond(h,400); return
+                except PreviousCertificateHeld as exc: error=str(exc)+' Restore it or confirm that it can be discarded.'
                 except ValueError as exc: error=str(exc)
                 except OSError: error='Unable to update security material; check service permissions and listener port.'
             body='<div class="form-card security-panel"><p>Security '+('ON' if self.security.ready else 'OFF — activation required for this existing password')+'</p>'
@@ -476,7 +481,10 @@ class UI:
                 if reveal:
                     body+=f'<p>Copy the PEM as a C++ raw string into VENTANAL_HOST_CERT_PEM. Set VENTANAL_HOST_URL to the HTTPS URL.</p><pre>{e(self.security.certificate)}</pre><label>VENTANAL_DEVICE_KEY<input readonly value="{e(self.security.key.hex())}"></label>'
                 for action,label in [('regenerate','Regenerate certificate'),('repair','Re-pair board (new device key)')]:
-                    body+=form('/security',token,f'<input type="hidden" name="action" value="{action}"><label><input type="checkbox" name="confirm" value="yes" required>I understand the board must be updated afterwards.</label>',label)
+                    fields = f'<input type="hidden" name="action" value="{action}"><label><input type="checkbox" name="confirm" value="yes" required>I understand the board must be updated afterwards.</label>'
+                    if action == 'regenerate' and self.security.can_restore:
+                        fields += '<label><input type="checkbox" name="discard_previous" value="yes" required>Discard the saved rollback certificate. The current certificate will become the new rollback certificate.</label>'
+                    body+=form('/security',token,fields,label)
                 if self.security.can_restore:
                     body+=form('/security',token,'<input type="hidden" name="action" value="restore"><label><input type="checkbox" name="confirm" value="yes" required>Present the previous certificate to the board again.</label>','Restore previous certificate')
                 pairings = self.security.lcd_pairings()
@@ -544,6 +552,7 @@ class UI:
                 browser = values.get('browser_session', token)
                 if not re.fullmatch(r'[A-Za-z0-9_-]{1,80}', browser): browser = token
                 try: save_settings(self.config_path, {}, mutate=mutate, browser_session=token+browser)
+                except ConfigWriteError as exc: error = str(exc)
                 except (OSError, ValueError): error = 'Unable to save battery calibration. Please try again.'
             if error: send(400,'Battery calibration',f'<p class="error">{e(error)}</p><a href="/">Return to Status</a>')
             else: redirect('/')

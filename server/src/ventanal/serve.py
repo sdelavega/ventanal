@@ -21,7 +21,9 @@ from ventanal.owner import SkipQueue, parse_skips
 
 
 MAX_TLS_CONNECTIONS = 32
+TLS_IDLE_TIMEOUT = 10
 DEVICE_PATH = re.compile(r'/devices/([a-z0-9-]{1,15})/')
+log = logging.getLogger(__name__)
 
 
 def allowed_host(headers, names):
@@ -88,7 +90,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         def parse_request(self):
             if not super().parse_request():
                 return False
-            if not allowed_host(self.headers, names):
+            if not allowed_host(self.headers, names | ui.security.dns_names if ui is not None else names):
                 self.send_error(400, 'Invalid Host header')
                 return False
             return True
@@ -187,6 +189,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     self.send_error(503); return
                 if len(body) > MAX_SERVED_MANIFEST_BYTES:
+                    log.warning('Oversize manifest (%d bytes, limit %d); returning 503',
+                                len(body), MAX_SERVED_MANIFEST_BYTES)
                     self.send_response(503)
                     self.send_header('Content-Length', '0')
                     self.end_headers()
@@ -290,6 +294,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         def process_request(self, conn, addr):
             # Reserve capacity before starting a worker, including keep-alive time.
             if not self.connection_slots.acquire(blocking=False):
+                log.warning('Dropping TLS connection: all %d slots are busy', MAX_TLS_CONNECTIONS)
                 self.shutdown_request(conn)
                 return
             try:
@@ -312,7 +317,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             except OSError:
                 return
             try:
-                secured.settimeout(30)
+                secured.settimeout(TLS_IDLE_TIMEOUT)
                 super().finish_request(secured, addr)
             finally:
                 self.shutdown_request(secured)

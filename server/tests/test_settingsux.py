@@ -5,6 +5,7 @@ import re
 import time
 import pytest
 from test_gui import web, EXAMPLE
+from ventanal.config import load_config
 from ventanal.settings import save_settings
 
 
@@ -52,13 +53,86 @@ def test_config_fallback_uses_newest_usable_backup(tmp_path):
     (backups / 'ventanal-99990101T000000.000000Z.toml').write_text('[broken\n')
     (backups / 'ventanal-99990101T000001.000000Z.toml').write_text('[display]\n')
     path.write_bytes(b'\xff')
-    assert not load_config(path).clock_24h
+    fallback = load_config(path)
+    assert fallback.config_backup is not None and not fallback.clock_24h
     assert path.read_bytes() == b'\xff'
     assert not save_settings(path, {'display.units': 'metric'}).clock_24h
     assert load_config(path).units == 'metric'
+    assert load_config(path).config_backup is None
+    archived, = backups.glob('unparseable-*.toml')
+    assert archived.read_bytes() == b'\xff'
+    assert archived.stat().st_mode & 0o777 == 0o600
     path.write_text(EXAMPLE.read_text().replace('end = "02-29"', 'end = "02-28"'))
     with pytest.raises(ConfigError, match='no season covers 02-29'):
         load_config(path)
+
+
+@pytest.mark.parametrize('blocked_by', ['owner', 'rename'])
+def test_settings_reports_atomic_save_fix_and_preserves_file(web, monkeypatch, blocked_by):
+    import errno
+    import os
+    from ventanal import settings
+
+    request, server, _ = web
+    server.ui.auth.none()
+    path = server.ui.config_path
+    original = path.read_bytes()
+    _, _, csrf = request('/settings')
+    update = {'csrf': csrf, 'field': 'display.clock', 'display.clock': '12h'}
+    owner = path.stat().st_uid
+    rename = os.replace
+
+    def denied(source, destination):
+        if destination == path:
+            raise OSError(errno.EPERM, 'fake rename denial')
+        return rename(source, destination)
+
+    with monkeypatch.context() as patch:
+        if blocked_by == 'owner':
+            patch.setattr(settings.os, 'geteuid', lambda: owner + 1)
+            expected = 'sudo chown ventanal:ventanal'
+        else:
+            patch.setattr(settings.os, 'replace', denied)
+            expected = 'systemd ReadWritePaths'
+        status, body, _ = request('/settings/field', update)
+        assert status == 400 and expected in json.loads(body)['error']
+        assert path.read_bytes() == original
+        assert not list(path.parent.glob('.settings.toml.*'))
+    assert request('/settings/field', update)[0] == 200
+    assert not load_config(path).clock_24h
+
+
+def test_status_shows_config_fallback_until_repaired(web):
+    request, server, _ = web
+    server.ui.auth.none()
+    path = server.ui.config_path
+    save_settings(path, {'display.clock': '12h'})
+    path.write_bytes(b'[broken\n')
+    status, body, _ = request()
+    assert status == 200 and 'Using backup ventanal-' in body
+    save_settings(path, {'display.clock': '12h'})
+    assert 'Using backup' not in request()[1]
+
+
+def test_config_save_keeps_live_bytes_if_archive_fails(tmp_path, monkeypatch):
+    from ventanal import settings
+
+    path = tmp_path / 'settings.toml'
+    path.write_text(EXAMPLE.read_text())
+    save_settings(path, {})
+    broken = b'[broken\n'
+    path.write_bytes(broken)
+    write = settings.private_write
+
+    def fail_archive(path, data, **kwargs):
+        if path.name.startswith('unparseable-'):
+            raise OSError('archive failed')
+        return write(path, data, **kwargs)
+
+    monkeypatch.setattr(settings, 'private_write', fail_archive)
+    with pytest.raises(OSError, match='archive failed'):
+        save_settings(path, {'display.clock': '12h'})
+    assert path.read_bytes() == broken
 
 @pytest.mark.parametrize('raw,want', [('2200','22:00'),('22:00','22:00'),('22.00','22:00'),('10pm','22:00'),('10 pm','22:00'),('10:00 PM','22:00'),('10 p.m.','22:00'),('6','06:00'),('0600','06:00'),('6:00 am','06:00'),('12am','00:00'),('12PM','12:00')])
 def test_time_parser(raw,want):
