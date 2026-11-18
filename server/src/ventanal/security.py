@@ -200,22 +200,33 @@ class Security:
             except OSError:
                 self.state=previous; raise
 
+    @property
+    def pairing_id(self):
+        with self.lock:
+            if not self.ready:
+                return None
+            return hmac.new(self.key, b'ventanal pairing identity', hashlib.sha256).hexdigest()
+
     def accept(self,method,path,headers):
+        return self.authenticate_board(method, path, headers) is not None
+
+    def authenticate_board(self,method,path,headers):
+        """Return the pairing identity that authenticated this request."""
         counter=headers.get('X-Ventanal-Counter','')
         auth=headers.get('Authorization','')
-        if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return False
-        if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return False
+        if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return None
+        if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return None
         with self.lock:
             expected=hmac.new(self.key,f'{method}\n{path}\n{counter}'.encode(),hashlib.sha256).hexdigest()
-            if int(counter)<=self.state['counter'] or not hmac.compare_digest(auth[9:],expected): return False
+            if int(counter)<=self.state['counter'] or not hmac.compare_digest(auth[9:],expected): return None
             previous=self.state['counter']; self.state['counter']=int(counter)
             try: self._save()
             except OSError:
                 self.state['counter']=previous
-                return False
-            return True
+                return None
+            return self.pairing_id
 
-    def manifest(self,manifest,root):
+    def manifest(self,manifest,root,*,pairing_id=None):
         result=copy.deepcopy(manifest); result.pop('sig',None)
         reject_manifest_floats(result)
         for entry in [*result.get('screens',{}).values(),*result.get('spares',[])]:
@@ -225,5 +236,7 @@ class Security:
             if path.resolve()!=path: raise ValueError('Invalid frame path')
             with path.open('rb') as f: entry['sha256']=hashlib.file_digest(f,'sha256').hexdigest()
         with self.lock:
+            if pairing_id is not None and self.pairing_id != pairing_id:
+                raise ValueError('Board pairing changed during manifest request')
             result['sig']=hmac.new(self.key,canonical(result),hashlib.sha256).hexdigest()
         return result

@@ -42,7 +42,7 @@ class ReleaseInfo:
         return size == self.size and sha256 == bytes.fromhex(self.sha256)
 
 
-def _version(value: str) -> tuple[int, int, int]:
+def version_tuple(value: str) -> tuple[int, int, int]:
     if not isinstance(value, str) or not VERSION.fullmatch(value):
         raise ValueError("Invalid firmware version")
     major, minor, patch = map(int, value.split("."))
@@ -57,8 +57,8 @@ def canonical_release_json(info: dict) -> bytes:
         raise ValueError("Unexpected release fields")
     if not isinstance(info["board"], str) or info["board"] not in BOARDS:
         raise ValueError("Unknown release board")
-    _version(info["version"])
-    _version(info["min_from_version"])
+    version_tuple(info["version"])
+    version_tuple(info["min_from_version"])
     if type(info["size"]) is not int or not 0 <= info["size"] <= 0xFFFFFFFF:
         raise ValueError("Invalid release size")
     if not isinstance(info["sha256"], str) or not SHA256.fullmatch(info["sha256"]):
@@ -102,14 +102,19 @@ def check_release(json_bytes, sig_b64, board, running, public_key, slot_size) ->
     info = verify_release(json_bytes, sig_b64, public_key)
     if info.board != board:
         raise ReleaseError("WrongBoard")
+    check_update(info, running, slot_size)
+    return info
+
+
+def check_update(info: ReleaseInfo, running: str, slot_size: int) -> None:
+    """Apply install policy to already verified metadata."""
     try:
-        running_version = _version(running)
+        running_version = version_tuple(running)
     except ValueError as exc:
         raise ReleaseError("NotNewer") from exc
-    if _version(info.version) <= running_version:
+    if version_tuple(info.version) <= running_version:
         raise ReleaseError("NotNewer")
-    if running_version < _version(info.min_from_version):
+    if running_version < version_tuple(info.min_from_version):
         raise ReleaseError("TooOld")
     if not 0 < info.size <= slot_size:
         raise ReleaseError("BadSize")
-    return info

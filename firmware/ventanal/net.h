@@ -13,6 +13,7 @@ inline ManifestExtras manifestExtras;
 inline char manifestSkipQuery[280]{};
 
 inline constexpr char VENTANAL_FIRMWARE_VERSION[] = "1.0.0";
+inline constexpr char VENTANAL_BOARD_ID[] = "inkplate13spectra";
 inline char manifestBoardQuery[160]{};
 inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0) {
     if(pct<0 || pct>100 || (strcmp(screen,"art") && strcmp(screen,"weather") && strcmp(screen,"solar") && strncmp(screen,"extra-",6))) {
@@ -21,8 +22,8 @@ inline void setBoardReport(int pct, const char* screen, const char* frame, int m
     bool valid=strlen(frame)==16;
     for(unsigned i=0; valid && i<16; ++i)
         valid=(frame[i]>='0' && frame[i]<='9') || (frame[i]>='a' && frame[i]<='f');
-    snprintf(manifestBoardQuery,sizeof manifestBoardQuery,"bat=%d&screen=%s%s%s&fw=%s",
-             pct,screen,valid?"&frame=":"",valid?frame:"",VENTANAL_FIRMWARE_VERSION);
+    snprintf(manifestBoardQuery,sizeof manifestBoardQuery,"bat=%d&screen=%s%s%s&fw=%s&board=%s",
+             pct,screen,valid?"&frame=":"",valid?frame:"",VENTANAL_FIRMWARE_VERSION,VENTANAL_BOARD_ID);
     if(millivolts>0) {
         const size_t used=strlen(manifestBoardQuery);
         snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&bat_mv=%d",millivolts);

@@ -6,6 +6,8 @@ from html import escape
 from http.cookies import SimpleCookie, CookieError
 import hmac
 import json
+import logging
+import sqlite3
 from pathlib import Path
 import subprocess
 import sys
@@ -14,6 +16,7 @@ import time
 import re
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
+import httpx
 import tomlkit
 from ventanal.auth import Auth, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validate_password
 from ventanal.config import load_config, ConfigError
@@ -21,6 +24,8 @@ from ventanal.manifest import read_manifest
 from ventanal.security import PreviousCertificateHeld
 from ventanal.settings import ConfigWriteError, FIELDS, SOURCE_REGISTRY, MUSEUMS, MUSEUM_LABELS, FIELD_HELP, OPTION_LABELS, READ_ONLY, ADVANCED, season_count, save_settings, read_document
 from ventanal.status import BoardStore, next_wake, showing, preview
+from ventanal.ota import FirmwareStore, OPEN_DEVICE, poll_github, verified_metadata
+from ventanal.release import BOARDS, ReleaseError
 
 
 def e(value): return escape(str(value), quote=True)
@@ -34,6 +39,9 @@ def password_fields(change=False):
     current = '<label>Current password<input type="password" name="current" autocomplete="current-password" required></label>' if change else ''
     limits = f'minlength="{PASSWORD_MIN_LENGTH}" maxlength="{PASSWORD_MAX_LENGTH}" required'
     return current + f'<label>Password<input type="password" name="password" autocomplete="new-password" {limits}></label><label>Confirm password<input type="password" name="confirm" autocomplete="new-password" {limits}></label>'
+
+
+FIRMWARE_ACTIONS = frozenset(('/updates/check', '/updates/install', '/updates/automatic', '/updates/upload'))
 
 
 SETUP_TOKEN_FIELD = '<label>Setup token<input name="setup_token" type="password" autocomplete="off" required></label>'
@@ -50,6 +58,8 @@ class UI:
         self.fcc_refreshing = False
         self.fcc_result = ''
         self.store = BoardStore(cache_dir)
+        self.firmware = FirmwareStore(cache_dir)
+        self.firmware_checking = False
         # Backfill roles for frames published before this feature was installed.
         cfg = load_config(config_path)
         manifest = read_manifest(cfg.output_dir)
@@ -75,8 +85,55 @@ class UI:
             while not self.cleanup_stop.is_set():
                 with self.calibration_lock:
                     files.cleanup()
-                self.cleanup_stop.wait(60)
+                if self.cleanup_stop.wait(60):
+                    break
+                self.start_firmware_check(force=False)
         Thread(target=cleanup, daemon=True).start()
+
+    def firmware_device(self):
+        if self.auth.mode == 'password':
+            return self.security.pairing_id
+        if self.auth.mode == 'none':
+            return OPEN_DEVICE
+        return None
+
+    def start_firmware_check(self, *, force):
+        with self.lock:
+            device = self.firmware_device()
+            if device is None or self.firmware_checking:
+                return
+            self.firmware_checking = True
+
+        def run():
+            try:
+                if force or self.firmware.poll_due(datetime.now(timezone.utc)):
+                    with httpx.Client(timeout=15, trust_env=False) as client:
+                        poll_github(self.firmware, client, device)
+            except (OSError, sqlite3.Error):
+                logging.getLogger(__name__).warning('Firmware release check could not access the cache')
+            finally:
+                with self.lock:
+                    self.firmware_checking = False
+
+        Thread(target=run, daemon=True).start()
+
+    def firmware_action(self, path, values):
+        device = self.firmware_device()
+        if device is None:
+            raise ReleaseError('Finish board transport setup before managing firmware')
+        if path == '/updates/check':
+            self.start_firmware_check(force=True)
+        elif path == '/updates/upload':
+            release = verified_metadata(values['metadata'], values['signature'])
+            self.firmware.cache(release, values['image'], device, manual=True)
+        else:
+            board = values.get('board')
+            if board not in BOARDS:
+                raise ReleaseError('Unknown board')
+            if path == '/updates/install':
+                self.firmware.approve(board, device, values.get('version'))
+            else:
+                self.firmware.set_automatic(board, device, values.get('automatic') == 'yes')
 
     def _rerender(self):
         result = subprocess.run([sys.executable, '-m', 'ventanal.settings_worker', str(self.config_path), *[('--refresh-pool' if effect=='pool' else '--force-'+effect) for effect in sorted(self.active_effects)]],
@@ -263,7 +320,11 @@ class UI:
             label = solar_gate.reason if screen=='solar' else credit.get('artist','') if screen=='art' else ('RENDERED '+datetime.fromisoformat(entry['rendered']).astimezone(ZoneInfo(cfg.timezone)).strftime('%H:%M') if entry else '')
             picture = f'<img src="/ui-preview/{screen}/{entry["id"]}.png" alt="{e(screen)} panel preview">' if entry else '<div class="empty">No frame published</div>'
             body += f'<div class="pv"><div class="lbl{" w" if screen=="weather" else ""}"><span>{e(title)}</span><span>{e(label)}</span></div>{picture}</div>'
-        body += '</div><div class="log">'
+        body += '</div>'
+        if (device := self.firmware_device()) is not None:
+            from ventanal.ota_ui import body as firmware_body
+            body += firmware_body(self.firmware, device, token, self.firmware_checking)
+        body += '<div class="log">'
         for row in self.store.recent():
             at = datetime.fromisoformat(row['time']).astimezone(ZoneInfo(cfg.timezone))
             first = datetime.fromisoformat(row['first_time']).astimezone(ZoneInfo(cfg.timezone))
@@ -291,7 +352,7 @@ class UI:
                 content += ''.join('.swatch-'+name+'{background:#'+''.join(f'{v:02x}' for v in rgb)+'}' for name,rgb in zip(('black','white','yellow','red','blue','green'),cfg.panel_rgb)).encode()
             self.respond(h,200,content,kind,cache=name != 'ui.css'); return
         paths = ('/extras','/extras/licences','/extras/upload','/extras/remove','/extras/configure','/','/settings','/settings/field','/settings/state','/ham/refresh','/battery','/art','/calibration','/setup','/setup/skip','/setup/confirm-skip','/login','/logout','/password','/security')
-        if path not in paths and not path.startswith(('/ui-preview/', '/art/', '/calibration/')):
+        if path not in paths and path not in FIRMWARE_ACTIONS and not path.startswith(('/ui-preview/', '/art/', '/calibration/')):
             self.respond(h,404); return
         try:
             cookies = SimpleCookie(h.headers.get('Cookie',''))
@@ -325,6 +386,11 @@ class UI:
                     if not h.headers.get('Content-Type','').startswith('multipart/form-data;'): raise ValueError()
                     h.continue_body()
                     values = upload(h,length)
+                elif path == '/updates/upload':
+                    from ventanal.ota_ui import MAX_UPLOAD, upload
+                    if length > MAX_UPLOAD:
+                        self.respond(h,413); return
+                    values = upload(h, length)
                 elif path == '/calibration/upload':
                     from ventanal.calibration_ui import MAX_UPLOAD, UPLOAD_HINT
                     if length > MAX_UPLOAD + 65536:
@@ -355,6 +421,17 @@ class UI:
             if path != '/calibration/upload' and not hmac.compare_digest(values.get('csrf','').encode(),token.encode()):
                 self.respond(h,403); return
         if self.auth.mode=='password' and not session['granted'] and path!='/login': redirect('/login'); return
+        if post and path in FIRMWARE_ACTIONS:
+            try:
+                self.firmware_action(path, values)
+            except ReleaseError as exc:
+                send(400, 'FRAME STATUS', f'<p class="error" role="status">{e(exc)}</p>' + self.status_body(token))
+                return
+            except sqlite3.Error:
+                send(503, 'FRAME STATUS', '<p class="error">The firmware cache is unavailable.</p>')
+                return
+            redirect('/')
+            return
         if path.startswith('/ui-preview/'):
             match = re.fullmatch(r'/ui-preview/(art|weather|solar|spare[0-2])/([0-9a-f]{16})\.png',path)
             if post or not match: self.respond(h,404); return

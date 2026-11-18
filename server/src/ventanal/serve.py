@@ -6,6 +6,7 @@
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import IPv4Address, IPv6Address
 import logging
+from io import BytesIO
 import json
 import sqlite3
 import ssl
@@ -16,7 +17,7 @@ import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
-from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
+from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, encode_board_manifest, omit_board_credits
 from ventanal.owner import SkipQueue, parse_skips
 
 
@@ -50,6 +51,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
 
     from ventanal.status import BoardStore, parse_board
     if config_path is not None:
+        from ventanal.ota import OPEN_DEVICE
         from ventanal.ui import UI
         cfg = load_config(config_path)
         ui = UI(config_path, cache_dir, rerender)
@@ -89,9 +91,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 super().handle_expect_100()
 
         def transport(self):
+            self.pairing_id = None
             if not active(): return True
             path = unquote(urlsplit(self.path).path)
-            board = path == '/manifest.json' or path.startswith('/frames/')
+            board = path == '/manifest.json' or path.startswith(('/frames/', '/firmware/'))
             if not isinstance(self.connection, ssl.SSLSocket):
                 if board or path.startswith('/previews/'):
                     self.send_error(403)
@@ -101,18 +104,35 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     authority = f'[{hostname}]' if ':' in hostname else hostname
                     ui.respond(self, 308, location=f'https://{authority}:{server.tls_server.server_address[1]}'+self.path)
                 return False
-            if board and (len(self.headers.get_all('Authorization', [])) != 1 or
-                          len(self.headers.get_all('X-Ventanal-Counter', [])) != 1 or
-                          not ui.security.accept(self.command, self.path, self.headers)):
-                logging.getLogger(__name__).info('Board proof rejected')
-                self.send_error(403); return False
             if board:
-                logging.getLogger(__name__).info('Board proof accepted counter=%s', self.headers['X-Ventanal-Counter'])
+                if (len(self.headers.get_all('Authorization', [])) == 1
+                        and len(self.headers.get_all('X-Ventanal-Counter', [])) == 1):
+                    self.pairing_id = ui.security.authenticate_board(self.command, self.path, self.headers)
+                if self.pairing_id is None:
+                    log.info('Board proof rejected')
+                    self.send_error(403)
+                    return False
+                log.info('Board proof accepted counter=%s', self.headers['X-Ventanal-Counter'])
             return True
 
         def do_GET(self):
             if not self.transport(): return
             path = unquote(urlsplit(self.path).path)
+            firmware = None
+            if path.startswith('/firmware/'):
+                if ui is None or (self.pairing_id is None and ui.auth.mode != 'none'):
+                    self.send_error(404)
+                    return
+                try:
+                    image = ui.firmware.image(path.removeprefix('/firmware/'))
+                except sqlite3.Error:
+                    self.send_error(503)
+                    return
+                if image is None:
+                    self.send_error(404)
+                    return
+                self.send_asset(BytesIO(image), 'application/octet-stream', 'no-store')
+                return
             if ui is not None and not re.fullmatch(r'/(?:manifest\.json|frames/.*|previews/.*)', path):
                 ui.handle(self, path)
                 return
@@ -130,7 +150,13 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         self.send_error(503)
                         return
                 try:
-                    board_store.checkin(self.client_address[0], parse_board(query), timeout=1)
+                    report = parse_board(query)
+                    board_store.checkin(self.client_address[0], report, timeout=1)
+                    if ui is not None:
+                        device = self.pairing_id
+                        if device is None and ui.auth.mode == 'none':
+                            device = OPEN_DEVICE
+                        firmware = ui.firmware.checkin(report.get('board'), device, report.get('fw'), report.get('ota'))
                 except sqlite3.Error:
                     logging.getLogger(__name__).warning('Unable to record board check-in')
             if path == '/manifest.json':
@@ -151,8 +177,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         manifest.pop('battery', None)
                         if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
                     omit_board_credits(manifest)
-                    if active(): manifest = ui.security.manifest(manifest, root)
-                    body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
+                    sign = None
+                    if self.pairing_id is not None:
+                        sign = lambda document: ui.security.manifest(document, root, pairing_id=self.pairing_id)
+                    body = encode_board_manifest(manifest, firmware, sign=sign)
                 except FileNotFoundError:
                     self.send_error(404 if ui is None else 503); return
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -189,12 +217,16 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             except OSError:
                 self.send_error(404)
                 return
+            suffix = target.suffix
+            kind = {'.vnf': 'application/octet-stream', '.png': 'image/png'}[suffix]
+            self.send_asset(source, kind, 'public, max-age=31536000, immutable')
+
+        def send_asset(self, source, kind, cache_control):
             with source:
                 self.send_response(200)
-                suffix = target.suffix
-                self.send_header('Content-Type', {'.json': 'application/json', '.vnf': 'application/octet-stream', '.png': 'image/png'}[suffix])
+                self.send_header('Content-Type', kind)
                 self.send_header('Content-Length', str(source.seek(0, 2)))
-                self.send_header('Cache-Control', 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable')
+                self.send_header('Cache-Control', cache_control)
                 self.end_headers()
                 source.seek(0)
                 try:

@@ -48,6 +48,24 @@ def omit_board_credits(manifest: dict) -> None:
         entry.pop("credit", None)
 
 
+def encode_board_manifest(manifest, firmware=None, *, sign=None):
+    """Attach the device's offer only when the complete response fits."""
+    manifest.pop("firmware", None)
+    if firmware is not None:
+        manifest["firmware"] = firmware
+
+    def encode():
+        document = sign(manifest) if sign else manifest
+        return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+
+    body = encode()
+    if firmware is not None and len(body) > MAX_SERVED_MANIFEST_BYTES:
+        del manifest["firmware"]
+        body = encode()
+        logging.getLogger(__name__).warning("Firmware offer exceeds the board manifest budget")
+    return body
+
+
 def reject_manifest_floats(value) -> None:
     """Signed manifests use numbers with matching Python and ArduinoJson encodings."""
     if isinstance(value, float):

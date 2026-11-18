@@ -9,11 +9,14 @@ import logging
 import re
 from zoneinfo import ZoneInfo
 from ventanal.owner import OwnerStore
+from ventanal.release import BOARDS, version_tuple
 
 
 def parse_board(query):
     patterns = {'bat_mv': r'[1-9][0-9]{3}', 'bat': r'(?:0|[1-9][0-9]?|100)', 'screen': r'(?:art|weather|solar|extra-[a-z0-9_-]{1,42})',
-                'frame': r'[0-9a-f]{16}', 'fw': r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}'}
+                'frame': r'[0-9a-f]{16}', 'fw': r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',
+                'board': '|'.join(sorted(BOARDS)),
+                'ota': r'(?:ok|rolled_back):[0-9.]{5,17}|failed:[A-Za-z0-9][A-Za-z0-9._-]{0,63}'}
     result = {}
     for key, pattern in patterns.items():
         if key not in query: continue
@@ -21,6 +24,11 @@ def parse_board(query):
         if len(values) != 1 or not re.fullmatch(pattern, values[0]):
             logging.getLogger(__name__).warning('board report malformed %s ignored', key)
             continue
+        if key == 'ota' and not values[0].startswith('failed:'):
+            try:
+                version_tuple(values[0].split(':', 1)[1])
+            except ValueError:
+                continue
         result[key] = int(values[0]) if key in ('bat', 'bat_mv') else values[0]
     return result
 

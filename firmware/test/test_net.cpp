@@ -27,7 +27,7 @@ int main() {
     setBoardReport(95, "art", "0123456789abcdef");
     strcpy(manifestSkipQuery,"0123456789abcdef~fedcba9876543210");
     assert(fetchManifest(a,w));
-    assert(lastUrl.find("?bat=95&screen=art&frame=0123456789abcdef&fw=1.0.0")!=std::string::npos);
+    assert(lastUrl.find("?bat=95&screen=art&frame=0123456789abcdef&fw=1.0.0&board=inkplate13spectra")!=std::string::npos);
     assert(lastUrl.find("&skips=0123456789abcdef~fedcba9876543210")!=std::string::npos);
     setBoardReport(0, "weather", "");
     manifestSkipQuery[0]=0;
