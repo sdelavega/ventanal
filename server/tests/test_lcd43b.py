@@ -285,10 +285,10 @@ def test_lcd_weather_is_native_full_screen(sample):
     image = lcd_sample(sample)
     assert image.size == (800, 480) and image.mode == 'RGB'
     from PIL import ImageColor
-    assert image.getpixel((10, 240)) == ImageColor.getrgb(LCD_COLOURS['gold'])
+    assert image.getpixel((10, 170)) == ImageColor.getrgb(LCD_COLOURS['orange'])
     x, y, w, h = CLOCK_GAP
     assert not np.asarray(image.crop((x, y, x+w, y+h))).any()
-    assert image.getpixel((770, 13)) == ImageColor.getrgb('#ff7700')
+    assert image.getpixel((770, 13)) == ImageColor.getrgb('#ddbbff')
 
 
 def test_lcd_weather_golden(sample):
@@ -844,3 +844,43 @@ def test_lcd_text_edges_have_intermediate_colours(sample, tmp_path):
     for image in (lcd_sample(sample), solar_sample(tmp_path)):
         colours = np.asarray(image)[30:58, 150:500].reshape(-1, 3)
         assert any(0 < int(r) < 255 for r, g, b in colours)
+
+
+@pytest.mark.parametrize('page', ['weather', 'solar'])
+def test_lcd_epaper_palette_and_sidebar_labels(sample, tmp_path, monkeypatch, page):
+    from PIL import ImageColor
+    from PIL import ImageDraw
+    from ventanal.palette import LCARS_MODERN
+
+    labels = []
+    original = ImageDraw.ImageDraw.text
+
+    def capture(draw, xy, text, *args, **kwargs):
+        if xy[0] == 92:
+            labels.append((text, kwargs['fill']))
+        return original(draw, xy, text, *args, **kwargs)
+
+    monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
+    if page == 'weather':
+        # Codes must follow the data, independently of the golden's timestamp.
+        w, alerts, radar, lines, place, coords, now, config = sample
+        args = (replace(w, sunrise=w.sunrise.replace(minute=23)), alerts,
+                radar, lines, place, coords, now.replace(hour=9, minute=7), config)
+        image = lcd_sample(args)
+        bands = [(80, 'sky'), (170, 'orange'), (250, 'light_gray'), (350, 'gray')]
+        assert labels == [('319-0907', 'black'), ('RADAR', 'black'),
+                          ('0723-1716', 'black'), ('LONG RANGE', 'white')]
+        accent, block = 'violet', 'orange'
+    else:
+        image = solar_sample(tmp_path)
+        bands = [(80, 'sky'), (150, 'red'), (250, 'gold'),
+                 (350, 'sky'), (400, 'violet')]
+        assert labels == [(label, 'black') for label in
+                          ('SOLAR FLUX', 'GEOMAG', 'HF BANDS', 'KP 24 H', '3-DAY')]
+        accent, block = 'orange', 'orange'
+    for y, colour in bands:
+        assert image.getpixel((10, y)) == ImageColor.getrgb(LCARS_MODERN[colour])
+    for xy in ((200, 13), (10, 40), (200, 470), (770, 13)):
+        assert image.getpixel(xy) == ImageColor.getrgb(LCARS_MODERN[accent])
+    assert image.getpixel((540, 13)) == ImageColor.getrgb(LCARS_MODERN[block])
+    assert not np.asarray(image)[:26, 548:752].any()

@@ -17,8 +17,11 @@ from ventanal.solar.render import (
 )
 from ventanal.text import fit, font, renderable
 
-SECTIONS = [(60, 145, 'sky', 'SOLAR'), (209, 113, 'gold', 'BANDS'),
-            (326, 54, 'light_gray', 'KP'), (384, 40, 'violet', '3-DAY')]
+# Preserve the e-paper band proportions, snapping HF/KP/forecast transitions
+# to the native content bands and leaving 6 px before the lower elbow.
+SECTIONS = [(60, 60, 'sky', 'SOLAR FLUX'), (124, 78, 'red', 'GEOMAG'),
+            (206, 116, 'gold', 'HF BANDS'), (326, 54, 'sky', 'KP 24 H'),
+            (384, 40, 'violet', '3-DAY')]
 
 
 def _text(draw, label, xy, size=14, colour='white', *, bold=False,
@@ -43,7 +46,7 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
     Coordinates must already be resolved by the caller, as for weather.
     """
     image = Image.new('RGB', (800, 480))
-    draw_lcd_frame(image, SECTIONS)
+    draw_lcd_frame(image, SECTIONS, clock_block='orange')
     d = LCDDraw(image)
     _text(d, 'SOLAR CONDITIONS', (150, 56), 30, 'gold', bold=True)
     grid = grid_square(cfg.latitude, cfg.longitude)

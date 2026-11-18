@@ -18,8 +18,10 @@ from ventanal.weather.radar import clean_echoes
 log = logging.getLogger(__name__)
 MAP_SOURCE_SIZE = (782, 462)
 RADAR_BOX = (366, 80, 786, 328)
-SECTIONS = [(60, 150, 'sky', 'NOW'), (214, 96, 'gold', 'RADAR'),
-            (314, 112, 'light_gray', 'LONG RANGE')]
+# Scale the e-paper 118/252/66/322 bands into the 364 px sidebar,
+# retaining 4 px gutters and the 6 px clearance above the lower elbow.
+SECTIONS = [(60, 55, 'sky', ''), (119, 118, 'orange', 'RADAR'),
+            (241, 31, 'light_gray', ''), (276, 148, 'gray', 'LONG RANGE')]
 
 
 def _clock(value, cfg):
@@ -134,7 +136,11 @@ def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
                        place=None, coords=None) -> Image.Image:
     """Render native LCD content, leaving the clock entirely to the board."""
     image = Image.new('RGB', (800, 480))
-    draw_lcd_frame(image, SECTIONS)
+    code1 = f'{now.timetuple().tm_yday:03d}-{now:%H%M}'
+    code2 = f'{w.sunrise:%H%M}-{w.sunset:%H%M}'
+    sections = [(y, h, colour, code1 if i == 0 else code2 if i == 2 else label)
+                for i, (y, h, colour, label) in enumerate(SECTIONS)]
+    draw_lcd_frame(image, sections, accent='violet', clock_block='orange')
     d = LCDDraw(image)
     _text(d, 'ATMOSPHERIC CONDITIONS', (150, 56), 30, 'gold', bold=True)
     location = place or cfg.place_name or ''
