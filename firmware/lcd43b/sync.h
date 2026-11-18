@@ -35,7 +35,7 @@ struct ResidentCache {
     bool allocated[SCREEN_SLOTS] = {};
     // The synchronous hand-off ends before staging may be reused. An empty
     // info pointer means drop; otherwise body contains the verified wire bytes.
-    void (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
+    bool (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
     // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
     void (*reclaimWireMemory)() = nullptr;

@@ -42,6 +42,7 @@ struct CountingWatchdog : lcd::Watchdog {
 
 lcd::FrameBody stagedBodies[lcd::SCREEN_SLOTS];
 bool stagedDrops[lcd::SCREEN_SLOTS]{};
+int rejectStageSlot = -1;
 
 void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SLOTS][17],
              lcd::RefreshResult& result, CountingWatchdog& watchdog,
@@ -51,8 +52,10 @@ void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SL
     cache.staging = staging.data();
     std::fill_n(cache.allocated, lcd::SCREEN_SLOTS, true);
     cache.publish = [](int slot, const lcd::FrameInfo* info, const lcd::FrameBody& body) {
+        if (info && slot == rejectStageSlot) return false;
         if (!info) stagedDrops[slot] = true;
         else stagedBodies[slot] = body;
+        return true;
     };
     lcd::runRefresh(host, device, ids, result, watchdog, settings, skips, cache);
 }
@@ -149,6 +152,7 @@ void resetFakes() {
     failRename = false;
     std::fill_n(stagedBodies, lcd::SCREEN_SLOTS, lcd::FrameBody{});
     std::fill_n(stagedDrops, lcd::SCREEN_SLOTS, false);
+    rejectStageSlot = -1;
     fakeTz.clear();
 }
 
@@ -286,6 +290,14 @@ int main() {
         assert(frameReadCalls == 0);      // nothing re-downloaded
         assert(strstr(Serial.output.c_str(), "skipped=unchanged"));
         assert(!lcd::anyRequiredFrameFailed(again));   // nothing was required
+
+        // A frame the scan-out owner cannot replace stays unacknowledged.
+        rejectStageSlot = 1;
+        currentIds[1][0] = '\0';
+        lcd::RefreshResult rejected;
+        refresh("http://host", "lcd43b", currentIds, rejected, watchdog);
+        assert(rejected.manifestOk && rejected.frameOk[0]);
+        assert(!rejected.frameOk[1] && rejected.frameFailed[1] && !rejected.frameIds[1][0]);
     }
     {   // Hidden Art and spares are never requested; cached hidden files stay.
         resetFakes();

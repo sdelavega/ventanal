@@ -11,6 +11,7 @@
 #include <initializer_list>
 
 #include "frame.h"
+#include "scanout.h"
 #include "aafont.h"
 #include "battery_lcd.h"
 #include "readout_fonts.h"
@@ -37,7 +38,7 @@ inline void setPixel(uint16_t* pixels, int width, int height, int x, int y,
 
 // Shared with native server geometry. Region buffers are packed, never
 // panel-stride slices: clipping makes writes outside these rectangles impossible.
-struct ReadoutRect { int x,y,w,h; };
+using ReadoutRect = ScanRect;
 constexpr int TOPBAR_H = 26;
 constexpr ReadoutRect CLOCK_GAP{548,0,204,26};
 constexpr ReadoutRect ART_CORNER{550,0,250,80};
@@ -51,7 +52,7 @@ inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcar
                           const char* time, const char* date, int percent, BatteryLevel lvl) {
     const int w=lcars?204:250, h=lcars?26:80;
     if(lcars) memset(region,0,size_t(w)*h*2);
-    else memcpy(region,artRegion,size_t(w)*h*2);
+    else if (region != artRegion) memcpy(region,artRegion,size_t(w)*h*2);
     if(!*time) return; // no shade, date or fake 1970 clock while invalid
     const bool battery=percent>=0 && lvl!=BatteryLevel::None;
     char pct[8]="";
@@ -134,16 +135,20 @@ inline const char* refreshLabelText(RefreshLabel label) {
 
 // One label badge, bottom-left overlay corner (the OFFLINE mark owns the
 // top-left; the live clock owns the top-right).
-inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
-                             const char* text, uint16_t colour) {
+inline void drawRefreshBadge(uint16_t* pixels, int width, int height,
+                             const char* text, uint16_t colour, int baseline) {
     const int extent = textWidth(StatusFont, text);
     const int left = 8;
-    const int baseline = height - 14;   // corner margin + descender room
     for (int y = baseline - 32; y <= baseline + 5; ++y)
         for (int x = left - 6; x < left + extent + 6; ++x)
             setPixel(pixels, width, height, x, y, RGB565_BLACK);
     drawText(pixels, width, height, StatusFont, text, left, baseline,
              colour);
+}
+
+inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
+                             const char* text, uint16_t colour) {
+    drawRefreshBadge(pixels, width, height, text, colour, height - 14);
 }
 
 // Label state machine (host-pinned by test_lcd43b_overlay): begin() on the

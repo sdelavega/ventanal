@@ -8,6 +8,7 @@
 
 #include "sync.h"
 #include "inflate.h"
+#include "scanout_diag.h"
 #include <vector>
 
 #include "build_config.h"
@@ -142,6 +143,7 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
 // after a complete write, keeping the old frame on an I/O failure.
 template<class Write>
 bool commitFrame(const char* path, Write write) {
+    ScanScope activity(ScanActivity::LittleFS);
     const String temporary = String(path) + ".tmp";
     File out = LittleFS.open(temporary, "w");
     const bool complete = out && write(out);
@@ -168,6 +170,7 @@ bool writeCachedFrame(const char* path, const FrameBody& body) {
 }
 
 bool copyCachedFrame(const char* path, const char* source) {
+    ScanScope activity(ScanActivity::LittleFS);
     File in = LittleFS.open(source, "r");
     if (!in || in.size() < HEADER_BYTES || in.size() > FRAME_WIRE_MAX) return false;
     return commitFrame(path, [&](File& out) {
@@ -186,6 +189,7 @@ String residentPath(int slot, bool alternate) {
 }
 
 static bool removeCacheFile(const String& path) {
+    ScanScope activity(ScanActivity::LittleFS);
     const bool removed = LittleFS.remove(path);
     log("cache cleanup path=%s removed=%d\n", path.c_str(), removed);
     return removed;
@@ -252,6 +256,12 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
     watchdog.feed();
     const int status = http.GET();
     watchdog.feed();
+#ifdef VENTANAL_LCD_DIAG_PANEL
+    constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+    log("panel heap free_internal=%u largest_internal=%u\n",
+        unsigned(heap_caps_get_free_size(internal)),
+        unsigned(heap_caps_get_largest_free_block(internal)));
+#endif
     if (status == 200 && http.getSize() == int(info.size)) {
         size_t got = 0;
         uint32_t lastProgress = millis();
@@ -409,14 +419,19 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             continue;
         }
         FrameBody body{std::shared_ptr<uint8_t>(bytes, free), info->size};
-        const bool received = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog);
+        const bool received = [&] {
+            ScanScope activity(ScanActivity::Receive);
+            return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog);
+        }();
         const uint32_t decodeStart = millis();
-        const bool decoded = received && decodeFrame(info->encoding, bytes, info->size, cache.staging);
+        const bool decoded = received && [&] {
+            ScanScope activity(ScanActivity::Inflate);
+            return decodeFrame(info->encoding, bytes, info->size, cache.staging);
+        }();
         if (received)
             log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],
                 unsigned(info->size), decoded, static_cast<unsigned long>(millis() - decodeStart));
-        if (decoded) {
-            cache.publish(slot, info, body);
+        if (decoded && cache.publish(slot, info, body)) {
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;

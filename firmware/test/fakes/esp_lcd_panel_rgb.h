@@ -53,6 +53,7 @@ typedef struct {
         uint32_t disp_active_low : 1;
         uint32_t refresh_on_demand : 1;
         uint32_t fb_in_psram : 1;
+        uint32_t no_fb : 1;
     } flags;
 } esp_lcd_rgb_panel_config_t;
 
@@ -67,7 +68,7 @@ typedef bool (*esp_lcd_rgb_panel_vsync_cb_t)(esp_lcd_panel_handle_t,
     const esp_lcd_rgb_panel_event_data_t*, void*);
 typedef struct {
     esp_lcd_rgb_panel_vsync_cb_t on_vsync;
-    esp_lcd_rgb_panel_vsync_cb_t on_frame_buf_complete;
+    bool (*on_bounce_empty)(esp_lcd_panel_handle_t, void*, int, int, void*);
 } esp_lcd_rgb_panel_event_callbacks_t;
 
 esp_err_t esp_lcd_rgb_panel_register_event_callbacks(esp_lcd_panel_handle_t panel,

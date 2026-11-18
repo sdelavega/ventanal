@@ -15,6 +15,7 @@
 // All writes happen from the main loop only (the refresh worker stages
 // results; applyRefresh commits), so NVS is single-writer.
 
+#include "scanout_diag.h"
 #include <Preferences.h>
 
 #include <cstdint>
@@ -37,6 +38,7 @@ inline uint32_t settingsChecksum(const uint8_t* b) {
     return h;
 }
 inline bool saveSettings(Preferences& prefs, const DeviceSettings& s) {
+    ScanScope activity(ScanActivity::Nvs);
     if(!validSettings(s) || !prefs.begin("lcdset",false)) return false;
     uint8_t b[12]={1,s.brightness,s.timeoutMin,
         uint8_t(s.showArt | (s.showWeather<<1) | (s.showSolar<<2)),
@@ -71,6 +73,7 @@ constexpr uint16_t QUIET_NONE = 0xFFFF;
 // Persist the (manifest-validated) quiet window; an invalid or absent
 // window clears any previously stored one.
 inline bool saveQuiet(Preferences& prefs, const DeviceManifest& manifest) {
+    ScanScope activity(ScanActivity::Nvs);
     bool changed = false;
     const uint16_t start = manifest.quietValid() ? uint16_t(manifest.quietStart) : QUIET_NONE;
     const uint16_t end = manifest.quietValid() ? uint16_t(manifest.quietEnd) : QUIET_NONE;
@@ -100,6 +103,7 @@ inline bool loadQuiet(Preferences& prefs, DeviceManifest& manifest) {
 // can still normalise the selection against the right list. Keep the
 // manifest clock preference alongside it for the same offline boot path.
 inline bool savePublishShape(Preferences& prefs, const DeviceManifest& m) {
+    ScanScope activity(ScanActivity::Nvs);
     bool changed = false;
     if (prefs.getUChar("solar-pub", 0) != m.screens[2].present) {
         prefs.putUChar("solar-pub", m.screens[2].present);
@@ -114,6 +118,16 @@ inline bool savePublishShape(Preferences& prefs, const DeviceManifest& m) {
         changed = true;
     }
     return changed;
+}
+
+inline bool manifestSaveNeeded(Preferences& prefs, const DeviceManifest& manifest) {
+    const auto start = manifest.quietValid() ? uint16_t(manifest.quietStart) : QUIET_NONE;
+    const auto end = manifest.quietValid() ? uint16_t(manifest.quietEnd) : QUIET_NONE;
+    return prefs.getUShort("quiet-start", QUIET_NONE) != start ||
+           prefs.getUShort("quiet-end", QUIET_NONE) != end ||
+           prefs.getUChar("solar-pub", 0) != manifest.screens[2].present ||
+           prefs.getUChar("spare-count", 0) != manifest.spareCount ||
+           prefs.getUChar("clock24h", 1) != manifest.clock24h;
 }
 
 inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
@@ -131,6 +145,7 @@ struct CacheLocation {
 };
 
 inline bool saveCacheLocation(Preferences& prefs, int slot, const CacheLocation& entry) {
+    ScanScope activity(ScanActivity::Nvs);
     // A nonempty tombstone lets putString distinguish a committed drop from
     // an error. Loading it yields an empty location, as for legacy empty ids.
     char key[8], value[18] = "-";
@@ -160,6 +175,7 @@ inline void loadCacheLocations(Preferences& prefs, CacheLocation entries[SCREEN_
 
 // The selection keeps the phase-1 keys ("screen", "spare-cursor").
 inline bool saveSelection(Preferences& prefs, int screenIndex, int spareCursor) {
+    ScanScope activity(ScanActivity::Nvs);
     const auto save = [&prefs](const char* key, int value, uint8_t fallback) {
         return prefs.getUChar(key, fallback) == uint8_t(value)
             || prefs.putUChar(key, uint8_t(value)) == sizeof(uint8_t);

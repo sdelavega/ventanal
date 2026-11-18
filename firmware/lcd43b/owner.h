@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include "scanout_diag.h"
 #include "../ventanal/owner.h"
 #include "frame.h"
 #include <algorithm>
@@ -24,6 +25,7 @@ inline bool swapArt(OwnerState& owner, bool enabled, const bool cached[3], Copy 
     return true;
 }
 inline void saveOwner(Preferences& prefs, const OwnerState& owner) {
+    ScanScope activity(ScanActivity::Nvs);
     prefs.putBytes("lcd-owner1",&owner,sizeof owner);
 }
 inline bool loadOwner(Preferences& prefs, OwnerState& owner) {
