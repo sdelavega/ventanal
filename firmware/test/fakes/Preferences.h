@@ -3,6 +3,7 @@
 #pragma once
 #include "LittleFS.h"
 inline std::map<std::string,std::vector<uint8_t>> preferences;
+inline bool preferencesNamespaceExists=false;
 class Preferences {
     bool opened = false;
 public:
@@ -12,7 +13,11 @@ public:
     inline static int stateReadFailures = 0;
     inline static int stateReads = 0;
     bool isKey(const char* k) { return opened && preferences.count(k); }
-    bool begin(const char*,bool=false) { opened=!failBegin; return opened; }
+    bool begin(const char*,bool readOnly=false) {
+        opened=!failBegin && (!readOnly || preferencesNamespaceExists);
+        if(opened && !readOnly) preferencesNamespaceExists=true;
+        return opened;
+    }
     void end() { opened=false; }
     size_t getBytesLength(const char* k) { return isKey(k) ? preferences.at(k).size() : 0; }
     size_t getBytes(const char* k,void* p,size_t n) {

@@ -105,9 +105,11 @@ verify the filesystem mounts without provisioning. A short WAKE press should
 cycle the cached frames with the host offline.
 
 The firmware tries a regular mount first. If it fails, formatting is allowed
-only when NVS confirms that both saved `state13` and quarantined `state-bad` are
-absent. Formatting erases the whole LittleFS partition. If the first format
-fails, the firmware logs `error=cache-provision` and can retry on the next wake.
+only when the `ventanal` NVS namespace is absent or NVS confirms that both saved
+`state13` and quarantined `state-bad` are absent. Formatting erases the whole
+LittleFS partition. If the first format fails, the firmware logs
+`error=cache-provision` and can retry on the next wake. The firmware creates
+`state13` only while the filesystem is mounted.
 When saved state exists or the NVS check fails, the firmware preserves the
 partition and logs `error=cache-mount`. It shows “Waiting for host” if the
 selected frame cannot be blitted. On a mounted filesystem, the explicit debug
@@ -153,13 +155,27 @@ with all flags disabled.
 
 State is in the `ventanal` NVS namespace (`state13` blob): active screen, cached
 IDs/rectangles and `Drawn`. Battery smoothing history persists across deep sleep
-in RTC memory. At critical voltage the board commits the `charge-drawn` marker
-to NVS before attempting the “Charge me” refresh and arms only GPIO18. A
-brownout during refresh can leave a partial screen. The persisted marker
-suppresses a second draw while the battery is still critical, and an abnormal
-reboot with the marker goes straight to button-only sleep. Wake the board after
-charging. A successful replacement refresh clears the marker for the next
-low-battery episode. Normal sleep follows quiet hours and the low-battery interval.
+in RTC memory. At critical voltage the firmware records the refresh attempt
+in NVS before drawing “Charge me,” then enters deep sleep with every wake
+source disabled. A brownout can leave a partial image. The marker suppresses
+a repeat while the battery is critical and sends an abnormal reboot directly
+back to sleep. A stalled “Charge me” refresh also goes straight to sleep.
+
+**After charging, turn the ON/OFF switch off and back on, or press RESET.**
+The WAKE button and timer are disabled during critical sleep. On power-up or
+reset the firmware runs its normal checks. A successful replacement refresh
+clears the marker.
+
+On the 13SPECTRA v1.1, the physical ON/OFF latch supplies the main regulator,
+whose enable is wired to its input. Firmware controls the separate panel
+regulator through GPIO21. Before critical sleep it shuts down Wi-Fi, holds
+GPIO21 low and sets the panel signal pins to input to prevent backfeeding. The
+library turns off the battery-sense divider after sampling, and the unused
+microSD supply defaults off. The RTC, I/O expander and optional blue power LED
+remain on their normal supplies. The power LED has its own switch. Sleep
+current and board behavior still need post-soak verification.
+[Soldered v1.1 schematic, sheets 2–6](https://community.soldered.com/uploads/short-url/7CTPEO0Ta4QczGAJhpwzArGSHxY.pdf)
+[Inkplate 13SPECTRA driver](https://github.com/SolderedElectronics/Inkplate-Arduino-library/blob/master/src/boards/Inkplate13SPECTRA/Inkplate13SPECTRADriver.cpp)
 
 RTC is initialized by `display.begin()`. A set PCF85063A seeds system time even
 offline. Online `configTzTime` waits up to 15 seconds for NTP completion and writes
@@ -196,11 +212,12 @@ panic/reset enabled and stays armed through deep sleep entry. The existing NVS
 `wdt-count` records strikes for abnormal resets, including panics, brownouts and
 all watchdog reasons. The third strike skips panel access, seeds time from the
 standalone RTC over I2C, and sleeps on the normal schedule. If the charge
-marker is set, an abnormal reboot uses button-only sleep instead. A returned
+marker is set, an abnormal reboot disables all wake sources. A returned
 refresh or unchanged-frame wake clears the count. The PON timer callback samples
 BUSYN and signals a dedicated 8 KiB FreeRTOS task on a stall. That task handles
-the two bounded software restarts, then powers down the panel and sleeps if
-both retries fail.
+two bounded software restarts for ordinary refreshes, then powers down the
+panel and sleeps if both retries fail. A critical refresh stall goes directly
+to the critical sleep path.
 The stall diagnostics continue their samples after recording reset strikes.
 `VENTANAL_HANGTEST=1` (default 0) loops with delay(1) immediately before every
 panel refresh, including the critical-battery screen. The diagnostic alone shortens the watchdog timeout to 60 s; production uses 180 s. Always restore a build without diagnostic defines.

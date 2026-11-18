@@ -21,7 +21,7 @@ struct SerialFake {
 };
 inline SerialFake Serial;
 
-constexpr int HIGH=1, LOW=0, OUTPUT=1, INPUT_PULLUP=2;
+constexpr int HIGH=1, LOW=0, INPUT=0, OUTPUT=1, INPUT_PULLUP=2;
 inline int fakeBusy=1;
 inline std::function<int(int)> digitalReader;
 inline int digitalRead(int pin) { return digitalReader?digitalReader(pin):(pin==18?HIGH:fakeBusy); }

@@ -39,12 +39,12 @@ int main() {
         assert(downloadPaths.size()==2 && downloadPaths[0]==expected[2*round]);
     }
     frameOK=true;
-    // Charge-me PON exhaustion must arm button-only sleep.
+    // A charge-me PON stall shuts down immediately with all wake sources disabled.
     State state{}; rememberPanel(state,0,false,time(nullptr),2);
-    pendingPanel.attempts=2;
     displayHook=[] { fakeBusy=0; fakeClock=panelStarted+3000; timerCallback(nullptr); };
-    timerUs=0;
+    assert(timerUs>0 && buttonArmed);
     try { refreshPanel(); assert(false); } catch(const Sleeping&) {}
-    assert(timerUs==0);
+    assert(timerUs==0 && !buttonArmed && pwrHeld && pwrLevel==0);
+    assert(pendingPanel.magic==0 && pendingPanel.attempts==0 && !timerRunning);
     puts("budget: 8 screens, 30s transfers, durable priority, changing-art fairness, no watchdog feeds, charge-me limit passed");
 }
