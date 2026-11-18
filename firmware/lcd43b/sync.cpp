@@ -8,6 +8,7 @@
 
 #include "sync.h"
 #include "inflate.h"
+#include <vector>
 
 #ifdef VENTANAL_HOST_TEST
 #include "config.example.h"
@@ -160,6 +161,57 @@ bool copyCachedFrame(const char* path, const char* source) {
         }
         return true;
     });
+}
+
+String residentPath(int slot, bool alternate) {
+    return String("/") + SLOT_NAMES[slot] + (alternate ? "-alt.vnr" : ".vnr");
+}
+
+static bool removeCacheFile(const String& path) {
+    const bool removed = LittleFS.remove(path);
+    log("cache cleanup path=%s removed=%d\n", path.c_str(), removed);
+    return removed;
+}
+
+bool persistCacheSlot(Preferences& prefs, int slot, CacheLocation& current,
+                      const DeferredSave& save) {
+    CacheLocation next;
+    if (save.id[0]) {
+        memcpy(next.id, save.id, sizeof next.id);
+        next.alternate = !current.alternate;
+        const String path = residentPath(slot, next.alternate);
+        if (!save.body.bytes || !writeCachedFrame(path.c_str(), save.body)) return false;
+    }
+    if (!saveCacheLocation(prefs, slot, next)) return false;
+    current = next;
+    for (const bool alternate : {false, true}) {
+        if (next.id[0] && alternate == next.alternate) continue;
+        const String path = residentPath(slot, alternate);
+        if (LittleFS.exists(path)) removeCacheFile(path);
+    }
+    return true;
+}
+
+void sweepCacheTemps() {
+    // Cache writers put their temporary files in the root. Close the
+    // directory before deleting entries so enumeration is stable.
+    File root = LittleFS.open("/", "r");
+    if (!root || !root.isDirectory()) {
+        log("cache sweep error=open-root\n");
+        return;
+    }
+    std::vector<String> paths;
+    for (File file = root.openNextFile(); file; file = root.openNextFile()) {
+        const char* path = file.path();
+        const size_t size = strlen(path);
+        if (!file.isDirectory() && size >= 4 && strcmp(path + size - 4, ".tmp") == 0)
+            paths.emplace_back(path);
+        file.close();
+    }
+    root.close();
+    unsigned removed = 0;
+    for (const String& path : paths) removed += removeCacheFile(path);
+    log("cache sweep tmp=%u removed=%u\n", unsigned(paths.size()), removed);
 }
 
 void configureTimezone() {

@@ -130,6 +130,10 @@ bool receiveFrame(const char* hostUrl, const FrameInfo& info,
 
 bool writeCachedFrame(const char* path, const FrameBody& body);
 bool copyCachedFrame(const char* path, const char* source);
+String residentPath(int slot, bool alternate);
+bool persistCacheSlot(Preferences& prefs, int slot, CacheLocation& current,
+                      const DeferredSave& save);
+void sweepCacheTemps();
 
 // One full refresh pass: Wi-Fi, NTP, the device manifest, then every
 // changed frame (unchanged slots stage their current id; absent screens

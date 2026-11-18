@@ -169,17 +169,22 @@ int main() {
         lcd::DeferredSave save;
         auto oldBytes = std::make_shared<uint8_t>(1);
         std::weak_ptr<uint8_t> previous = oldBytes;
-        save.replace("aaaaaaaaaaaaaaaa", {oldBytes, 1}, 100);
+        assert(save.replace("aaaaaaaaaaaaaaaa", {oldBytes, 1}, 100));
         oldBytes.reset();
         auto current = std::make_shared<uint8_t>(2);
-        save.replace("bbbbbbbbbbbbbbbb", {current, 1}, 300);
+        assert(save.replace("bbbbbbbbbbbbbbbb", {current, 1}, 300));
         assert(previous.expired());
         assert(save.ready(300) && save.queuedAt == 100);
         save.failedAt = 400;
         save.retrying = true;
         assert(!save.ready(10399) && save.ready(10400));
+        assert(!save.replace("0123456789abcdef0", {}, 425));
         assert(!strcmp(save.id, "bbbbbbbbbbbbbbbb") && save.body.bytes == current);
-        save.replace("", {}, 450);
+        assert(save.pending && save.queuedAt == 100 && save.retrying && save.failedAt == 400);
+        assert(save.replace("cccccccccccccccc", {current, 1}, 450));
+        assert(save.ready(450) && !save.retrying && save.failedAt == 0);
+        assert(save.queuedAt == 100);
+        assert(save.replace("", {}, 500));
         assert(save.pending && save.queuedAt == 100 && !save.id[0] && !save.body.bytes);
     }
     puts("lcd43b persist: quiet, publish shape, cache ids, offline boot in"

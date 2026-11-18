@@ -31,6 +31,7 @@
 #include <string>
 #include <vector>
 #include <ctime>
+#include <zlib.h>
 
 namespace {
 
@@ -346,6 +347,48 @@ int main() {
         assert(files.size() == 1 && files.at("/art.vnr") == zipped);
         assert(lcd::copyCachedFrame("/override.vnr", "/art.vnr"));
         assert(files.at("/override.vnr") == zipped);
+    }
+    {   // The confirmed NVS pointer controls which bank can be deleted.
+        files.clear();
+        preferences.clear();
+        Preferences prefs;
+        assert(prefs.begin("ventanal", false));
+        lcd::CacheLocation current{"aaaaaaaaaaaaaaaa", false};
+        assert(lcd::saveCacheLocation(prefs, 0, current));
+        files["/art.vnr"] = {1};
+        const auto bytes = std::make_shared<uint8_t>(2);
+        lcd::DeferredSave save;
+        assert(save.replace("bbbbbbbbbbbbbbbb", {bytes, 1}, 0));
+
+        Preferences::failStringWrite = true;
+        assert(!lcd::persistCacheSlot(prefs, 0, current, save));
+        assert(!current.alternate && prefs.getString("id0") == "aaaaaaaaaaaaaaaa");
+        assert(files.at("/art.vnr")[0] == 1 && files.at("/art-alt.vnr")[0] == 2);
+        Preferences::failStringWrite = false;
+        assert(lcd::persistCacheSlot(prefs, 0, current, save));
+        assert(current.alternate && !files.count("/art.vnr") && files.count("/art-alt.vnr"));
+
+        assert(save.replace("cccccccccccccccc", {bytes, 1}, 1));
+        assert(lcd::persistCacheSlot(prefs, 0, current, save));
+        assert(!current.alternate && files.count("/art.vnr") && !files.count("/art-alt.vnr"));
+        files["/art-alt.vnr"] = {3}; // orphaned inactive bank
+        assert(save.replace("", {}, 2));
+        Preferences::failStringWrite = true;
+        assert(!lcd::persistCacheSlot(prefs, 0, current, save));
+        assert(current.id[0] && files.size() == 2);
+        Preferences::failStringWrite = false;
+        assert(lcd::persistCacheSlot(prefs, 0, current, save));
+        assert(!current.id[0] && files.empty());
+        lcd::CacheLocation loaded[lcd::SCREEN_SLOTS];
+        lcd::loadCacheLocations(prefs, loaded);
+        assert(!loaded[0].id[0]);
+    }
+    {   // Reap scratch files without touching committed files.
+        files = {{"/weather.vnr.tmp", {1}}, {"/override.vnr.tmp", {2}},
+                 {"/art.vnr", {3}}, {"/keep.tmp.backup", {4}}};
+        lcd::sweepCacheTemps();
+        assert(files.size() == 2);
+        assert(files.at("/art.vnr")[0] == 3 && files.at("/keep.tmp.backup")[0] == 4);
     }
     {   // Bounds and framing apply independently of the hash. ASan and the
         // guard bytes cover writes past the exact decoded image length.

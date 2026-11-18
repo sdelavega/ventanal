@@ -329,10 +329,6 @@ uint16_t* clockPixels = nullptr;
 uint16_t* clockDimmed = nullptr;
 int clockSlot = -1;
 
-String residentPath(int slot, bool alternate) {
-    return String("/") + lcd::SLOT_NAMES[slot] + (alternate ? "-alt.vnr" : ".vnr");
-}
-
 bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
     if (!mounted || !frame || strlen(id) != 16) return false;
     File file = LittleFS.open(path, "r");
@@ -375,7 +371,7 @@ void loadResidentCache() {
         refreshCache.allocated[slot] = residentFrames[slot] != nullptr;
         if (residentFrames[slot]) ++allocated;
         const auto& saved = persistedFrames[slot];
-        const String path = residentPath(slot, saved.alternate);
+        const String path = lcd::residentPath(slot, saved.alternate);
         if (loadResidentFrame(path.c_str(), residentFrames[slot], saved.id)) {
             strcpy(state.cachedIds[slot], saved.id);
             ++loaded;
@@ -647,9 +643,10 @@ void applyResidentFrame() {
     const bool changed = strcmp(id, nextId) != 0;
     if (mounted && (changed || refreshCache.forceDownloads)) {
         auto& save = deferredFrames[frame.slot];
-        save.replace(nextId, *frame.body, millis());
-        lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
-                 unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
+        if (save.replace(nextId, *frame.body, millis())) {
+            lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
+                     unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
+        }
     }
     strcpy(id, nextId);
     if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
@@ -702,21 +699,13 @@ void persistDeferredFrame() {
     if (slot < 0) {
         if (chosen->body.bytes) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
         else {
-            const String source = residentPath(overrideSource, persistedFrames[overrideSource].alternate);
+            const String source = lcd::residentPath(overrideSource, persistedFrames[overrideSource].alternate);
             ok = lcd::copyCachedFrame("/override.vnr", source.c_str());
         }
         if (ok) overrideSource = -1;
     } else {
-        lcd::CacheLocation next;
-        strcpy(next.id, chosen->id);
-        next.alternate = !persistedFrames[slot].alternate;
-        const String path = residentPath(slot, next.alternate);
-        ok = (!chosen->body.bytes || lcd::writeCachedFrame(path.c_str(), chosen->body))
-            && lcd::saveCacheLocation(prefs, slot, next);
-        if (ok) {
-            persistedFrames[slot] = next;
-            if (slot == 0) lcd::saveOwner(prefs, owner);
-        }
+        ok = lcd::persistCacheSlot(prefs, slot, persistedFrames[slot], *chosen);
+        if (ok && slot == 0) lcd::saveOwner(prefs, owner);
     }
     restartScanout("frame-persist");
     lcd::log("cache persist slot=%s id=%.16s bytes=%u ok=%d ms=%lu wait_ms=%lu lit=%d\n",
@@ -782,12 +771,17 @@ void applyFinishedRefresh() {
     bool changed = false;
     if (refreshStaging.manifestOk) {
         for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
+            // A corrupt cached file may have a stored id but no resident
+            // frame to drop. Queue its deletion when it is unpublished.
+            if (mounted && refreshStaging.dropSlot[slot] && persistedFrames[slot].id[0]
+                && !deferredFrames[slot].pending) {
+                deferredFrames[slot].replace("", {}, millis());
+            }
             if ((refreshStaging.dropSlot[slot] && refreshIds[slot][0])
                 || (refreshStaging.frameOk[slot]
                     && strcmp(refreshStaging.frameIds[slot],
                               refreshIds[slot]))) {
                 changed = true;
-                break;
             }
         }
     }
@@ -1149,6 +1143,7 @@ void setup() {
     // Mount the partition named "littlefs" (spiffs subtype); first boot formats.
     mounted = LittleFS.begin(true, "/littlefs", 10, "littlefs");
     if (!mounted) lcd::log("error=littlefs-mount\n");
+    else lcd::sweepCacheTemps();
     // Restore persisted state so an offline boot still honours quiet hours
     // and the screen list matches the cache before the first fetch.
     lcd::loadCacheLocations(prefs, persistedFrames);

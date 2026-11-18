@@ -32,11 +32,18 @@ struct DeferredSave {
         return pending && (!retrying || now - failedAt >= 10000);
     }
 
-    void replace(const char* nextId, const FrameBody& nextBody, uint32_t now) {
+    bool replace(const char* nextId, const FrameBody& nextBody, uint32_t now) {
+        size_t length = 0;
+        while (length < sizeof id && nextId[length]) ++length;
+        if (length == sizeof id) return false;
+
         if (!pending) queuedAt = now;  // updates cannot postpone the deadline
-        memcpy(id, nextId, strlen(nextId) + 1);
+        memmove(id, nextId, length + 1);
         body = nextBody;
         pending = true;
+        retrying = false;
+        failedAt = 0;
+        return true;
     }
 };
 

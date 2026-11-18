@@ -193,9 +193,15 @@ build/test_lcd43b_touch: test_lcd43b_touch.cpp ../lcd43b/touch.h ../lcd43b/gt911
 
 # The production downloader/refresh engine. AddressSanitizer doubles as an
 # overflow tripwire: a read that ever passed the frame end would abort.
-build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) Makefile
+MINIZ_DIR = ../lcd43b/src/miniz
+
+build/miniz_tinfl.o: $(MINIZ_DIR)/miniz_tinfl.c $(wildcard $(MINIZ_DIR)/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp $(LDFLAGS) -fsanitize=address -lz -o $@
+	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c99 -fsanitize=address -c $< -o $@
+
+build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) build/miniz_tinfl.o Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
 build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile

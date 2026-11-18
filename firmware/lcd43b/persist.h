@@ -115,15 +115,17 @@ struct CacheLocation {
 };
 
 inline bool saveCacheLocation(Preferences& prefs, int slot, const CacheLocation& entry) {
-    char key[8], value[18] = {};
+    // A nonempty tombstone lets putString distinguish a committed drop from
+    // an error. Loading it yields an empty location, as for legacy empty ids.
+    char key[8], value[18] = "-";
     snprintf(key, sizeof key, "id%d", slot);
     if (entry.id[0]) {
         memcpy(value, entry.id, 16);
         if (entry.alternate) value[16] = '1';
     }
     if (prefs.getString(key, "") == value) return true;
-    prefs.putString(key, value);
-    return prefs.getString(key, "") == value;
+    return prefs.putString(key, value) == strlen(value)
+        && prefs.getString(key, "") == value;
 }
 
 inline void loadCacheLocations(Preferences& prefs, CacheLocation entries[SCREEN_SLOTS]) {

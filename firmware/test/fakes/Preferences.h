@@ -8,6 +8,7 @@ class Preferences {
 public:
     inline static bool failBegin = false;
     inline static bool failStateRead = false;
+    inline static bool failStringWrite = false;
     inline static int stateReadFailures = 0;
     inline static int stateReads = 0;
     bool isKey(const char* k) { return opened && preferences.count(k); }
@@ -57,7 +58,7 @@ public:
             ? String(it->second.begin(), it->second.end()) : fallback;
     }
     size_t putString(const char* k, const String& value) {
-        if(!opened) return 0;
+        if(!opened || failStringWrite) return 0;
         preferences[k] = {value.begin(), value.end()};
         return value.size();
     }
