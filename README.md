@@ -130,6 +130,9 @@ merged image and generated flash arguments use incompatible offsets. The helper
 preserves the filesystem. Keep build output out of commits. On cold boot the
 board connects, obtains the manifest, caches frames and displays its selection.
 
+See [wireless firmware updates](docs/updates.md) for the wired OTA migration,
+update approval, rollback and release signing.
+
 ## Using Ventanal
 
 - **Single WAKE press:** cycle cached art, weather, optional solar and enabled

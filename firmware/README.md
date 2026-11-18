@@ -7,6 +7,9 @@ readout, applies battery and local-time scheduling, and sleeps between updates.
 A fresh installation starts on weather; a short WAKE press cycles cached screens
 without starting Wi-Fi.
 
+See [wireless firmware updates](../docs/updates.md) for update approval,
+rollback and release signing.
+
 ## Toolchain
 
 Install Arduino CLI and Soldered's board index (from the board repository README):
