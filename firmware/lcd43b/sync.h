@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include <WiFi.h>
 
 // The lcd43b refresh engine, host-tested (test_lcd43b_sync). A refresh
 // pass runs on a short-lived FreeRTOS worker task so loop() keeps polling
@@ -21,6 +22,7 @@
 #include "log.h"
 #include "manifest.h"
 #include "persist.h"
+#include "scanout_diag.h"
 #include "screens.h"
 
 namespace lcd {
@@ -37,6 +39,7 @@ struct ResidentCache {
     // info pointer means drop; otherwise body contains the verified wire bytes.
     bool (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
+    ScanHealth health{};
     void (*manifestVerified)() = nullptr;
     // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
     void (*reclaimWireMemory)(size_t bytes) = nullptr;
@@ -125,6 +128,14 @@ inline bool redrawNeeded(bool requested, bool newContent, bool drawn,
 // to evaluate the persisted LOCAL quiet hours in UTC, keeping the panel
 // lit through the night (pinned by test_lcd43b_sync).
 void configureTimezone();
+// As on e-paper, keep the radio awake during large transfers and restore
+// the configured power-save mode on every exit from the worker pass.
+struct DownloadPower {
+    const wifi_ps_type_t previous = WiFi.getSleep();
+    DownloadPower() { WiFi.setSleep(false); }
+    ~DownloadPower() { WiFi.setSleep(previous); }
+};
+
 bool connectForUpdates(Watchdog& watchdog);
 
 // Receive and verify exactly the advertised wire bytes. The caller owns a

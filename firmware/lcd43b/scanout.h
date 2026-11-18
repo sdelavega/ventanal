@@ -5,6 +5,7 @@
 #include <algorithm>
 #include <cstdint>
 #include <cstring>
+#include "local_scene.h"
 
 namespace lcd {
 
@@ -21,6 +22,7 @@ struct ScanFrame {
     const uint16_t* pixels = nullptr;
     ScanPatch patches[3]{};
     unsigned brightnessQuarters = 4;
+    const LocalPage* local = nullptr;
 };
 
 // Scale two packed RGB565 pixels. Separate the lowest two bits of each

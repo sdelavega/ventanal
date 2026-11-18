@@ -26,6 +26,12 @@ constexpr SettingsControl SETTINGS_CONTROLS[] = {
     {SettingsHit::BatteryFull,{150,374,430,52},"BATTERY IS FULL - SET AS 100%"},
     {SettingsHit::Done,{610,384,170,56},"DONE"}
 };
+inline ReadoutRect settingsDamage(SettingsHit hit) {
+    for (const auto& control : SETTINGS_CONTROLS)
+        if (control.hit == hit) return control.rect;
+    return {};
+}
+
 inline bool settingsControlVisible(SettingsHit h, bool solarListed, bool batteryButton) {
     return (h!=SettingsHit::ToggleSolar || solarListed)
         && (h!=SettingsHit::BatteryFull || batteryButton);
@@ -64,8 +70,24 @@ struct SettingsSession {
     void touch(uint32_t now) { lastTouch=now; }
     bool expired(uint32_t now) const { return active && uint32_t(now-lastTouch)>=30000; }
 };
-inline void settingsBox(uint16_t* px,ReadoutRect r,uint16_t colour,int radius=0) {
-    for(int y=0;y<r.h;++y) for(int x=0;x<r.w;++x) {
+// A band uses the same coordinates as the full Settings page. The renderer
+// clips to it so a single small workspace can build either idle scan scene.
+struct SettingsSurface {
+    uint16_t* pixels;
+    int first;
+    int rows;
+
+    SettingsSurface(uint16_t* pixels, int first = 0, int rows = HEIGHT)
+        : pixels(pixels), first(first), rows(rows) {}
+
+    void clear() const { memset(pixels, 0, size_t(WIDTH) * rows * sizeof(*pixels)); }
+    void text(const AAFont& font, const char* label, int x, int baseline, uint16_t colour) const {
+        drawText(pixels, WIDTH, rows, font, label, x, baseline - first, colour);
+    }
+};
+
+inline void settingsBox(SettingsSurface px,ReadoutRect r,uint16_t colour,int radius=0) {
+    for(int y=std::max(0,px.first-r.y);y<std::min(r.h,px.first+px.rows-r.y);++y) for(int x=0;x<r.w;++x) {
         unsigned coverage=16;
         if(radius) {
             coverage=0;
@@ -78,44 +100,46 @@ inline void settingsBox(uint16_t* px,ReadoutRect r,uint16_t colour,int radius=0)
         }
         const int dx=r.x+x,dy=r.y+y;
         if(coverage && dx>=0 && dx<WIDTH && dy>=0 && dy<HEIGHT) {
-            auto& pixel=px[dy*WIDTH+dx];
+            auto& pixel=px.pixels[(dy-px.first)*WIDTH+dx];
             pixel=blendAA(pixel,colour,(coverage*15+8)/16);
         }
     }
 }
 // Fonts are ASCII. Render the footer's UTF-8 middle dots explicitly.
-inline void settingsFooter(uint16_t* px,const char* text,int x,int baseline,uint16_t colour) {
+inline void settingsFooter(SettingsSurface px,const char* text,int x,int baseline,uint16_t colour) {
     while(*text) {
         if(static_cast<unsigned char>(text[0])==0xc2 && static_cast<unsigned char>(text[1])==0xb7) {
             settingsBox(px,{x+2,baseline-5,2,2},colour); x+=7; text+=2;
         } else {
             char one[2]={*text++,0};
-            drawText(px,WIDTH,HEIGHT,ArtDate,one,x,baseline,colour);
+            px.text(ArtDate,one,x,baseline,colour);
             x+=textWidth(ArtDate,one);
         }
     }
 }
 // Shape-only entry point allows a whole-frame comparison against the server.
-inline void drawSettingsChrome(uint16_t* px,bool labels=true) {
-    memset(px,0,size_t(WIDTH)*HEIGHT*2);
+inline void drawSettingsChrome(SettingsSurface px,bool labels=true) {
+    px.clear();
     for(const auto& span:LCARS_CHROME)
-        for(int x=span.left;x<=span.right;++x) px[span.y*WIDTH+x]=span.colour;
+        if (span.y >= px.first && span.y < px.first + px.rows)
+            for(int x=span.left;x<=span.right;++x)
+                px.pixels[(span.y-px.first)*WIDTH+x]=span.colour;
     if(labels) for(const auto& section:SETTINGS_SECTIONS)
-        drawText(px,WIDTH,HEIGHT,SidebarLabel,section.label,
+        px.text(SidebarLabel,section.label,
                  92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
 }
-inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarListed,
+inline void drawSettingsPage(SettingsSurface px,const DeviceSettings& s,bool solarListed,
                              bool batteryButton,const char* footer) {
     const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0);
     const auto sky=rgb565(170,170,255), light=rgb565(153,150,186);
     drawSettingsChrome(px);
-    drawText(px,WIDTH,HEIGHT,StatusFont,"SETTINGS",150,63,gold);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"BRIGHTNESS",150,115,gold);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"SCREEN OFF AFTER",150,219,gold);
-    drawText(px,WIDTH,HEIGHT,ClockTime,"SHOW",150,323,gold);
-    drawText(px,WIDTH,HEIGHT,ArtDate,"Dims the picture; this board's backlight is on/off only.",310,151,light);
-    drawText(px,WIDTH,HEIGHT,ArtDate,"Timeout applies on USB and battery alike. Touch wakes it.",310,255,light);
-    drawText(px,WIDTH,HEIGHT,ArtDate,"At least one stays on. Hidden screens aren't downloaded.",310,359,light);
+    px.text(StatusFont,"SETTINGS",150,63,gold);
+    px.text(ClockTime,"BRIGHTNESS",150,115,gold);
+    px.text(ClockTime,"SCREEN OFF AFTER",150,219,gold);
+    px.text(ClockTime,"SHOW",150,323,gold);
+    px.text(ArtDate,"Dims the picture; this board's backlight is on/off only.",310,151,light);
+    px.text(ArtDate,"Timeout applies on USB and battery alike. Touch wakes it.",310,255,light);
+    px.text(ArtDate,"At least one stays on. Hidden screens aren't downloaded.",310,359,light);
     for(const auto& c:SETTINGS_CONTROLS) {
         if(!settingsControlVisible(c.hit,solarListed,batteryButton)) continue;
         const int h=int(c.hit);
@@ -132,7 +156,7 @@ inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarList
         settingsBox(px,c.rect,button?orange:(selected?(toggle?orange:sky):rgb565(58,58,74)),c.rect.h/2);
         const auto& font=c.hit==SettingsHit::BatteryFull?ArtDate:ClockTime;
         const int x=c.rect.x+(c.rect.w-textWidth(font,c.label))/2;
-        drawText(px,WIDTH,HEIGHT,font,c.label,x,c.rect.y+c.rect.h/2+8,selected||button?0:light);
+        px.text(font,c.label,x,c.rect.y+c.rect.h/2+8,selected||button?0:light);
         if(toggle && selected) { // visible check mark independent of font coverage
             const int cx=c.rect.x+c.rect.w-20,cy=c.rect.y+25;
             for(int i=0;i<5;++i) settingsBox(px,{cx+i,cy+i,2,2},0);
@@ -152,10 +176,11 @@ inline bool inUpdateControl(ReadoutRect r, int x, int y) {
     return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
 }
 
-enum class UpdateHit { None, HostInstall, GithubInstall, Check, Later };
+enum class UpdateHit { None, HostInstall, GithubInstall, Check, Later, Cancel };
 
-inline UpdateHit hitUpdates(int x, int y, bool host, bool github, bool busy) {
-    if (inUpdateControl(UPDATE_BACK, x, y)) return UpdateHit::Later;
+inline UpdateHit hitUpdates(int x, int y, bool host, bool github, bool busy,
+                            bool waiting = false) {
+    if (inUpdateControl(UPDATE_BACK, x, y)) return waiting ? UpdateHit::Cancel : UpdateHit::Later;
     if (busy) return UpdateHit::None;
     if (host && inUpdateControl(HOST_INSTALL, x, y)) return UpdateHit::HostInstall;
     if (github && inUpdateControl(GITHUB_INSTALL, x, y)) return UpdateHit::GithubInstall;
@@ -163,41 +188,41 @@ inline UpdateHit hitUpdates(int x, int y, bool host, bool github, bool busy) {
     return UpdateHit::None;
 }
 
-inline void updateButton(uint16_t* pixels, ReadoutRect rect, const char* label, bool enabled = true) {
+inline void updateButton(SettingsSurface pixels, ReadoutRect rect, const char* label, bool enabled = true) {
     const auto fill = enabled ? rgb565(255,119,0) : rgb565(58,58,74);
     const auto ink = enabled ? 0 : rgb565(153,150,186);
     settingsBox(pixels, rect, fill, rect.h / 2);
     const int x = rect.x + (rect.w - textWidth(ClockTime, label)) / 2;
-    drawText(pixels, WIDTH, HEIGHT, ClockTime, label, x, rect.y + rect.h / 2 + 8, ink);
+    pixels.text(ClockTime, label, x, rect.y + rect.h / 2 + 8, ink);
 }
 
 inline void updateTitle(char (&label)[48], const char* version) {
     snprintf(label, sizeof label, "Update %s available", version);
 }
 
-inline void drawUpdatePage(uint16_t* pixels, const char* host, const char* github,
-                           const char* status, bool busy) {
+inline void drawUpdatePage(SettingsSurface pixels, const char* host, const char* github,
+                           const char* status, bool busy, bool waiting = false) {
     const auto gold = rgb565(255,170,0);
     const auto light = rgb565(153,150,186);
     drawSettingsChrome(pixels, false);
-    drawText(pixels, WIDTH, HEIGHT, StatusFont, "FIRMWARE UPDATES", 150, 63, gold);
-    drawText(pixels, WIDTH, HEIGHT, ArtDate, host[0] ? "APPROVED BY HOST" : "HOST",
+    pixels.text(StatusFont, "FIRMWARE UPDATES", 150, 63, gold);
+    pixels.text(ArtDate, host[0] ? "APPROVED BY HOST" : "HOST",
              150, 118, light);
     char label[48];
     if (host[0]) updateTitle(label, host);
-    drawText(pixels, WIDTH, HEIGHT, ClockTime, host[0] ? label : "No approved update",
+    pixels.text(ClockTime, host[0] ? label : "No approved update",
              150, 150, gold);
     if (host[0]) updateButton(pixels, HOST_INSTALL, "Install", !busy);
 
-    drawText(pixels, WIDTH, HEIGHT, ArtDate, "GITHUB", 150, 215, light);
+    pixels.text(ArtDate, "GITHUB", 150, 215, light);
     if (github[0]) updateTitle(label, github);
-    drawText(pixels, WIDTH, HEIGHT, ClockTime, github[0] ? label : "No update offered",
+    pixels.text(ClockTime, github[0] ? label : "No update offered",
              150, 247, gold);
     if (github[0]) updateButton(pixels, GITHUB_INSTALL, "Install", !busy);
 
     updateButton(pixels, GITHUB_CHECK, "Check for updates", !busy);
-    drawText(pixels, WIDTH, HEIGHT, ArtDate, status, 150, 399, light);
-    updateButton(pixels, UPDATE_BACK, host[0] || github[0] ? "Later" : "Back");
+    pixels.text(ArtDate, status, 150, 399, light);
+    updateButton(pixels, UPDATE_BACK, waiting ? "Cancel" : (host[0] || github[0] ? "Later" : "Back"));
 }
 
 } // namespace lcd

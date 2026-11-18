@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include <cstdint>
 
 #ifdef VENTANAL_LCD_DIAG_PANEL
 #include <Arduino.h>
@@ -10,6 +11,13 @@
 #endif
 
 namespace lcd {
+
+struct ScanHealth {
+    uint32_t lateRestarts = 0;
+    uint32_t shortFrames = 0;
+    uint32_t maxFillUs = 0;
+    uint32_t maxVsyncGapUs = 0;
+};
 
 enum class ScanActivity : unsigned { Copy, Receive, Inflate, LittleFS, Nvs, Count };
 

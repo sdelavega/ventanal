@@ -191,13 +191,15 @@ private:
 };
 
 // Boot waiting screen: black panel with the host URL, like the e-paper's.
-inline void drawWaiting(uint16_t* pixels, int width, int height, const char* url, bool configured = true) {
+inline void drawWaiting(uint16_t* pixels, int width, int height, const char* url, bool configured = true,
+                        int firstRow = 0, int fullHeight = 0) {
     memset(pixels, 0, size_t(width) * height * 2);
-    drawText(pixels, width, height, WaitingTitle, configured ? "Waiting for host" : "Not set up", 12, 60,
+    drawText(pixels, width, height, WaitingTitle, configured ? "Waiting for host" : "Not set up", 12, 60 - firstRow,
              RGB565_WHITE);
     const auto& f = WaitingBody;
     int y = 100;
-    while (*url && y < height - 4) {
+    if (!fullHeight) fullHeight = height;
+    while (*url && y < fullHeight - 4) {
         char line[96];
         size_t n = 0;
         int used = 0;
@@ -208,7 +210,7 @@ inline void drawWaiting(uint16_t* pixels, int width, int height, const char* url
         }
         if (!n) break;
         line[n] = '\0';
-        drawText(pixels, width, height, f, line, 12, y, RGB565_WHITE);
+        drawText(pixels, width, height, f, line, 12, y - firstRow, RGB565_WHITE);
         url += n;
         y += 28;
     }

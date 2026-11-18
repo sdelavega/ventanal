@@ -3,6 +3,11 @@
 
 #include "panel.h"
 #include <cassert>
+#ifndef VENTANAL_HOST_TEST
+#include <esp_timer.h>
+#include <esp_intr_alloc.h>
+#include <soc/interrupts.h>
+#endif
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include "esp32s3/rom/cache.h"
@@ -14,6 +19,31 @@
 #ifdef VENTANAL_LCD_DIAG_PANEL_STALL
 #include "esp_rom_sys.h"
 #endif
+#endif
+
+#ifndef VENTANAL_HOST_TEST
+#ifndef VENTANAL_LCD_ISR_LEVEL
+#define VENTANAL_LCD_ISR_LEVEL 0
+#endif
+
+namespace {
+std::atomic<TaskHandle_t> rgbAllocator{nullptr};
+int rgbLevel = VENTANAL_LCD_ISR_LEVEL;
+}
+
+extern "C" esp_err_t __real_esp_intr_alloc_intrstatus(int, int, uint32_t, uint32_t,
+                                                     intr_handler_t, void*, intr_handle_t*);
+extern "C" esp_err_t __wrap_esp_intr_alloc_intrstatus(int source, int flags, uint32_t reg,
+                                                     uint32_t mask, intr_handler_t handler,
+                                                     void* arg, intr_handle_t* out) {
+    const bool rgb = source == ETS_LCD_CAM_INTR_SOURCE ||
+        (source >= ETS_DMA_OUT_CH0_INTR_SOURCE && source <= ETS_DMA_OUT_CH4_INTR_SOURCE);
+    if (rgb && rgbLevel == 3 && rgbAllocator.load(std::memory_order_relaxed) == xTaskGetCurrentTaskHandle())
+        flags = (flags & ~ESP_INTR_FLAG_LOWMED) | ESP_INTR_FLAG_LEVEL3;
+    return __real_esp_intr_alloc_intrstatus(source, flags, reg, mask, handler, arg, out);
+}
+
+void Panel::setInterruptLevel(int level) { rgbLevel = level; }
 #endif
 
 bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observer) {
@@ -45,7 +75,22 @@ bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observ
     config.bounce_buffer_size_px = WIDTH * BounceRows;
     config.dma_burst_size = 64;
     config.flags.no_fb = 1;
-    if (esp_lcd_new_rgb_panel(&config, &panel_) != ESP_OK) return false;
+#ifndef VENTANAL_HOST_TEST
+    rgbAllocator.store(xTaskGetCurrentTaskHandle(), std::memory_order_relaxed);
+#endif
+    const esp_err_t created = esp_lcd_new_rgb_panel(&config, &panel_);
+#ifndef VENTANAL_HOST_TEST
+    rgbAllocator.store(nullptr, std::memory_order_relaxed);
+#endif
+    if (created != ESP_OK) return false;
+    lastVsyncUs_ = lastEofUs_ = 0;
+#ifdef VENTANAL_LCD_DIAG_F3
+    lateRestarts_.store(0, std::memory_order_relaxed);
+    shortFrames_.store(0, std::memory_order_relaxed);
+    maxFillUs_.store(0, std::memory_order_relaxed);
+    maxGapUs_.store(0, std::memory_order_relaxed);
+#endif
+    eofs_ = 0;
     observer_ = observer;
     scenes_[0] = scenes_[1] = {};
     submitted_ = 0;
@@ -138,8 +183,29 @@ bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
     auto& self = *static_cast<Panel*>(context);
     self.armed_.store(self.requested_.load(std::memory_order_acquire), std::memory_order_release);
     self.vsyncs_.fetch_add(1, std::memory_order_relaxed);
+#ifndef VENTANAL_HOST_TEST
+    const uint32_t now = uint32_t(esp_timer_get_time());
+    const bool shortFrame = self.eofs_ < HEIGHT / BounceRows;
+    if (self.lastVsyncUs_) {
+        const uint32_t gap = now - self.lastVsyncUs_;
+        if (gap > self.maxGapUs_.load(std::memory_order_relaxed))
+            self.maxGapUs_.store(gap, std::memory_order_relaxed);
+        if (shortFrame) self.shortFrames_.fetch_add(1, std::memory_order_relaxed);
+#ifdef CONFIG_LCD_RGB_RESTART_IN_VSYNC
+        const bool restarting = true;
+#else
+        const bool restarting = shortFrame;
+#endif
+        const uint32_t phase = now - self.lastEofUs_;
+        if (restarting && self.lastEofUs_ && phase > VBlankUs && phase < VBlankUs * 3)
+            self.lateRestarts_.fetch_add(1, std::memory_order_relaxed);
+    }
+    self.lastVsyncUs_ = now;
+    self.eofs_ = 0;
+    self.lastEofUs_ = 0;
+#endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
-    self.syncAt_ = uint32_t(esp_timer_get_time());
+    self.syncAt_ = now;
     self.diag_.vsync(self.syncAt_, VBlankUs, HEIGHT / BounceRows);
     self.sampleDma();
 #endif
@@ -149,11 +215,15 @@ bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
 bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
                                int bytes, void* context) {
     auto& self = *static_cast<Panel*>(context);
-#ifdef VENTANAL_LCD_DIAG_PANEL
+#ifndef VENTANAL_HOST_TEST
     const uint32_t start = uint32_t(esp_timer_get_time());
-    const bool prefill = self.syncAt_ && start - self.syncAt_ < 500 &&
-        pos < 2 * WIDTH * BounceRows;
+    const bool prefill = !self.lastVsyncUs_ ||
+        (start - self.lastVsyncUs_ < 500 && pos < 2 * WIDTH * BounceRows);
     const bool lastActive = !prefill && pos == WIDTH * BounceRows;
+    if (!prefill) ++self.eofs_;
+    if (lastActive) self.lastEofUs_ = start;
+#endif
+#ifdef VENTANAL_LCD_DIAG_PANEL
     self.diag_.beginFill(start, lastActive);
 #ifdef VENTANAL_LCD_DIAG_PANEL_STALL
     if (self.diag_.inject(lastActive)) esp_rom_delay_us(3000);
@@ -165,7 +235,9 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     if (pos == 0)
         self.active_.store(self.armed_.load(std::memory_order_acquire), std::memory_order_release);
     const auto& scene = self.scenes_[self.active_.load(std::memory_order_relaxed)];
-    if (scene.pixels) memcpy(buffer, scene.pixels + pos, bytes);
+    if (scene.local) scene.local->decode(static_cast<uint16_t*>(buffer), pos / WIDTH,
+                                         bytes / (WIDTH * sizeof(uint16_t)));
+    else if (scene.pixels) memcpy(buffer, scene.pixels + pos, bytes);
     else memset(buffer, 0, bytes);
     lcd::finishScanRows(static_cast<uint16_t*>(buffer), scene, WIDTH, pos, bytes);
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
@@ -179,6 +251,11 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     if (pixels)
         Cache_Start_DCache_Preload(uint32_t(uintptr_t(pixels + next % (WIDTH * HEIGHT))),
                                   PreloadBytes, 0);
+#endif
+#ifndef VENTANAL_HOST_TEST
+    const uint32_t elapsed = uint32_t(esp_timer_get_time()) - start;
+    if (elapsed > self.maxFillUs_.load(std::memory_order_relaxed))
+        self.maxFillUs_.store(elapsed, std::memory_order_relaxed);
 #endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
     self.sampleDma();

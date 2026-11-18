@@ -1,8 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../lcd43b/settings_page.h"
+#include "../lcd43b/local_scene.h"
+#include "../lcd43b/wifi_retry.h"
 #include <cassert>
 #include <vector>
+#include <memory>
 #include <cstdio>
 int main(int argc,char** argv) {
     using namespace lcd;
@@ -52,8 +55,73 @@ int main(int argc,char** argv) {
     assert(px[1+400*WIDTH+360]!=0); // generic calibration control is drawn
     drawUpdatePage(px.data()+1, "65535.65535.65535", "2.0.0", "Checked within the last week", false);
     assert(px.front()==0x1234 && px.back()==0x1234);
+    assert(hitUpdates(660, 410, true, true, true, true) == UpdateHit::Cancel);
     assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < UPDATE_MENU.w - 10);
     assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < HOST_INSTALL.x - 150);
+    for (bool updates : {false, true}) {
+        constexpr int bandRows = 40;
+        const auto paint = [&](SettingsSurface band) {
+            if (updates) drawUpdatePage(band, "65535.65535.65535", "2.0.0",
+                                        "Waiting for refresh...", true, true);
+            else drawSettingsPage(band, s, true, true,
+                                  "VENTANAL · SYNTHETIC-DESK · WI-FI OFFLINE · v65535.65535.65535");
+        };
+        paint(px.data()+1);
+        auto scene = std::make_unique<LocalPage>();
+        auto patched = std::make_unique<LocalPage>();
+        std::vector<uint16_t> band(WIDTH * bandRows);
+        for (int y = 0; y < HEIGHT; y += bandRows) {
+            paint({band.data(), y, bandRows});
+            assert(scene->encodeBand(band.data(), y, bandRows));
+            assert(patched->copyBand(*scene, y, bandRows));
+        }
+        for (int y = 0; y < HEIGHT; y += 10) {
+            patched->decode(band.data(), y, 10);
+            assert(std::equal(band.begin(), band.begin() + 10 * WIDTH, px.begin() + 1 + y * WIDTH));
+        }
+    }
+    {
+        constexpr int bandRows = 40;
+        std::vector<uint16_t> band(WIDTH * bandRows);
+        auto old = std::make_unique<LocalPage>();
+        auto next = std::make_unique<LocalPage>();
+        drawSettingsPage(px.data() + 1, s, true, true, "VENTANAL");
+        assert(old->encode(px.data() + 1));
+        s.brightness = 75;
+        const auto damage = settingsDamage(SettingsHit::Brightness75);
+        for (int y = 0; y < HEIGHT; y += bandRows) {
+            if (y >= damage.y + damage.h || y + bandRows <= damage.y) {
+                assert(next->copyBand(*old, y, bandRows));
+            } else {
+                drawSettingsPage({band.data(), y, bandRows}, s, true, true, "VENTANAL");
+                assert(next->encodeBand(band.data(), y, bandRows));
+            }
+        }
+        drawSettingsPage(px.data() + 1, s, true, true, "VENTANAL");
+        for (int y = 0; y < HEIGHT; y += bandRows) {
+            next->decode(band.data(), y, bandRows);
+            assert(std::equal(band.begin(), band.end(), px.begin() + 1 + y * WIDTH));
+        }
+    }
+    LocalScene<4, 1, 2> bounded{};
+    const uint16_t compressible[]{0, 0, 0, 0};
+    const uint16_t incompressible[]{1, 2, 3, 4};
+    assert(bounded.encode(compressible));
+    assert(!bounded.encode(incompressible));
+    assert(settingsDamage(SettingsHit::TimeoutNever).y == 186);
+    assert(settingsDamage(SettingsHit::None).h == 0);
+
+    WifiRetry retry;
+    uint32_t at = UINT32_MAX - 1000;
+    assert(!retry.waiting() && !retry.due(at));
+    for (const uint32_t wait : {15000, 30000, 60000, 120000, 240000, 240000}) {
+        retry.finished(at, false);
+        assert(retry.waiting() && !retry.due(at + wait - 1) && retry.due(at + wait));
+        at += wait;
+    }
+    retry.finished(at, true);
+    assert(!retry.waiting() && !retry.due(at));
+
     // Independent server draw_lcd_frame fixture, labels omitted consistently.
     drawSettingsChrome(px.data()+1,false);
     FILE* fixture=fopen("fixtures/lcd43b-settings-chrome.rle","rb"); assert(fixture);

@@ -24,9 +24,12 @@
 #include <Preferences.h>
 #include <Wire.h>
 #include <WiFi.h>
+#include "wifi_retry.h"
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
+#include <esp_app_desc.h>
+#include <esp_ota_ops.h>
 #include <sdkconfig.h>
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
 #include <hal/usb_serial_jtag_ll.h>
@@ -107,6 +110,7 @@ Preferences prefs;
 Preferences settingsPrefs; // exclusively opened/closed by settings persistence
 lcd::DeviceSettings settings=lcd::defaultSettings(lcd::POWER_SOURCE_DETECTABLE);
 lcd::SettingsSession settingsPage;
+bool settingsDirty = false;
 int settingsReturnSlot=0;
 bool settingsRefreshPending=false;
 bool installationReady = false;
@@ -173,6 +177,7 @@ bool backlightKnown = false;
 bool quietBlanking = false;
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
+lcd::WifiRetry wifiRetry;
 uint32_t lastTouchPollMs = 0;
 bool lastTouched = false;
 uint32_t fetchCounter = 0;
@@ -200,6 +205,15 @@ uint32_t vsyncReportMs = 0;
 uint32_t vsyncReportFrames = 0;
 uint32_t stressStartMs = 0;
 unsigned stressCycles = 0;
+#ifdef VENTANAL_LCD_DIAG_F3
+unsigned stressSettingsCycles = 0;
+bool stressSettingsOpen = false;
+bool scanOtherCore = false;
+unsigned stressProfile = 0;
+bool stressAdvance = false;
+uint32_t writeProbeAt = 0;
+unsigned writeProbeCount = 0;
+#endif
 
 bool IRAM_ATTR panelVsync(esp_lcd_panel_handle_t, const esp_lcd_rgb_panel_event_data_t*,
                 void*) {
@@ -325,13 +339,50 @@ void restartScanout(const char* operation) {
     if (status != ESP_OK) lcd::log("panel restart after=%s status=%d\n", operation, int(status));
 }
 
+#if defined(VENTANAL_LCD_SCAN_OTHER_CORE) || defined(VENTANAL_LCD_DIAG_F3)
+template<class Action>
+bool onScanCore(Action action) {
+    struct Call { Action action; SemaphoreHandle_t done; bool result; };
+    StaticSemaphore_t storage;
+    Call call{action, xSemaphoreCreateBinaryStatic(&storage), false};
+    const auto run = [](void* arg) {
+        auto& call = *static_cast<Call*>(arg);
+        call.result = call.action();
+        xSemaphoreGive(call.done);
+        vTaskDelete(nullptr);
+    };
+    if (xTaskCreatePinnedToCore(run, "scan-control", 4096, &call, 2, nullptr,
+                                1 - xPortGetCoreID()) != pdPASS) return false;
+    return xSemaphoreTake(call.done, portMAX_DELAY) == pdTRUE && call.result;
+}
+#endif
+
+bool stopPanel() {
+#ifdef VENTANAL_LCD_DIAG_F3
+    if (scanOtherCore) return onScanCore([] { return panel.stop(); });
+#endif
+#ifdef VENTANAL_LCD_SCAN_OTHER_CORE
+    return onScanCore([] { return panel.stop(); });
+#else
+    return panel.stop();
+#endif
+}
+
 bool beginPanel() {
+    if (panel.handle()) return true;
 #ifdef VENTANAL_LCD_DIAG_PANEL
     auto observer = panelVsync;
 #else
     esp_lcd_rgb_panel_vsync_cb_t observer = nullptr;
 #endif
+#ifdef VENTANAL_LCD_DIAG_F3
+    if (scanOtherCore) return onScanCore([observer] { return panel.begin(setLcdResetLine, observer); });
+#endif
+#ifdef VENTANAL_LCD_SCAN_OTHER_CORE
+    return onScanCore([observer] { return panel.begin(setLcdResetLine, observer); });
+#else
     return panel.begin(setLcdResetLine, observer);
+#endif
 }
 
 // Deliberately runs outside diag fencing to verify scanout cadence alongside the XIP/64B boot log.
@@ -362,8 +413,11 @@ struct StatusPixels {
 };
 StatusPixels* statusPixels[2]{};
 uint16_t* clockPixels[2]{};
+constexpr int CanvasRows = 40;
+constexpr size_t CanvasBytes = lcd::WIDTH * CanvasRows * sizeof(uint16_t);
 uint16_t* canvas = nullptr;
-bool canvasUsesStaging = false;
+lcd::LocalPage* localPages[2]{};
+int displayedLocal = -1;
 int clockSlot = -1;
 
 bool clockBuffersReady() { return clockPixels[0] && clockPixels[1]; }
@@ -383,37 +437,19 @@ void retirePixels(const uint16_t* pixels) {
     }
     // A broken scan interrupt cannot acknowledge pointer retirement.
     // Stop DMA before any caller writes or frees the old source.
-    if (!panel.stop()) {
+    if (!stopPanel()) {
         lcd::log("panel restart=scanout-retirement-dma-stop-failed\n"); // Flushes when USB is open.
         delay(20);
         ESP.restart();
     }
 }
 
-uint16_t* localCanvas(bool allowStaging = false) {
-    if (!canvas) {
-        canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
-        if (!canvas) {
-            reclaimCacheMemory(Panel::Bytes);
-            canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
-        }
-    }
-    // Settings and Updating can borrow the idle decode buffer when there is
-    // no full-sized block left, without evicting cached frames.
-    if (!canvas && allowStaging && !refreshBusy && refreshCache.staging) {
-        canvas = reinterpret_cast<uint16_t*>(refreshCache.staging);
-        canvasUsesStaging = true;
-        lcd::log("settings canvas=idle-staging\n");
-    }
-    retirePixels(canvas);
-    return canvas;
-}
-
-void returnStagingCanvas() {
-    if (!canvasUsesStaging) return;
-    retirePixels(canvas);
-    canvas = nullptr;
-    canvasUsesStaging = false;
+void allocateLocalPages() {
+    canvas = static_cast<uint16_t*>(ps_malloc(CanvasBytes));
+    for (auto& page : localPages)
+        page = static_cast<lcd::LocalPage*>(ps_malloc(sizeof(lcd::LocalPage)));
+    lcd::log("local canvas=%u packed_each=%u allocated=%d\n", unsigned(CanvasBytes),
+             unsigned(sizeof(lcd::LocalPage)), canvas && localPages[0] && localPages[1]);
 }
 
 bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
@@ -467,26 +503,29 @@ void loadResidentCache() {
         owner.mainChanged(state.cachedIds[0]);
         lcd::saveOwner(prefs, owner);
     }
+    refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
     if (owner.overrideArt.id[0]) {
-        overrideFrame = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
-        bool restored = loadResidentFrame("/override.vnr", overrideFrame, owner.overrideArt.id);
-        for (int slot = firstSpare; !restored && overrideFrame && slot < lcd::SCREEN_SLOTS; ++slot) {
+        for (int slot = firstSpare; slot < lcd::SCREEN_SLOTS; ++slot) {
             if (strcmp(state.cachedIds[slot], owner.overrideArt.id) != 0) continue;
-            memcpy(overrideFrame, residentFrames[slot], lcd::FRAME_BYTES);
-            deferredOverride.replace(owner.overrideArt.id, {}, millis());
+            overrideFrame = residentFrames[slot];
             overrideSource = slot;
-            restored = true;
+            deferredOverride.replace(owner.overrideArt.id, {}, millis());
+            break;
         }
-        ownOverrideFrame = restored;
-        if (!restored) {
-            free(overrideFrame);
-            overrideFrame = nullptr;
+        if (!overrideFrame) {
+            overrideFrame = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
+            ownOverrideFrame = loadResidentFrame("/override.vnr", overrideFrame, owner.overrideArt.id);
+            if (!ownOverrideFrame) {
+                free(overrideFrame);
+                overrideFrame = nullptr;
+            }
+        }
+        if (!overrideFrame) {
             owner.overrideArt = {};
             owner.cursor = -1;
             lcd::saveOwner(prefs, owner);
         }
     }
-    refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
     if (!beginPanel()) lcd::log("error=panel-begin\n");
     for (auto& pixels : clockPixels) {
         // Keep internal room for connection setup and TLS. If the internal
@@ -503,6 +542,9 @@ void loadResidentCache() {
              unsigned(heap_caps_get_free_size(internal)),
              unsigned(heap_caps_get_largest_free_block(internal)));
 #endif
+    lcd::log("psram staging=%u override=%u max_wire=%u\n",
+             refreshCache.staging ? unsigned(lcd::FRAME_BYTES) : 0,
+             ownOverrideFrame ? unsigned(lcd::FRAME_BYTES) : 0, unsigned(lcd::FRAME_WIRE_MAX));
     lcd::log("psram total=%u free=%u largest=%u slots=%u/%u loaded=%u load_ms=%lu\n",
              unsigned(ESP.getPsramSize()), unsigned(ESP.getFreePsram()),
              unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
@@ -557,14 +599,41 @@ void copyPatch(uint16_t* out, const uint16_t* source, lcd::ScanRect r) {
         memcpy(out + y * r.w, source + (r.y + y) * lcd::WIDTH + r.x, size_t(r.w) * 2);
 }
 
+template<class Paint>
+int drawLocalScene(Paint paint, lcd::ReadoutRect damage = {}) {
+    if (!canvas || !beginPanel() || !panel.waitForPresent()) return -1;
+    const int next = displayedLocal == 0 ? 1 : 0;
+    auto* page = localPages[next];
+    if (!page) return -1;
+    for (int y = 0; y < lcd::HEIGHT; y += CanvasRows) {
+        static_assert(lcd::HEIGHT % CanvasRows == 0);
+        const bool unchanged = damage.h && displayedLocal >= 0 &&
+            (y >= damage.y + damage.h || y + CanvasRows <= damage.y);
+        bool stored;
+        if (unchanged) {
+            stored = page->copyBand(*localPages[displayedLocal], y, CanvasRows);
+        } else {
+            paint(lcd::SettingsSurface{canvas, y, CanvasRows});
+            stored = page->encodeBand(canvas, y, CanvasRows);
+        }
+        if (!stored) {
+            lcd::log("settings error=packed-page-limit\n");
+            return -1;
+        }
+    }
+    return next;
+}
+
 // Publish the resident image and small, already rendered patches together.
-bool presentScreen(const uint16_t* source, bool localSettings = false, bool* clockValid = nullptr) {
+bool presentScreen(const uint16_t* source, bool localSettings = false,
+                   bool* clockValid = nullptr, int local = -1) {
     if (!beginPanel()) return false;
     const int sceneIndex = panel.prepare();
     if (sceneIndex < 0) return false;
     lcd::ScanFrame scene{};
     scene.pixels = source;
-    if (!localSettings && source != canvas) {
+    if (local >= 0) scene.local = localPages[local];
+    if (source && !localSettings) {
         if (auto* status = statusPixels[sceneIndex]) {
             if (state.offline) {
                 constexpr lcd::ScanRect r{0, 0, StatusWidth, OfflineHeight};
@@ -589,40 +658,45 @@ bool presentScreen(const uint16_t* source, bool localSettings = false, bool* clo
         auto* pixels = clockPixels[sceneIndex];
         static_assert(patchFitsPanel(lcd::CLOCK_GAP) && patchFitsPanel(lcd::ART_CORNER));
         const auto r = lcd::readoutRect(clockSlot);
-        if (!lcd::isLcarsSlot(clockSlot)) copyPatch(pixels, source, r);
+        if (!localSettings && !lcd::isLcarsSlot(clockSlot)) copyPatch(pixels, source, r);
         const bool valid = renderClock(pixels);
         if (clockValid) *clockValid = valid;
         scene.patches[2] = {r, pixels};
     }
     panel.present(sceneIndex, scene, settings.brightness);
+    displayedLocal = local;
     return true;
 }
 
-bool showSettings() {
-    auto* pixels = localCanvas(true);
-    if (!pixels) { lcd::log("settings error=allocation\n"); closeSettings("error"); return false; }
+bool showSettings(lcd::ReadoutRect damage) {
     char footer[192];
     snprintf(footer, sizeof footer, "VENTANAL · %s · WI-FI %s · v%s",
              lcd::installation.profile, WiFi.status() == WL_CONNECTED ? "OK" : "OFFLINE",
              lcd::FIRMWARE_VERSION);
     const bool busy = checkQueued || refreshCheckingUpdates || installQueued != lcd::UpdateSource::None;
-    if (updatesPage) {
-        lcd::drawUpdatePage(pixels, hostOffer.version, githubOffer.version, updateNotice, busy);
-    } else {
-        lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer);
-        if (!updateBoot.pending) {
-            const char* version = hostOffer.version[0] ? hostOffer.version : githubOffer.version;
-            char label[48] = "Firmware updates";
-            if (version[0]) lcd::updateTitle(label, version);
-            lcd::updateButton(pixels, lcd::UPDATE_MENU, label);
+    const int local = drawLocalScene([&](lcd::SettingsSurface pixels) {
+        if (updatesPage) {
+            const bool waiting = installQueued != lcd::UpdateSource::None;
+            lcd::drawUpdatePage(pixels, hostOffer.version, githubOffer.version,
+                                waiting ? "Waiting for refresh..." : updateNotice, busy, waiting);
+        } else {
+            lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer);
+            if (!updateBoot.pending) {
+                const char* version = hostOffer.version[0] ? hostOffer.version : githubOffer.version;
+                char label[48] = "Firmware updates";
+                if (version[0]) lcd::updateTitle(label, version);
+                lcd::updateButton(pixels, lcd::UPDATE_MENU, label);
+            }
         }
-    }
+    }, damage);
     clockSlot = clockBuffersReady() ? 1 : -1;
-    const bool ok = presentScreen(pixels, true);
+    const bool ok = local >= 0 && presentScreen(nullptr, true, nullptr, local);
     lcd::log("settings draw=%d brightness=%u solarListed=%d batteryButton=%d\n",
              ok, settings.brightness, solarPublished(), settingsBatteryButton());
     return ok;
 }
+
+bool showSettings() { return showSettings({}); }
 
 const uint8_t* screenFrame(int slot) {
     if (slot == 0 && owner.overrideArt.id[0]) return overrideFrame;
@@ -642,21 +716,22 @@ bool show(int index) {
     const uint16_t* pixels = nullptr;
     clockSlot = frame && clockBuffersReady() ? slot : -1;
     if (frame) pixels = framePixels(frame);
-    else {
-        auto* waiting = localCanvas();
-        if (!waiting) { lcd::log("blit error=allocation\n"); return false; }
-        lcd::drawWaiting(waiting, lcd::WIDTH, lcd::HEIGHT,
-                         installationReady ? lcd::installation.host : "Provision Wi-Fi and host over USB",
-                         installationReady);
-        if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
-            const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
-                          || refreshLabel.label() == lcd::RefreshLabel::Failed;
-            lcd::drawRefreshLabel(waiting, lcd::WIDTH, lcd::HEIGHT, text,
-                                  red ? lcd::RGB565_RED : lcd::RGB565_WHITE);
-        }
-        pixels = waiting;
+    int local = -1;
+    if (!frame) {
+        local = drawLocalScene([&](lcd::SettingsSurface band) {
+            lcd::drawWaiting(band.pixels, lcd::WIDTH, band.rows,
+                             installationReady ? lcd::installation.host : "Provision paired HTTPS over USB",
+                             installationReady, band.first);
+            if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
+                const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
+                              || refreshLabel.label() == lcd::RefreshLabel::Failed;
+                lcd::drawRefreshBadge(band.pixels, lcd::WIDTH, band.rows, text,
+                    red ? lcd::RGB565_RED : lcd::RGB565_WHITE, lcd::HEIGHT - 14 - band.first);
+            }
+        });
+        if (local < 0) return false;
     }
-    const bool ok = presentScreen(pixels) && frame;
+    const bool ok = presentScreen(pixels, false, nullptr, local) && frame;
     state.drawn = ok;
     if (ok) lcd::log("photo-ready slot=%s clock=board region-only-minute-redraw battery=none\n", lcd::SLOT_NAMES[slot]);
     lcd::log("blit screen=%s id=%.16s cache=%s offline=%d brightness=%u ms=%lu\n",
@@ -670,10 +745,10 @@ void tickClock() {
     if (!powerSession.screenOn || powerSession.chargeShowing || clockSlot < 0 ||
         (!settingsPage.active && !state.drawn) || time(nullptr) / 60 == drawnMinute) return;
     const auto* frame = settingsPage.active ? nullptr : screenFrame(clockSlot);
-    const auto* source = settingsPage.active ? canvas : framePixels(frame);
-    if (!source) return;
+    const auto* source = framePixels(frame);
+    if (!source && displayedLocal < 0) return;
     bool valid = false;
-    const bool ok = presentScreen(source, settingsPage.active, &valid);
+    const bool ok = presentScreen(source, settingsPage.active, &valid, displayedLocal);
     const auto r = lcd::readoutRect(clockSlot);
     lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
              valid, settingsPage.active ? "settings" : lcd::SLOT_NAMES[clockSlot], r.x, r.y, r.w, r.h,
@@ -714,7 +789,7 @@ void logRefreshLabel() {
 // clock is trustworthy: before the first NTP sync the backlight stays on.
 void backlightRefresh() {
     quietBlanking = false;
-    if (!powerSession.screenOn || installQueued != lcd::UpdateSource::None) {
+    if (!powerSession.screenOn) {
         setBacklight(false);
         return;
     }
@@ -725,13 +800,30 @@ void backlightRefresh() {
     const bool quiet = lcd::quietApplies(local.tm_year + 1900,
                                          local.tm_hour * 60 + local.tm_min,
                                          state.manifest);
-    quietBlanking = quiet && millis() >= touchUntilMs;
+    quietBlanking = quiet && installQueued == lcd::UpdateSource::None && millis() >= touchUntilMs;
     setBacklight(!quietBlanking && panel.handle());
 }
 
-// The Arduino core masks the RGB ISR while flash is being written. Keep
-// the panel dark during saves and let its automatic VSYNC restart finish
-// before lighting the display again.
+#if defined(VENTANAL_LCD_LIT_NVS) && defined(CONFIG_SPIRAM_XIP_FROM_PSRAM)
+constexpr bool LitNvsWrites = true;
+#else
+constexpr bool LitNvsWrites = false;
+#endif
+#if defined(VENTANAL_LCD_LIT_CACHE) && defined(CONFIG_SPIRAM_XIP_FROM_PSRAM)
+constexpr bool LitCacheWrites = true;
+#else
+constexpr bool LitCacheWrites = false;
+#endif
+
+constexpr uint32_t LitSaveIdleMs = 5000;
+
+bool litFrameSaveAllowed(uint32_t now) {
+    return LitCacheWrites && !settingsPage.active && installQueued == lcd::UpdateSource::None
+        && powerSession.idle(now) >= LitSaveIdleMs;
+}
+
+// Keep the conservative pause at write sites until their lit XIP path
+// is measured. Give scanout time to settle before restoring the backlight.
 class ScanoutSavePause {
 public:
     explicit ScanoutSavePause(bool saving = true) : restore_(saving && backlightState) {
@@ -821,11 +913,7 @@ uint8_t* clearOverrideSave() {
 void applyResidentFrame() {
     const auto frame = pendingFrame;
     if (frame.slot < 0) {
-        if (!canvasUsesStaging && !panel.references(canvas)) {
-            free(canvas);
-            canvas = nullptr;
-        }
-        reclaimCacheMemory(frame.requestedBytes);
+        if (!backlightState || litFrameSaveAllowed(millis())) reclaimCacheMemory(frame.requestedBytes);
         xSemaphoreGive(frameCopied);
         return;
     }
@@ -847,7 +935,7 @@ void applyResidentFrame() {
     auto& id = state.cachedIds[frame.slot];
     const char* nextId = frame.info ? frame.info->id : "";
     const bool changed = strcmp(id, nextId) != 0;
-    if (mounted && (changed || refreshCache.forceDownloads)) {
+    if (mounted && changed) {
         auto& save = deferredFrames[frame.slot];
         if (save.replace(nextId, *frame.body, millis())) {
             lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
@@ -884,14 +972,11 @@ bool persistDeferred(bool memoryPressure) {
     // archive is committed. Other slots can save in either order.
     const auto due = [now, memoryPressure](const lcd::DeferredSave& save) {
         if (memoryPressure) return save.dueUnderPressure(now);
-        uint32_t elapsed = now - save.queuedAt;
-#ifdef VENTANAL_LCD_DIAG_PANEL
-        if (elapsed >= 12000) elapsed = lcd::MAX_SAVE_DELAY_MS; // exercise the deadline
-#endif
-        return lcd::persistNow(backlightState, quietBlanking, elapsed, save.ready(now));
+        return save.ready(now) && (!backlightState || now - save.queuedAt >= LitSaveIdleMs);
     };
     int slot = -1;
-    const bool saveFrames = mounted && (memoryPressure || !settingsPage.active);
+    const bool saveFrames = mounted && (!backlightState ||
+        (litFrameSaveAllowed(now) && (memoryPressure || !refreshBusy)));
     lcd::DeferredSave* chosen = saveFrames && due(deferredOverride) ? &deferredOverride : nullptr;
     if (saveFrames && !chosen) {
         for (int i = 0; i < lcd::SCREEN_SLOTS; ++i) {
@@ -907,7 +992,7 @@ bool persistDeferred(bool memoryPressure) {
     if (!chosen && !saveSelection) return false;
 
     const bool wasLit = backlightState;
-    ScanoutSavePause pause;
+    ScanoutSavePause pause(saveSelection && !LitNvsWrites);
     if (saveSelection) {
         const bool saved = lcd::saveSelection(prefs, screenIndex, spareCursor);
         if (saved) selectionSave.restored(screenIndex, spareCursor);
@@ -916,6 +1001,7 @@ bool persistDeferred(bool memoryPressure) {
                  screenIndex, spareCursor, saved, wasLit);
     }
     if (chosen) {
+        const auto scanBefore = panel.health();
         const uint32_t started = millis();
         const size_t bytes = chosen->body.size;
         bool ok;
@@ -934,6 +1020,13 @@ bool persistDeferred(bool memoryPressure) {
             slot < 0 ? "override" : lcd::SLOT_NAMES[slot], chosen->id, unsigned(bytes), ok,
             static_cast<unsigned long>(millis() - started),
             static_cast<unsigned long>(started - chosen->queuedAt), wasLit);
+        if (wasLit) {
+            const auto scanAfter = panel.health();
+            lcd::log("cache persist scan restart=%u short=%u peak_us=%u max_gap_us=%u\n",
+                     unsigned(scanAfter.lateRestarts - scanBefore.lateRestarts),
+                     unsigned(scanAfter.shortFrames - scanBefore.shortFrames),
+                     unsigned(scanAfter.maxFillUs), unsigned(scanAfter.maxVsyncGapUs));
+        }
         if (ok) *chosen = {};
         else {
             chosen->failedAt = millis();
@@ -972,7 +1065,7 @@ void refreshWorker(void*) {
 // Kick a refresh on the worker task; loop() keeps servicing touch and the
 // backlight while it runs. At most one worker may be in flight.
 bool startRefresh(bool redraw, bool check = false) {
-    if (refreshBusy || (!check && canvasUsesStaging)) return false;
+    if (refreshBusy) return false;
     refreshCheckingUpdates = check;
     if (!check) {
         formatOtaReport(refreshOtaReport, updateBoot.journal.record);
@@ -981,7 +1074,11 @@ bool startRefresh(bool redraw, bool check = false) {
         memcpy(refreshIds, state.cachedIds, sizeof refreshIds);
 #ifdef VENTANAL_LCD_DIAG_PANEL
         refreshCache.forceDownloads = fetchCounter == 0;
+#ifdef VENTANAL_LCD_DIAG_F3
+        refreshCache.forceDownloads = true;
 #endif
+#endif
+        refreshCache.health = panel.health();
         refreshSettings = settings;
         owner.queue.query(refreshSkips,sizeof refreshSkips);
         sentSkipRevision=skipRevision;
@@ -990,11 +1087,11 @@ bool startRefresh(bool redraw, bool check = false) {
         lastFetchMs = millis();
     }
     refreshBusy = true;
-    // RGB/GDMA interrupts were allocated on the loop core. Let them
-    // preempt PSRAM receive and inflate work instead of contending with
-    // that worker on the other core.
+    // Keep display drawing and the worker together. With the normal
+    // same-core placement the RGB/GDMA ISRs preempt both PSRAM clients.
+    const int workerCore = xPortGetCoreID();
     if (xTaskCreatePinnedToCore(refreshWorker, "ventanal-refresh", WORKER_STACK_BYTES,
-                                nullptr, 1, nullptr, xPortGetCoreID()) != pdPASS) {
+                                nullptr, 1, nullptr, workerCore) != pdPASS) {
         refreshBusy = refreshCheckingUpdates = false;
         lcd::log("refresh error=task-create\n");
         return false;
@@ -1007,7 +1104,7 @@ bool startRefresh(bool redraw, bool check = false) {
 void applyFinishedRefresh() {
     if (refreshCheckingUpdates) {
         if (githubStaging.checked) {
-            ScanoutSavePause pause;
+            ScanoutSavePause pause(!LitNvsWrites);
             githubLastCheck = githubStaging.checked;
             lcd::validateOffer(githubStaging.offer, lcd::UpdateSource::GitHub, githubOffer);
             if (!lcd::saveGithubCheck(prefs, githubStaging)) lcd::log("ota error=nvs-check\n");
@@ -1047,6 +1144,7 @@ void applyFinishedRefresh() {
             }
         }
     }
+    wifiRetry.finished(millis(), refreshStaging.wifiOk);
     const unsigned before = owner.queue.count;
     lcd::acknowledgeSkips(owner, skipRevision - sentSkipRevision, refreshStaging.manifestOk);
     const bool writesOwner = before != owner.queue.count;
@@ -1060,7 +1158,7 @@ void applyFinishedRefresh() {
     bool redraw;
     {
         const bool ackUpdate = refreshStaging.manifestOk && refreshOtaReport[0] && !staleRollback;
-        ScanoutSavePause pause(writesMetadata || writesOwner || ackUpdate);
+        ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate));
         if (ackUpdate) lcd::acknowledgeUpdate(prefs, updateBoot, refreshOtaReport, refreshOtaApproval);
         redraw = lcd::applyRefresh(state, screenIndex, spareCursor, prefs, refreshStaging,
                                    refreshRequested, settings);
@@ -1095,25 +1193,34 @@ void tickUpdateBoot() {
     if (!updateBoot.pending) return;
     if (updateManifestVerified.load() && WiFi.status() == WL_CONNECTED
         && state.drawn && panel.waitForPresent()) {
+        const auto before = panel.health();
+#if defined(VENTANAL_LCD_LIT_CONFIRM) && defined(CONFIG_SPIRAM_XIP_FROM_PSRAM)
+        const bool lit = backlightState;
+#else
         ScanoutSavePause pause;
-        if (lcd::confirmUpdate(prefs, updateBoot)) settingsRefreshPending = true;
+        const bool lit = false;
+#endif
+        const bool confirmed = lcd::confirmUpdate(prefs, updateBoot);
+        if (confirmed) {
+            settingsRefreshPending = true;
+            panel.waitForVsync();
+            const auto after = panel.health();
+            lcd::log("ota confirm-scan lit=%d restart=%u short=%u peak_us=%u max_gap_us=%u\n",
+                     lit, unsigned(after.lateRestarts - before.lateRestarts),
+                     unsigned(after.shortFrames - before.shortFrames),
+                     unsigned(after.maxFillUs), unsigned(after.maxVsyncGapUs));
+        }
     }
 }
 
 bool showUpdating() {
-    // The settings page and update notice share the same PSRAM canvas.
-    // Keep the panel dark while retiring and redrawing that canvas.
-    if (!setBacklight(false)) return false;
-    auto* pixels = localCanvas(true);
-    if (!pixels) {
-        backlightRefresh();
-        return false;
-    }
-    lcd::drawSettingsChrome(pixels, false);
-    lcd::drawText(pixels, lcd::WIDTH, lcd::HEIGHT, StatusFont, "Updating...",
-                  150, 210, lcd::rgb565(255,170,0));
+    const int local = drawLocalScene([](lcd::SettingsSurface band) {
+        lcd::drawSettingsChrome(band, false);
+        band.text(StatusFont, "Updating...", 150, 210, lcd::rgb565(255,170,0));
+    });
+    if (local < 0) return false;
     clockSlot = -1;
-    if (!presentScreen(pixels, true) || !panel.waitForPresent() || !panel.waitForVsync()
+    if (!presentScreen(nullptr, true, nullptr, local) || !panel.waitForPresent() || !panel.waitForVsync()
         || !setBacklight(true)) {
         backlightRefresh();
         return false;
@@ -1135,6 +1242,7 @@ void runQueuedUpdate() {
         } else {
             delay(1000);  // Leave the notice visible before blanking for the transfer.
             if (setBacklight(false)) {
+                if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
                 refreshWatchdog.subscribe();
                 const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
                 refreshWatchdog.unsubscribe();
@@ -1155,7 +1263,6 @@ void runQueuedUpdate() {
         }
         if (settingsPage.active) showSettings();
         else {
-            returnStagingCanvas();
             show(screenIndex);
         }
         panel.waitForPresent();
@@ -1172,17 +1279,15 @@ void runQueuedUpdate() {
 // Task 6 calls this from the UI thread when a settings choice changes.
 // An in-flight worker finishes its immutable snapshot; the next pass uses the
 // new visibility so newly enabled screens get downloaded even after a toggle.
-bool applyDeviceSettings(const lcd::DeviceSettings& next) {
+bool applyDeviceSettings(const lcd::DeviceSettings& next, lcd::SettingsHit hit) {
     if(!lcd::validSettings(next)) return false;
     const int previous=screenSlot(screenIndex);
     const bool visibilityChanged=next.showArt!=settings.showArt || next.showWeather!=settings.showWeather
         || next.showSolar!=settings.showSolar;
-    ScanoutSavePause pause;
-    const bool saved = lcd::saveSettings(settingsPrefs, next);
-    if (!saved) return false;
+    settingsDirty = installationReady;
     settings=next;
     lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
-    show(screenIndex);
+    showSettings(lcd::settingsDamage(hit));
     if(visibilityChanged) settingsRefreshPending=true;
     return true;
 }
@@ -1195,23 +1300,24 @@ void closeSettings(const char* reason) {
     touchPoller.controlsMode(false);
     lcd::remapSelection(screenIndex,spareCursor,settingsReturnSlot,solarPublished(),spareCount(),settings);
     lcd::log("settings close=%s return=%s\n",reason,lcd::SLOT_NAMES[screenSlot(screenIndex)]);
-    returnStagingCanvas();
     show(screenIndex);
 }
 void queueInstall(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
-    // Blank at tap acceptance, before any clock redraw, buffer retirement,
-    // or worker completion can touch scan-out. Retry on the next tap if the
-    // expander did not acknowledge the blank.
-    if (!setBacklight(false)) return;
     queuedOffer = offer;
     installQueued = source;
-    lcd::log("ota install=queued\n");
+    lcd::log("ota install=queued refresh_busy=%d\n", refreshBusy);
+    if (refreshBusy) showSettings();
 }
 
 void settingsTap(int x,int y) {
     if (updatesPage) {
         const bool busy = checkQueued || refreshCheckingUpdates || installQueued != lcd::UpdateSource::None;
-        switch (lcd::hitUpdates(x, y, hostOffer.version[0], githubOffer.version[0], busy)) {
+        const bool waiting = installQueued != lcd::UpdateSource::None;
+        switch (lcd::hitUpdates(x, y, hostOffer.version[0], githubOffer.version[0], busy, waiting)) {
+        case lcd::UpdateHit::Cancel:
+            installQueued = lcd::UpdateSource::None;
+            lcd::log("ota install=cancelled\n");
+            break;
         case lcd::UpdateHit::Later:
             updatesPage = false;
             break;
@@ -1241,8 +1347,8 @@ void settingsTap(int x,int y) {
     if(hit==lcd::SettingsHit::Done) { closeSettings("done"); return; }
     auto next=settings;
     const bool accepted=lcd::applySettingsHit(next,hit,solarPublished(),settingsBatteryMv());
-    if(accepted && applyDeviceSettings(next)) {
-        lcd::log("settings change=%d brightness=%u timeout=%u art=%d weather=%d solar=%d saved=1\n",
+    if(accepted && applyDeviceSettings(next, hit)) {
+        lcd::log("settings change=%d brightness=%u timeout=%u art=%d weather=%d solar=%d queued=1\n",
                  int(hit),settings.brightness,settings.timeoutMin,settings.showArt,settings.showWeather,settings.showSolar);
     } else lcd::log("settings change=%d accepted=0\n",int(hit));
 }
@@ -1313,7 +1419,7 @@ void handleGesture(Gesture gesture, int x, int y) {
                && strcmp(skipped,lcd::selectedArtId(owner))) ++skipRevision;
             spareCursor=owner.cursor;
             screenIndex=0;
-            ScanoutSavePause pause;
+            ScanoutSavePause pause(!LitNvsWrites);
             lcd::saveOwner(prefs,owner);
             lcd::log("spare selected=%d id=%s queued=%u screen=art\n",owner.cursor,lcd::selectedArtId(owner),unsigned(owner.queue.count));
             show(screenIndex);
@@ -1419,15 +1525,13 @@ void showChargeMe() {
         setBacklight(false);
         return;
     }
-    auto* pixels=localCanvas();
-    if(pixels) {
-        lcd::drawSettingsChrome(pixels,false);
-        lcd::drawText(pixels,lcd::WIDTH,lcd::HEIGHT,StatusFont,
-                      "CHARGE ME",280,240,lcd::rgb565(221,68,68));
-        clockSlot = -1;
-        presentScreen(pixels);
-    } else lcd::log("power error=charge-allocation\n");
-    clockSlot=-1;
+    const int local = drawLocalScene([](lcd::SettingsSurface band) {
+        lcd::drawSettingsChrome(band, false);
+        band.text(StatusFont, "CHARGE ME", 280, 240, lcd::rgb565(221,68,68));
+    });
+    clockSlot = -1;
+    if (local >= 0) presentScreen(nullptr, false, nullptr, local);
+    else lcd::log("power error=charge-allocation\n");
     powerSession.showCharge(millis());
     setBacklight(true);
     lcd::log("power charge-me seconds=10\n");
@@ -1448,6 +1552,7 @@ void restoreTouchWake() {
 }
 void sleepPower() {
     setBacklight(false);
+    if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
     persistDeferred(false); // selection becomes due on the same transition to dark
     // Let loop() drain one file per pass before entering light sleep.
     if (!settingsPage.active && pendingCacheSave(millis())) {
@@ -1514,6 +1619,70 @@ void tickPower() {
     }
 }
 
+#ifdef VENTANAL_LCD_DIAG_F3
+void probeLitWrites(uint32_t now) {
+    if (stressProfile != 2 || stressSettingsCycles < 20 || writeProbeCount >= 60 || !canvas || !mounted || !backlightState
+        || now - writeProbeAt < 2250 || refreshBusy) return;
+    writeProbeAt = now;
+    const auto before = panel.health();
+    ++writeProbeCount;
+    bool nvsOk;
+    {
+        lcd::ScanScope writing(lcd::ScanActivity::Nvs);
+        nvsOk = prefs.putUInt("f3-write-probe", writeProbeCount) == sizeof(uint32_t);
+    }
+    bool fsOk = true;
+    {
+        lcd::ScanScope writing(lcd::ScanActivity::LittleFS);
+        memset(canvas, 0xA5, 1024);
+        File output = LittleFS.open("/f3-probe.tmp", "w");
+        if (!output) fsOk = false;
+        else {
+            for (int size = 0; size < 64 * 1024; size += 1024) {
+                if (output.write(reinterpret_cast<uint8_t*>(canvas), 1024) != 1024) {
+                    fsOk = false;
+                    break;
+                }
+            }
+            output.close();
+        }
+        fsOk = LittleFS.remove("/f3-probe.tmp") && fsOk;
+    }
+    if (writeProbeCount == 60) prefs.remove("f3-write-probe");
+    const auto after = panel.health();
+    lcd::log("diag lit-write seq=%u nvs=%d fs=%d restart=%u short=%u peak_us=%u max_gap_us=%u\n",
+             writeProbeCount, nvsOk, fsOk, unsigned(after.lateRestarts - before.lateRestarts),
+             unsigned(after.shortFrames - before.shortFrames), unsigned(after.maxFillUs),
+             unsigned(after.maxVsyncGapUs));
+}
+#endif
+
+#if defined(VENTANAL_LCD_DIAG_F3) && defined(VENTANAL_LCD_DIAG_INSTALL_VERSION)
+void probeBusyInstall() {
+    static unsigned phase = 0;
+    if (phase >= 2 || stressProfile != 2 || stressCycles != 90 || writeProbeCount != 60
+        || strcmp(hostOffer.version, VENTANAL_LCD_DIAG_INSTALL_VERSION)
+        || refreshBusy || !backlightState) return;
+    if (phase == 0 && !startRefresh(true)) return;
+    handleGesture(Gesture::Next, 600, 20);
+    handleGesture(Gesture::Next, 500, 55);
+    handleGesture(Gesture::Next, 650, 138);
+    if (phase == 0) {
+        const bool waitingLit = refreshBusy && backlightState && installQueued == lcd::UpdateSource::Host;
+        handleGesture(Gesture::Next, 660, 411);
+        const bool cancelled = backlightState && installQueued == lcd::UpdateSource::None;
+        lcd::log("diag ota waiting_lit=%d cancelled_lit=%d refresh_busy=%d\n",
+                 waitingLit, cancelled, refreshBusy);
+        if (!cancelled || !waitingLit) {
+            installQueued = lcd::UpdateSource::None;
+            phase = 2;
+        }
+        closeSettings("diag");
+    }
+    ++phase;
+}
+#endif
+
 }  // namespace
 
 void setup() {
@@ -1527,7 +1696,9 @@ void setup() {
 #endif
     Serial.begin(115200);
     delay(300);
-    lcd::log("ventanal lcd43b boot fw=%s\n", lcd::FIRMWARE_VERSION);
+    const auto* slot = esp_ota_get_running_partition();
+    lcd::log("ventanal lcd43b boot fw=%s app=%s slot=%s\n", lcd::FIRMWARE_VERSION,
+             esp_app_get_description()->version, slot ? slot->label : "unknown");
     if (VENTANAL_TEST_RELEASE_KEY)
         lcd::log("!!! TEST RELEASE KEY - BENCH FIRMWARE ONLY !!!\n");
     lcd::log("usb cdc hw=%d onboot=%d\n", ARDUINO_USB_MODE,
@@ -1544,6 +1715,7 @@ void setup() {
     Wire.setClock(400000);
     if (!expander.begin()) lcd::log("error=ch422g-begin\n");
     setBacklight(false);
+    allocateLocalPages();
     installationReady = lcd::initializeInstallation(pendingUpdate);
     if (installationReady && !prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
     updateBoot = lcd::readUpdateBoot(prefs);
@@ -1634,6 +1806,16 @@ void setup() {
     powerSession.activity(millis());
     show(screenIndex);            // cached frame, or the waiting screen
 #ifdef VENTANAL_LCD_DIAG_PANEL
+#ifdef VENTANAL_LCD_DIAG_F3
+#ifdef VENTANAL_LCD_DIAG_WRITE_ONLY
+    stressProfile = 2;
+    stressCycles = 90;
+    stressSettingsCycles = 20;
+    lcd::log("diag write-only=start\n");
+#else
+    lcd::log("diag matrix profile=0 level=default split=0\n");
+#endif
+#endif
     stressStartMs = vsyncReportMs = millis();
     touchUntilMs = stressStartMs + 182000;
     vsyncReportFrames = vsyncFrames.load(std::memory_order_relaxed);
@@ -1667,20 +1849,13 @@ void loop() {
         delay(100);
         return;
     }
-    if (installQueued == lcd::UpdateSource::None) pollTouch(now);
+    pollTouch(now);
     reportBootScanout(now);
-    if (lcd::pairingCounterFlash.exchange(false)) restartScanout("pairing-counter");
+    if (lcd::pairingCounterFlash.exchange(false) && !LitNvsWrites) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
     if (refreshBusy && xSemaphoreTake(frameStaged, 0) == pdTRUE) applyResidentFrame();
-    if (installQueued != lcd::UpdateSource::None) {
-        if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
-            applyFinishedRefresh();
-        runQueuedUpdate();
-        delay(2);
-        return;
-    }
     tickClock();
-    if(settingsPage.expired(millis())) closeSettings("idle");
+    if(installQueued == lcd::UpdateSource::None && settingsPage.expired(millis())) closeSettings("idle");
     backlightRefresh();
     // The label hold (~2 s) expires here: redraw the cached frame clean.
     if (refreshLabel.tick(now)) {
@@ -1690,6 +1865,24 @@ void loop() {
 #ifdef VENTANAL_LCD_DIAG_PANEL
     panelVsyncReport(now);
     panel.reportBounce(now);
+#ifdef VENTANAL_LCD_DIAG_F3
+    if (stressSettingsCycles < 20) {
+        const uint32_t base = 2000 * (stressSettingsCycles + 1);
+        if (!stressSettingsOpen && now - stressStartMs >= base + 250) {
+            if (!refreshBusy) startRefresh(true);
+            handleGesture(Gesture::Next, 600, 20);
+            stressSettingsOpen = settingsPage.active;
+            lcd::log("diag settings open=%u active=%d refresh_busy=%d\n",
+                     stressSettingsCycles + 1, stressSettingsOpen, refreshBusy);
+        } else if (stressSettingsOpen && now - stressStartMs >= base + 1250) {
+            handleGesture(Gesture::Next, 690, 410);
+            stressSettingsOpen = false;
+            ++stressSettingsCycles;
+            lcd::log("diag settings close=%u active=%d\n",
+                     stressSettingsCycles, settingsPage.active);
+        }
+    }
+#endif
     if (stressCycles < 90 && now - stressStartMs >= (stressCycles + 1) * 2000u) {
         ++stressCycles;
         lcd::log("diag panel cycle=%u elapsed_ms=%lu screen=%s refresh_busy=%d\n",
@@ -1697,22 +1890,77 @@ void loop() {
                  lcd::SLOT_NAMES[screenSlot((screenIndex + 1) % screenCount())], refreshBusy);
         selectionSave.activity(now);
         handleGesture(Gesture::Next, lcd::WIDTH - 1, lcd::HEIGHT / 2);
-        if (stressCycles == 90)
+        if (stressCycles == 90) {
+            const auto health = panel.health();
+            lcd::log("diag totals restart=%u short=%u peak_us=%u max_gap_us=%u\n",
+                     unsigned(health.lateRestarts), unsigned(health.shortFrames),
+                     unsigned(health.maxFillUs), unsigned(health.maxVsyncGapUs));
             lcd::log("diag panel stress=done max_gap_ms=%lu\n",
                      static_cast<unsigned long>(vsyncMaxGapMs.load(std::memory_order_relaxed)));
+#ifdef VENTANAL_LCD_DIAG_F3
+            stressAdvance = true;
+#endif
+        }
     }
+#ifdef VENTANAL_LCD_DIAG_F3
+    if (stressAdvance && !refreshBusy) {
+        stressAdvance = false;
+        if (stressProfile == 2) {
+            lcd::log("diag matrix=done\n");
+        } else {
+            setBacklight(false);
+            if (!stopPanel()) {
+                lcd::log("diag matrix=failed panel-stop\n");
+                ESP.restart();
+            }
+            ++stressProfile;
+            scanOtherCore = stressProfile == 2;
+            Panel::setInterruptLevel(3);
+            lcd::log("diag matrix profile=%u level=3 split=%d\n", stressProfile, scanOtherCore);
+            if (beginPanel()) {
+                show(screenIndex);
+                backlightRefresh();
+                stressCycles = stressSettingsCycles = 0;
+                stressStartMs = millis();
+                touchUntilMs = stressStartMs + 182000;
+                vsyncLastMs = 0;
+                vsyncMaxGapMs.store(0, std::memory_order_relaxed);
+                startRefresh(true);
+            } else lcd::log("diag matrix=failed panel-begin\n");
+        }
+    }
+#endif
 #endif
     if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
         applyFinishedRefresh();
     tickUpdateBoot();
     runQueuedUpdate();
+#ifdef VENTANAL_LCD_DIAG_F3
+    probeLitWrites(now);
+#ifdef VENTANAL_LCD_DIAG_INSTALL_VERSION
+    probeBusyInstall();
+#endif
+#endif
     const uint32_t interval=powerPollMs();
-    if(powerSession.refreshDue(now,lastFetchMs,interval,powerLevel(),refreshBusy,settingsRefreshPending)) {
+    const bool networkIdle = !refreshBusy && installQueued == lcd::UpdateSource::None;
+    const bool refreshDue = wifiRetry.waiting()
+        ? networkIdle && wifiRetry.due(now)
+        : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,
+                                  settingsRefreshPending);
+    if (refreshDue) {
         const bool started=startRefresh(false);
         powerSession.refreshStarted(started);
         if(started) settingsRefreshPending=false;
     }
+    static uint32_t settingsSaveFailedAt = 0;
+    static bool settingsSaveFailed = false;
+    if (settingsDirty && (!backlightState || (LitNvsWrites && !settingsPage.active))
+        && (!settingsSaveFailed || now - settingsSaveFailedAt >= 5000)) {
+        settingsDirty = !lcd::saveSettings(settingsPrefs, settings);
+        settingsSaveFailed = settingsDirty;
+        settingsSaveFailedAt = millis();
+    }
     persistDeferred(false);
-    if (!updateBoot.pending) tickPower();
+    if (!updateBoot.pending && installQueued == lcd::UpdateSource::None) tickPower();
     delay(2);
 }

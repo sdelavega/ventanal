@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "installation.h"
+#include "../common/release_key.h"
 
 #if !defined(VENTANAL_RELEASE_BUILD) && defined(VENTANAL_LCD_CONFIG)
 #include VENTANAL_LCD_CONFIG
@@ -48,9 +49,10 @@ bool initializeInstallation(bool pendingUpdate) {
         VENTANAL_HOST_URL, VENTANAL_TZ, VENTANAL_DEVICE_ID, VENTANAL_PAIRING_ID,
         VENTANAL_HOST_CERT_PEM, VENTANAL_DEVICE_KEY
     };
-    return loadInstallation(installation, &seed, VENTANAL_FORCE_PROVISION, !pendingUpdate);
+    if (!loadInstallation(installation, &seed, VENTANAL_FORCE_PROVISION, !pendingUpdate)) return false;
 #else
-    return loadInstallation(installation, nullptr, 0, !pendingUpdate);
+    if (!loadInstallation(installation, nullptr, 0, !pendingUpdate)) return false;
 #endif
+    return installationTransportAllowed(installation, VENTANAL_TEST_RELEASE_KEY);
 }
 }  // namespace lcd

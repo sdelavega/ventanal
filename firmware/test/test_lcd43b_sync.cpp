@@ -581,7 +581,7 @@ int main() {
         assert(!strcmp(result.firmware.path, "/firmware/lcd43b-3.0.0.bin"));
         assert(!strcmp(result.firmware.approval, "0123456789abcdef"));
         assert(lastUserAgent == "Ventanal/1.0.0");
-        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"
+        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1&lcd_diag=0,0,0,0"
                                 "&skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb"
                                 "&ota=rolled_back:2.0.0&ota_approval=fedcba9876543210");
     }

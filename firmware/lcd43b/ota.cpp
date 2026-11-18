@@ -320,12 +320,16 @@ bool rolledBackOffer(const UpdateBoot& boot, const UpdateOffer& offer) {
 bool mountUpdateCache(Preferences& prefs) {
     const auto* cache = esp_partition_find_first(ESP_PARTITION_TYPE_DATA,
                                                 ESP_PARTITION_SUBTYPE_DATA_SPIFFS, "littlefs");
-    if (!cache || cache->address != otaCacheOffset || cache->size != otaCacheSize) return false;
+    if (!cache || cache->address != otaCacheOffset) return false;
+    // OTA cannot replace the partition table. Support installations with
+    // the original cache geometry and migrate only after a USB table update.
+    constexpr size_t reservedForCoredump = 0x10000;
+    if (cache->size != otaCacheSize && cache->size != otaCacheSize - reservedForCoredump) return false;
     constexpr char layoutKey[] = "ota-fs-layout";
-    constexpr uint8_t layout = 1;
+    const uint8_t layout = cache->size == otaCacheSize ? 1 : 2;
     if (prefs.getUChar(layoutKey) == layout) return LittleFS.begin(true, "/littlefs", 10, "littlefs");
 
-    // The new start falls inside the former filesystem. Mark migration only
+    // The stored filesystem geometry may differ. Mark migration only
     // after formatting and mounting the new partition. A reset can retry it.
     LittleFS.begin(false, "/littlefs", 10, "littlefs");
     LittleFS.end();
@@ -421,6 +425,7 @@ bool confirmUpdate(Preferences& prefs, UpdateBoot& boot) {
 
 OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
                          UpdateSource source, Watchdog& watchdog) {
+    DownloadPower radio;
     const auto* spare = boot.pending ? nullptr : installSlot();
     UpdateJournal journal{};
     journal.source = source;
@@ -468,6 +473,7 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
 CheckResult checkGithub(int64_t last, GithubCheck& result, Watchdog& watchdog) {
     result = {};
     if (!connectForUpdates(watchdog)) return CheckResult::Failed;
+    DownloadPower radio;
     const int64_t now = time(nullptr);
     if (now < 1704067200) return CheckResult::Failed;
     if (!otaGithubCheckDue(true, now, last)) return CheckResult::NotDue;

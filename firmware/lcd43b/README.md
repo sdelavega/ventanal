@@ -228,3 +228,26 @@ downloads, persistence, clock, Settings, power/sleep policy, panel blits and
 pixel-level overlays. They also check font and Settings geometry generation for
 stale output. Server tests cover rendering and publication, including the LCD
 profile and licence gate. These complement the owner's hardware acceptance.
+
+### LCD bench builds and serial diagnostics
+
+Normal firmware requires a paired HTTPS installation using the provisioned
+host leaf certificate. The local `bench` and `diag` environments use the
+public fixture release key and can also run an unpaired HTTP installation.
+
+Set `lcd43b.version` in a local PlatformIO override before building each
+candidate. The ESP app descriptor identifies bench and diagnostic binaries
+with `-bench` and `-diag` suffixes. Use a newer product version for each OTA
+offer. Before handing a board back after a diagnostic run, replace the
+diagnostic apps in both OTA slots with regular builds.
+
+Capture native USB serial on macOS with
+`python3 firmware/tools/capture_serial.py --port /dev/cu.usbmodem…`.
+This path opens the device without changing DTR or RTS. A conventional
+serial monitor can reset the ESP32-S3 at open. Close captures before
+starting a USB flash.
+
+The coredump table takes 64 KiB from the end of LittleFS. An OTA update
+retains the installed table. After a USB partition-table update, the
+firmware rebuilds the frame cache for the smaller filesystem on the next
+boot. The partition offsets for NVS and both OTA slots are unchanged.

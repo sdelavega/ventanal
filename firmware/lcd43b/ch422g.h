@@ -27,15 +27,19 @@ public:
 
     explicit Ch422g(TwoWire& bus) : bus_(&bus) {}
 
-    // Configure IO0-7 as push-pull outputs, all lines high (backlight on,
-    // resets released, card deselected).
+    // IO_OE is shared. Leave DI0/DI1 high while unused, release reset,
+    // deselect the card and start with DISP low.
     bool begin() {
         if (!write(ADDR_WR_SET, 0x01)) return false;
-        outputs_ = 0xFF;
+        outputs_ = uint8_t(0xFF & ~DISP);
         return write(ADDR_WR_IO, outputs_);
     }
 
-    bool setBacklight(bool on) { return setBit(DISP, on); }
+    bool setBacklight(bool on) {
+        if (!setBit(DISP, on) || bus_->requestFrom(ADDR_RD_IO, uint8_t(1)) != 1) return false;
+        const int readback = bus_->read();
+        return readback >= 0 && bool(readback & DISP) == on;
+    }
 
     // asserted drives the reset line low.
     bool setTouchReset(bool asserted) { return setBit(TP_RST, !asserted); }
@@ -49,8 +53,10 @@ public:
 
 private:
     bool setBit(uint8_t bit, bool high) {
-        outputs_ = high ? uint8_t(outputs_ | bit) : uint8_t(outputs_ & ~bit);
-        return write(ADDR_WR_IO, outputs_);
+        const uint8_t next = high ? uint8_t(outputs_ | bit) : uint8_t(outputs_ & ~bit);
+        if (!write(ADDR_WR_IO, next)) return false;
+        outputs_ = next;
+        return true;
     }
 
     bool write(uint8_t address, uint8_t value) {
@@ -60,5 +66,5 @@ private:
     }
 
     TwoWire* bus_;
-    uint8_t outputs_ = 0xFF;
+    uint8_t outputs_ = uint8_t(0xFF & ~DISP);
 };

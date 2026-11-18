@@ -180,7 +180,7 @@ build/test_lcd43b_gesture: test_lcd43b_gesture.cpp ../lcd43b/gesture.h Makefile
 
 build/test_lcd43b_panel: test_lcd43b_panel.cpp ../lcd43b/panel.cpp ../lcd43b/panel.h ../lcd43b/scanout.h ../lcd43b/scanout_diag.h fakes/Arduino.h fakes/esp_lcd_panel_ops.h fakes/esp_lcd_panel_rgb.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes -Wframe-larger-than=2048 test_lcd43b_panel.cpp ../lcd43b/panel.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -Wframe-larger-than=2048 test_lcd43b_panel.cpp ../lcd43b/panel.cpp $(LDFLAGS) -o $@
 
 build/test_lcd43b_diag: test_lcd43b_diag.cpp ../lcd43b/diag.h ../lcd43b/gesture.h Makefile
 	mkdir -p build

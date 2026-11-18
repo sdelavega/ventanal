@@ -29,6 +29,7 @@ public:
         (VSyncPulse + VBackPorch + VFrontPorch) * LineClocks * 1000000ull / Pclk;
     static_assert(HEIGHT % BounceRows == 0);
 
+    static void setInterruptLevel(int level);
     bool begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observer = nullptr);
     bool stop();
     bool waitForVsync() const;
@@ -40,6 +41,10 @@ public:
     int prepare() const { return panel_ && waitForPresent() ? 1 - submitted_ : -1; }
     void present(int slot, lcd::ScanFrame scene, uint8_t brightness);
     esp_lcd_panel_handle_t handle() const { return panel_; }
+    lcd::ScanHealth health() const {
+        return {lateRestarts_.load(std::memory_order_relaxed), shortFrames_.load(std::memory_order_relaxed),
+                maxFillUs_.load(std::memory_order_relaxed), maxGapUs_.load(std::memory_order_relaxed)};
+    }
     uint32_t vsyncCount() const { return vsyncs_.load(std::memory_order_relaxed); }
 
 #ifdef VENTANAL_LCD_DIAG_PANEL
@@ -55,6 +60,9 @@ private:
     lcd::ScanFrame scenes_[2]{};
     std::atomic<unsigned> requested_{0}, active_{0};
     std::atomic<uint32_t> vsyncs_{0};
+    std::atomic<uint32_t> lateRestarts_{0}, shortFrames_{0}, maxFillUs_{0}, maxGapUs_{0};
+    uint32_t lastVsyncUs_ = 0, lastEofUs_ = 0;
+    unsigned eofs_ = 0;
     int submitted_ = 0;
     std::atomic<unsigned> armed_{0}; // VSYNC writes it; the next row-zero refill consumes it.
 #ifdef VENTANAL_LCD_DIAG_PANEL

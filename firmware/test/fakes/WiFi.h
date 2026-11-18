@@ -14,6 +14,7 @@ struct FakeWiFi {
     void persistent(bool) {}
     void mode(int) {}
     void begin(const char*, const char*) {}
+    int RSSI() { return -50; }
     int status() { return WL_CONNECTED; }
 };
 inline FakeWiFi WiFi;

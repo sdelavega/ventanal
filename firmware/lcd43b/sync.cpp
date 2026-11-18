@@ -22,14 +22,6 @@ namespace lcd {
 
 namespace {
 
-// As on e-paper, keep the radio awake during large transfers and restore
-// the configured power-save mode on every exit from the worker pass.
-struct DownloadPower {
-    wifi_ps_type_t previous = WiFi.getSleep();
-    DownloadPower() { WiFi.setSleep(false); }
-    ~DownloadPower() { WiFi.setSleep(previous); }
-};
-
 bool wifiConnect(Watchdog& watchdog) {
     if (WiFi.status() == WL_CONNECTED) return true;
     WiFi.mode(WIFI_STA);
@@ -40,7 +32,8 @@ bool wifiConnect(Watchdog& watchdog) {
         delay(50);
     }
     const bool connected = WiFi.status() == WL_CONNECTED;
-    log("wifi connected=%d\n", connected);
+    if (connected) log("wifi connected=1 rssi_dbm=%d\n", int(WiFi.RSSI()));
+    else log("wifi connected=0\n");
     return connected;
 }
 
@@ -61,7 +54,7 @@ bool syncTime(Watchdog& watchdog) {
 
 bool fetchManifest(const char* hostUrl, const char* deviceId,
                    RefreshResult& result, Watchdog& watchdog, const char* skips,
-                   const char* otaReport, const char* otaApproval) {
+                   const char* otaReport, const char* otaApproval, ScanHealth health) {
     HostRequest request;
     auto& http = request.http;
     // Skip ids are 16 lowercase hex digits (including restored owner state).
@@ -69,6 +62,13 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     String path = String("/devices/") + deviceId + "/manifest.json?board=" + BOARD_ID
                   + "&fw=" + FIRMWARE_VERSION;
     if (VENTANAL_TEST_RELEASE_KEY) path += "&test_release_key=1";
+    char counters[48];
+    snprintf(counters, sizeof counters, "%lu,%lu,%lu,%lu",
+             static_cast<unsigned long>(health.lateRestarts),
+             static_cast<unsigned long>(health.shortFrames),
+             static_cast<unsigned long>(health.maxFillUs),
+             static_cast<unsigned long>(health.maxVsyncGapUs));
+    path += String("&lcd_diag=") + counters;
     if (skips[0]) path += String("&skips=") + skips;
     if (otaReport[0]) path += String("&ota=") + otaReport;
     if (otaApproval[0]) path += String("&ota_approval=") + otaApproval;
@@ -332,7 +332,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     if (!result.wifiOk) return;
     DownloadPower radio;
     result.timeOk = syncTime(watchdog);
-    if (!fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval)) return;
+    if (!fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval, cache.health)) return;
     result.manifestOk = true;
     if (cache.manifestVerified) cache.manifestVerified();
 

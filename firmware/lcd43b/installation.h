@@ -49,6 +49,10 @@ inline bool validInstallation(const Installation& config) {
         && strspn(config.deviceKey, "0123456789abcdef") == 64;
 }
 
+inline bool installationTransportAllowed(const Installation& config, bool bench) {
+    return validInstallation(config) && (bench || !strncmp(config.host, "https://", 8));
+}
+
 inline bool migrateInstallation(Installation&, size_t) {
     return false;  // Schema 1 is the first stored LCD format.
 }

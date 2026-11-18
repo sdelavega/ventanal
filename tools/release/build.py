@@ -141,7 +141,9 @@ def build(args):
             assets.mkdir()
             defines.write_text(
                 '#define VENTANAL_RELEASE_BUILD 1\n'
+                '#ifndef VENTANAL_FIRMWARE_VERSION\n'
                 f'#define VENTANAL_FIRMWARE_VERSION "{args.version}"\n'
+                '#endif\n'
                 '#ifdef __cplusplus\n'
                 '#include "firmware/common/release_key.h"\n'
                 '#endif\n',
@@ -176,6 +178,8 @@ def build(args):
             ], build_dir / "ventanal.ino.bin", "inkplate13spectra")
         if has_lcd:
             project = work / LCD
+            (project / "platformio.local-release.ini").write_text(
+                f"[lcd43b]\nversion = {args.version}\n", encoding="ascii")
             # Keep PlatformIO's core, packages, download cache and build paths
             # inside the same prefix map as the staged project.
             pio_core = work / "pio-core"

@@ -27,6 +27,12 @@ int main() {
     strcpy(seed.certificate, "synthetic first PEM\nsynthetic second PEM");
     preferences["lcd-sec-counter"] = {1, 2, 3, 4};
     assert(loadInstallation(loaded, &seed));
+    assert(installationTransportAllowed(loaded, false));
+    Installation plain = loaded;
+    strcpy(plain.host, "http://frame.test");
+    plain.pairing[0] = plain.certificate[0] = plain.deviceKey[0] = '\0';
+    assert(installationTransportAllowed(plain, true));
+    assert(!installationTransportAllowed(plain, false));
     assert(!strcmp(loaded.host, seed.host) && !strcmp(loaded.profile, seed.profile));
     assert(!strcmp(loaded.deviceKey, seed.deviceKey) && !strcmp(loaded.pairing, seed.pairing));
     assert(!strcmp(loaded.certificate, seed.certificate));
