@@ -6,6 +6,7 @@
 #include "host_request.h"
 #include "sync.h"
 #include <LittleFS.h>
+#include <esp_littlefs.h>
 #include <algorithm>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
@@ -329,11 +330,11 @@ bool mountUpdateCache(Preferences& prefs) {
     const uint8_t layout = cache->size == otaCacheSize ? 1 : 2;
     if (prefs.getUChar(layoutKey) == layout) return LittleFS.begin(true, "/littlefs", 10, "littlefs");
 
-    // The stored filesystem geometry may differ. Mark migration only
-    // after formatting and mounting the new partition. A reset can retry it.
-    LittleFS.begin(false, "/littlefs", 10, "littlefs");
-    LittleFS.end();
-    if (!LittleFS.format() || !LittleFS.begin(false, "/littlefs", 10, "littlefs")) return false;
+    // Arduino mounts with grow_on_mount. An old superblock can assert
+    // if the physical partition has shrunk, so format the named cache
+    // partition before any attempt to mount it with the new geometry.
+    if (esp_littlefs_format("littlefs") != ESP_OK
+        || !LittleFS.begin(false, "/littlefs", 10, "littlefs")) return false;
     if (prefs.putUChar(layoutKey, layout) == sizeof layout) return true;
     LittleFS.end();
     return false;
