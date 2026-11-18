@@ -27,7 +27,8 @@ int main() {
     assert(!strcmp(loaded.ssid, "owner change"));
     assert(loadSettings(loaded, nullptr, 1)); // Force cannot seed a generic image.
     assert(!strcmp(loaded.ssid, "owner change"));
-    assert(!loadSettings(loaded, &seed, 1)); // Failed force remains retryable.
+    assert(loadSettings(loaded, &seed, 1)); // Failed force leaves the old settings usable.
+    assert(!strcmp(loaded.ssid, "owner change") && loaded.forcedRevision == 0);
     Preferences::failWriteKey.clear();
     assert(loadSettings(loaded, &seed, 1));
     assert(!strcmp(loaded.ssid, seed.ssid));
@@ -38,12 +39,37 @@ int main() {
     assert(loadSettings(loaded, &seed, 2));
     assert(!strcmp(loaded.ssid, seed.ssid));
 
-    const uint32_t oldSchema = settingsSchema - 1;
-    assert(owner.putBytes(settingsKey, &oldSchema, sizeof oldSchema) == sizeof oldSchema);
+    strcpy(loaded.host, "invalid host");
+    assert(owner.putBytes(settingsKey, &loaded, sizeof loaded) == sizeof loaded);
     assert(!loadSettings(loaded));
-    assert(owner.getBytesLength(settingsKey) == sizeof oldSchema);
-    assert(loadSettings(loaded, &seed));
-    assert(loaded.schema == settingsSchema && !strcmp(loaded.certificate, seed.certificate));
+    assert(loadSettings(loaded, &seed)); // Private builds recover a corrupt current record.
+    assert(!strcmp(loaded.host, seed.host));
+
+    auto legacy = seed;
+    legacy.schema = settingsSchema - 1;
+    legacy.forcedRevision = 42;
+    assert(owner.putBytes(settingsKey, &legacy, sizeof legacy) == sizeof legacy);
+    assert(!loadSettings(loaded));
+    auto migrate = +[](InstallationSettings& value, size_t length) {
+        if (value.schema != settingsSchema - 1 || length != sizeof value) return false;
+        value.schema = settingsSchema;
+        return true;
+    };
+    auto loadMigrated = [&](bool persist) {
+        return loadInstallationSettings<InstallationSettings>(
+            loaded, settingsNamespace, settingsKey, nullptr, 0, persist, validSettings, migrate);
+    };
+    assert(loadMigrated(false)); // An unconfirmed image leaves the rollback copy intact.
+    assert(loaded.schema == settingsSchema && loaded.forcedRevision == 42);
+    assert(owner.getBytes(settingsKey, &legacy, sizeof legacy) == sizeof legacy);
+    assert(legacy.schema == settingsSchema - 1);
+    Preferences::failWriteKey = settingsKey;
+    assert(loadMigrated(true));
+    assert(!loadSettings(loaded));
+    Preferences::failWriteKey.clear();
+    assert(loadMigrated(true));
+    assert(loadSettings(loaded) && loaded.forcedRevision == 42);
+    assert(!strcmp(loaded.certificate, seed.certificate));
 
     const uint32_t newSchema = settingsSchema + 1;
     assert(owner.putBytes(settingsKey, &newSchema, sizeof newSchema) == sizeof newSchema);

@@ -169,10 +169,11 @@ inline bool verifyReleaseSignature(const char* json, size_t len, const char* sig
 
 inline ReleaseVerdict checkRelease(const char* json, size_t len, const char* sig,
                                    const char* board, const char* runningVersion,
-                                   uint32_t slotSize, ReleaseInfo& out) {
+                                   uint32_t slotSize, ReleaseInfo& out,
+                                   const uint8_t publicKey[32] = VENTANAL_RELEASE_PUBLIC_KEY) {
     using ventanal_release_detail::versionNumber;
     ReleaseInfo info{};
-    if (!verifyReleaseSignature(json, len, sig, VENTANAL_RELEASE_PUBLIC_KEY)
+    if (!verifyReleaseSignature(json, len, sig, publicKey)
         || !parseRelease(json, len, info)) return ReleaseVerdict::BadSignature;
     if (!board || strcmp(info.board, board) != 0) return ReleaseVerdict::WrongBoard;
     if (!runningVersion) return ReleaseVerdict::NotNewer;

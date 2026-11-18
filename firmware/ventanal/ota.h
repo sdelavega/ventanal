@@ -38,9 +38,24 @@ enum class OtaFailure : uint8_t {
 struct OtaRecord {
     OtaResult result{};
     OtaFailure failure{};
-    uint8_t slot{};
+    uint8_t slot{}; // For failed:attempts, this byte holds the last failure instead.
     char version[otaVersionCapacity]{};
 };
+
+inline bool validOtaRecord(const OtaRecord& record) {
+    if (record.result > OtaResult::Failed || record.failure > OtaFailure::Attempts
+        || !memchr(record.version, '\0', sizeof record.version)) return false;
+    if (record.result == OtaResult::Installing || record.result == OtaResult::Ok
+        || record.result == OtaResult::RolledBack)
+        return record.version[0] && strspn(record.version, "0123456789.") == strlen(record.version);
+    return true;
+}
+
+inline void setOtaFailure(OtaRecord& record, OtaFailure reason, bool exhausted) {
+    record.result = OtaResult::Failed;
+    record.failure = exhausted ? OtaFailure::Attempts : reason;
+    record.slot = exhausted ? static_cast<uint8_t>(reason) : 0;
+}
 
 enum class OtaSlotState { Other, Pending, Valid, Rejected };
 
@@ -83,8 +98,13 @@ inline void formatOtaReport(char (&out)[otaReportCapacity], const OtaRecord& rec
                 "schedule", "interrupted", "attempts"
             };
             const auto reason = static_cast<unsigned>(record.failure);
-            snprintf(out, sizeof out, "failed:%s",
-                     reasons[reason < sizeof reasons / sizeof *reasons ? reason : 0]);
+            const auto last = record.slot;
+            if (record.failure == OtaFailure::Attempts && last && last < sizeof reasons / sizeof *reasons)
+                snprintf(out, sizeof out, "failed:attempts:%s",
+                         reasons[last]);
+            else
+                snprintf(out, sizeof out, "failed:%s",
+                         reasons[reason < sizeof reasons / sizeof *reasons ? reason : 0]);
             break;
         }
         default:
@@ -99,7 +119,7 @@ struct OtaAttempts {
 };
 
 inline bool reserveOtaAttempt(OtaAttempts& attempts, const char* version, const char* approval) {
-    if (strcmp(attempts.version, version) || strcmp(attempts.approval, approval)) {
+    if (strcmp(attempts.approval, approval) || (!approval[0] && strcmp(attempts.version, version))) {
         attempts = {};
         snprintf(attempts.version, sizeof attempts.version, "%s", version);
         snprintf(attempts.approval, sizeof attempts.approval, "%s", approval);
@@ -127,5 +147,6 @@ void acknowledgeOtaReport(Preferences& prefs, OtaBoot& boot);
 bool confirmOtaBoot(Preferences& prefs, OtaBoot& boot, bool manifestOk, bool screenDrawn);
 void rollbackOtaBoot();
 bool otaCacheLayout();
-void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
+// Returns true when a failed attempt should defer frame downloads.
+bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
             int battery, int quietStart, int quietEnd);

@@ -1,6 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+inline constexpr int HTTPC_ERROR_CONNECTION_REFUSED=-1, HTTPC_ERROR_NOT_CONNECTED=-4,
+    HTTPC_ERROR_CONNECTION_LOST=-5, HTTPC_ERROR_READ_TIMEOUT=-11;
 #include "Arduino.h"
 #include <vector>
 #include <map>

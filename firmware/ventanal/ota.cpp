@@ -39,10 +39,9 @@ bool storeRecord(Preferences& prefs, const OtaRecord& record) {
     return false;
 }
 
-void reportFailure(Preferences& prefs, OtaFailure reason) {
+void reportFailure(Preferences& prefs, OtaFailure reason, bool exhausted) {
     OtaRecord record{};
-    record.result = OtaResult::Failed;
-    record.failure = reason;
+    setOtaFailure(record, reason, exhausted);
     char report[otaReportCapacity];
     formatOtaReport(report, record);
     Serial.printf("ota=%s\n", report);
@@ -178,6 +177,19 @@ OtaFailure writeImage(Preferences& prefs, const esp_partition_t& target,
 template<class StillAllowed>
 OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
                        OtaAttempts& attempts, StillAllowed stillAllowed) {
+    // An approval scopes the attempt budget even when its metadata or path
+    // cannot be trusted. Older hosts omit it, so use a bounded path hint.
+    char hint[otaVersionCapacity]{};
+    const char* tail = strrchr(offer.path, '-');
+    if (tail) {
+        ++tail;
+        const size_t len = strspn(tail, "0123456789.");
+        if (len > 1 && len <= sizeof hint && !strcmp(tail + len - 1, ".bin"))
+            memcpy(hint, tail, len - 1);
+    }
+    const auto reservation = reserveAttempt(prefs, attempts, hint, offer.approval);
+    if (reservation != OtaFailure::None) return reservation;
+
     const auto* target = installSlot();
     if (!target) return OtaFailure::Slot;
     ReleaseInfo release{};
@@ -187,8 +199,6 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
     char path[sizeof offer.path];
     hostFirmwarePath(path, version);
     if (strcmp(path, offer.path)) return OtaFailure::Path;
-    const auto reservation = reserveAttempt(prefs, attempts, version, offer.approval);
-    if (reservation != OtaFailure::None) return reservation;
 
     TransportClient localClient;
     auto& client = requestClient(localClient);
@@ -373,14 +383,15 @@ OtaBoot readOtaBoot(Preferences& prefs, bool persisted) {
     if (prefs.isKey(attemptsKey)
         && (prefs.getBytes(attemptsKey, &boot.attempts, sizeof boot.attempts) != sizeof boot.attempts
             || !memchr(boot.attempts.version, '\0', sizeof boot.attempts.version)
-            || !memchr(boot.attempts.approval, '\0', sizeof boot.attempts.approval))) boot.attempts = {};
+            || !memchr(boot.attempts.approval, '\0', sizeof boot.attempts.approval)
+            || (boot.attempts.approval[0] && !validOtaApproval(boot.attempts.approval))
+            || boot.attempts.count > otaAttemptLimit)) boot.attempts = {};
     if (!prefs.isKey(recordKey)
         || prefs.getBytes(recordKey, &boot.record, sizeof boot.record) != sizeof boot.record
-        || !memchr(boot.record.version, '\0', sizeof boot.record.version)) {
+        || !validOtaRecord(boot.record)) {
         boot.record = {};
         if (boot.attempts.count >= otaAttemptLimit && strcmp(boot.attempts.version, VENTANAL_FIRMWARE_VERSION)) {
-            boot.record.result = OtaResult::Failed;
-            boot.record.failure = OtaFailure::Attempts;
+            setOtaFailure(boot.record, OtaFailure::Interrupted, true);
         }
         return boot;
     }
@@ -393,9 +404,10 @@ OtaBoot readOtaBoot(Preferences& prefs, bool persisted) {
     if (result != OtaResult::Installing) {
         boot.rolledBack = result == OtaResult::RolledBack;
         boot.record.result = result;
-        boot.record.failure = result == OtaResult::Failed
-            ? (boot.attempts.count >= otaAttemptLimit ? OtaFailure::Attempts : OtaFailure::Interrupted)
-            : OtaFailure::None;
+        if (result == OtaResult::Failed)
+            setOtaFailure(boot.record, OtaFailure::Interrupted, boot.attempts.count >= otaAttemptLimit);
+        else
+            boot.record.failure = OtaFailure::None;
         storeRecord(prefs, boot.record);
     }
     return boot;
@@ -408,8 +420,8 @@ void acknowledgeOtaReport(Preferences& prefs, OtaBoot& boot) {
     hostFirmwarePath(path, boot.record.version);
     const bool stillOffered = manifestFirmware.release[0] && !strcmp(path, manifestFirmware.path)
         && !strcmp(boot.attempts.approval, manifestFirmware.approval);
-    // A capped budget supplies telemetry even after the transient report is cleared.
-    if (boot.record.failure == OtaFailure::Attempts && !prefs.isKey(recordKey)) return;
+    // Keep the last failure until a different approval replaces it.
+    if (boot.record.failure == OtaFailure::Attempts) return;
     if (!otaCanAcknowledge(boot.record.result, stillOffered)) return;
     if (!prefs.remove(recordKey)) {
         Serial.println("ota error=nvs-ack");
@@ -446,11 +458,11 @@ bool otaCacheLayout() {
     return fs && fs->address == otaCacheOffset && fs->size == otaCacheSize;
 }
 
-void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
+bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
             int battery, int quietStart, int quietEnd) {
     auto allowed = [&] { return otaCanInstall(battery, localMinute(), quietStart, quietEnd); };
     if (boot.pending || (boot.record.result != OtaResult::None && boot.record.failure != OtaFailure::Attempts)
-        || !allowed()) return;
+        || !allowed()) return false;
     auto attempts = boot.attempts;
 #if VENTANAL_OTA_GITHUB
     const int64_t now = time(nullptr);
@@ -470,15 +482,16 @@ void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeS
             && prefs.putLong64(githubCheckKey, now) != sizeof now) Serial.println("ota error=nvs-week");
 #endif
     } else {
-        return;
+        return false;
     }
-    if (failure == OtaFailure::Attempts) return;
+    if (failure == OtaFailure::Attempts) return false;
     if (failure != OtaFailure::None) {
-        reportFailure(prefs, attempts.count >= otaAttemptLimit ? OtaFailure::Attempts : failure);
-        return;
+        reportFailure(prefs, failure, attempts.count >= otaAttemptLimit);
+        return true;
     }
-    if (!installed) return;
+    if (!installed) return false;
     Serial.println("ota reboot=installed");
     Serial.flush();
     esp_restart();
+    return false;
 }

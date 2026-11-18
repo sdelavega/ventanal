@@ -74,5 +74,9 @@ def test_partition_layout_matches_firmware_and_upload():
             r"constexpr size_t (ota\w+) = (0x[0-9a-fA-F]+);", (sketch / "ota.h").read_text()
         )
     }
-    assert (constants["otaCacheOffset"], constants["otaCacheSize"]) == layout["littlefs"][2:]
-    assert constants["otaSlotSize"] == layout["ota_0"][3] == layout["ota_1"][3]
+    assert layout["ota_0"][3] == layout["ota_1"][3]
+    assert constants == {
+        "otaCacheOffset": layout["littlefs"][2],
+        "otaCacheSize": layout["littlefs"][3],
+        "otaSlotSize": layout["ota_0"][3],
+    }

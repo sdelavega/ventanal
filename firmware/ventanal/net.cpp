@@ -89,7 +89,8 @@ bool parseScreen(JsonVariantConst value, ScreenInfo& result) {
 }
 }
 
-bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
+bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient) {
+    if (transient) *transient = false;
     manifestFirmware.release[0] = '\0';
     manifestFirmware.signature[0] = '\0';
     manifestFirmware.path[0] = '\0';
@@ -107,6 +108,10 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
     const int status = http.GET();
     Serial.printf("transport tls=%d handshake-headers ms=%lu status=%d\n",securityConfigured(),static_cast<unsigned long>(millis()-started),status);
     const int size = http.getSize();
+    if (transient) *transient = status == HTTPC_ERROR_CONNECTION_REFUSED
+        || status == HTTPC_ERROR_NOT_CONNECTED || status == HTTPC_ERROR_CONNECTION_LOST
+        || status == HTTPC_ERROR_READ_TIMEOUT
+        || status == 502 || status == 503 || status == 504;
     if (status != 200 || size <= 0 || size > 8192) { finishTransport(http,false); return false; }
     String body;
     auto* stream=http.getStreamPtr();
@@ -128,7 +133,10 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
         }
     }
     finishTransport(http,body.length()==static_cast<size_t>(size) && millis()-started<30000);
-    if (millis()-started >= 30000 || body.length() != static_cast<size_t>(size)) return false;
+    if (millis()-started >= 30000 || body.length() != static_cast<size_t>(size)) {
+        if (transient) *transient = true;
+        return false;
+    }
     JsonDocument doc;
     if (deserializeJson(doc, body) || (doc["version"] | 0) != 1) return false;
     if(securityConfigured() && !verifyManifest(doc)) {

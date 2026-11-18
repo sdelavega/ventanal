@@ -40,6 +40,17 @@ int main() {
     setBoardReport(50, "weather", "", 3800, result, "0123456789abcdef");
     assert(fetchManifest(a,w));
     assert(lastUrl.find("&bat_mv=3800&ota=rolled_back:65535.65535.65535&ota_approval=0123456789abcdef")!=std::string::npos);
+    assert((lastUrl.find("&test_release_key=1") != std::string::npos) == VENTANAL_TEST_RELEASE_KEY);
+    result.result=OtaResult::Ok;
+    setBoardReport(50, "weather", "", 3800, result, "0123456789abcdef");
+    assert(fetchManifest(a,w));
+    assert(lastUrl.find("&ota=ok:65535.65535.65535&ota_approval=0123456789abcdef") != std::string::npos);
+    char extra[49] = "extra-";
+    memset(extra + 6, 'x', sizeof extra - 7);
+    result.result=OtaResult::RolledBack;
+    setBoardReport(100, extra, "0123456789abcdef", 4096, result, "0123456789abcdef");
+    assert(strstr(manifestBoardQuery, "&ota_approval=0123456789abcdef"));
+    assert(bool(strstr(manifestBoardQuery, "&test_release_key=1")) == VENTANAL_TEST_RELEASE_KEY);
     responseBody.insert(1, R"("firmware":{"release":"{\"board\":\"inkplate13spectra\"}","sig":"signed","path":"/firmware/inkplate13spectra-2.0.0.bin","approval":"0123456789abcdef"},)");
     advertisedSize=responseBody.size();
     assert(fetchManifest(a,w));

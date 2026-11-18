@@ -40,7 +40,7 @@ int main() {
         ReleaseInfo info{};
         info.size = 123;
         const auto verdict = checkRelease(metadata.c_str(), metadata.size(), signature,
-                                          board, running, test["slot_size"], info);
+                                          board, running, test["slot_size"], info, ventanal_release_key_detail::testKey);
         const char* expected = test["verdict"];
         if (strcmp(verdictName(verdict), expected) != 0) {
             std::cerr << test["name"].as<const char*>() << ": expected " << expected

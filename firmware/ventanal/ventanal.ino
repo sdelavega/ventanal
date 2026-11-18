@@ -530,6 +530,7 @@ void setup() {
     }
     Serial.begin(115200);
     delay(1000);
+    if(VENTANAL_TEST_RELEASE_KEY) Serial.println("!!! TEST RELEASE KEY - BENCH FIRMWARE ONLY !!!");
 #if VENTANAL_PWRENTEST
     Serial.printf("pwr_en_on_wake=%d\n",gpio_get_level(GPIO_NUM_21));
 #endif
@@ -540,11 +541,11 @@ void setup() {
     WakeCause wake=raw==ESP_SLEEP_WAKEUP_EXT0 ? WakeCause::Button :
                    raw==ESP_SLEEP_WAKEUP_TIMER ? WakeCause::Timer : WakeCause::ColdBoot;
     const auto reset=esp_reset_reason();
-    const bool configured=initializeSettings();
     Preferences prefs;
     const bool persisted=prefs.begin("ventanal",false);
     auto otaBoot=readOtaBoot(prefs,persisted);
     otaPendingBoot=otaBoot.pending;
+    const bool configured=initializeSettings(!otaPendingBoot);
     bool ponRetry=!otaBoot.rolledBack && !otaPendingBoot && pendingPanel.magic==ponMagic && pendingPanel.kind!=2 &&
         ponRetryBoot(reset==ESP_RST_SW,pendingPanel.attempts) &&
         pendingPanel.stateChecksum==panelChecksum();
@@ -585,6 +586,11 @@ void setup() {
 #endif
        (abnormal && !recoveryStored)) {
         Serial.println("draw skipped=reset-limit");
+        if(!configured) {
+            if(persisted) prefs.end();
+            sleepHardware(0);
+            return;
+        }
         // Seed time from the standalone RTC without initializing the panel.
 #ifndef VENTANAL_HOST_TEST
         inkplateMutexInit();
@@ -767,7 +773,7 @@ void setup() {
     if(!configured) {
         Serial.println("setup=provisioning-required");
         rememberPanel(state,pct,true,time(nullptr),1);
-        drawWaiting(display,"");
+        drawWaiting(display,"Not set up");
         refreshPanel();
         clearWatchdogCount(prefs);
         if(persisted) prefs.end();
@@ -840,18 +846,33 @@ void setup() {
     bool manifestOk=false;
     uint32_t start=millis();
     if(wake!=WakeCause::Button || longPress || otaPendingBoot) {
-        const bool online=wifiConnect();
+        bool online=wifiConnect();
         Serial.printf("wifi ms=%lu\n",static_cast<unsigned long>(millis()-start));
-        start=millis(); const bool timeSynced=syncTime();
+        start=millis(); bool timeSynced=syncTime();
         Serial.printf("time ms=%lu\n",static_cast<unsigned long>(millis()-start));
         start=millis();
         ScreenInfo art{},weather{};
         // Report the frame currently on the panel, before any downloads/draw.
         setBoardReport(pct,screenName(state),
                        state.drawn.any?selectedDrawn(state):"",batteryMv,otaBoot.record,
-                       strcmp(otaBoot.record.version,otaBoot.attempts.version)==0 ? otaBoot.attempts.approval : "");
+                       otaBoot.attempts.approval);
         state.owner.queue.query(manifestSkipQuery,sizeof manifestSkipQuery);
-        manifestOk=online && fetchManifest(art,weather);
+        bool transient=false;
+        manifestOk=online && fetchManifest(art,weather,&transient);
+        if(otaPendingBoot && otaBoot.matching && !manifestOk && (!online || transient)) {
+            // Deep sleep resets the CPU and the bootloader rejects a pending
+            // image. A timed light-sleep wake keeps the same health deadline.
+            Serial.println("ota retry=host-unreachable");
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            if(esp_sleep_enable_timer_wakeup(5000000ULL)==ESP_OK) {
+                esp_light_sleep_start();
+                esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
+                online=wifiConnect();
+                timeSynced=syncTime();
+                manifestOk=online && fetchManifest(art,weather);
+            }
+        }
         offline=!manifestOk;
         if(manifestOk) {
             if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
@@ -871,10 +892,12 @@ void setup() {
         Serial.printf("manifest ok=%d ms=%lu\n",!offline,static_cast<unsigned long>(millis()-start));
         start=millis();
         if(!offline && persisted && quietHours.valid()) storeQuiet(prefs,quietHours);
-        if(online && persisted && mounted)
-            tryOta(prefs,otaBoot,manifestOk,timeSynced,pct,
-                   quietStart(installation.quietStart),quietEnd(installation.quietEnd));
-        if(!offline && mounted) {
+        // Reserve 30 seconds for display and shutdown after a 60-second transfer.
+        const bool otaFailed=online && persisted && mounted && millis()-wakeStarted<90000
+            && tryOta(prefs,otaBoot,manifestOk,timeSynced,pct,
+                      quietStart(installation.quietStart),quietEnd(installation.quietEnd));
+        if(otaFailed) Serial.println("download deferred=failed-ota");
+        if(!offline && mounted && !otaFailed) {
             // All eight slots share an absolute wake deadline, measured from
             // watchdog arming. Never feed the watchdog, including during display.
             uint8_t next=0;
