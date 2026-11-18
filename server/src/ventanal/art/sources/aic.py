@@ -48,7 +48,9 @@ class AICSource(BaseSource):
                     artist=obj.get('artist_title') or '',
                     date=obj.get('date_display') or '',
                     museum='Art Institute of Chicago',
-                    image_url=f"https://www.artic.edu/iiif/2/{obj['image_id']}/full/1686,/0/default.jpg",
+                    # IIIF refuses to upscale (403 "scales in excess of 100%"), so
+                    # never request wider than the original.
+                    image_url=f"https://www.artic.edu/iiif/2/{obj['image_id']}/full/{width or 1686},/0/default.jpg",
                     width=width,
                     height=height,
                     kind=classify_kind(
