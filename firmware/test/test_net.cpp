@@ -37,15 +37,16 @@ int main() {
     assert(lastUserAgent == "Ventanal/1.0.0");
 
     OtaRecord result{OtaResult::RolledBack, OtaFailure::None, 0x11, "65535.65535.65535"};
-    setBoardReport(50, "weather", "", 3800, result);
+    setBoardReport(50, "weather", "", 3800, result, "0123456789abcdef");
     assert(fetchManifest(a,w));
-    assert(lastUrl.find("&bat_mv=3800&ota=rolled_back:65535.65535.65535")!=std::string::npos);
-    responseBody.insert(1, R"("firmware":{"release":"{\"board\":\"inkplate13spectra\"}","sig":"signed","path":"/firmware/inkplate13spectra-2.0.0.bin"},)");
+    assert(lastUrl.find("&bat_mv=3800&ota=rolled_back:65535.65535.65535&ota_approval=0123456789abcdef")!=std::string::npos);
+    responseBody.insert(1, R"("firmware":{"release":"{\"board\":\"inkplate13spectra\"}","sig":"signed","path":"/firmware/inkplate13spectra-2.0.0.bin","approval":"0123456789abcdef"},)");
     advertisedSize=responseBody.size();
     assert(fetchManifest(a,w));
     assert(!strcmp(manifestFirmware.release,R"({"board":"inkplate13spectra"})"));
     assert(!strcmp(manifestFirmware.signature,"signed"));
     assert(!strcmp(manifestFirmware.path,"/firmware/inkplate13spectra-2.0.0.bin"));
+    assert(!strcmp(manifestFirmware.approval,"0123456789abcdef"));
     responseBody=replace(responseBody, "signed", R"(sig\u0000ned)");
     advertisedSize=responseBody.size();
     assert(fetchManifest(a,w) && !manifestFirmware.release[0]);

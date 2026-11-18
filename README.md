@@ -231,12 +231,14 @@ for new TLS connections as soon as the server starts presenting the new certific
    For a flash where rollback must work without another upload, put both complete
    PEM blocks, separated by a newline, in the same C++ raw string. This lets
    the board connect when the server presents either certificate. Remove the
-   previous PEM at the next firmware update after verifying the new certificate.
+   previous PEM in a later wired settings update after verifying the new certificate.
    Regeneration preserves the device key and replay counter. For a fresh
    pairing, NVS loss, or device-key rotation, confirm **Re-pair board (new
    device key)** and copy the new `VENTANAL_DEVICE_KEY` as well.
-3. Rebuild and upload with the firmware instructions above. Verify a successful
-   board check-in and frame refresh over HTTPS. Keep the pairing values private.
+3. Rebuild and upload with the firmware instructions above. For a board that
+   already has provisioned settings, use a new force-provision revision to
+   apply the updated PEM and key. Verify a successful board check-in and
+   frame refresh over HTTPS. Keep the pairing values private.
    See the [transport details](firmware/README.md#password-protected-transport).
 
 If the board rejects the new certificate and still trusts the previous PEM,

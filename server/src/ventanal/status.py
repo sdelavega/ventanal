@@ -16,6 +16,7 @@ def parse_board(query):
     patterns = {'bat_mv': r'[1-9][0-9]{3}', 'bat': r'(?:0|[1-9][0-9]?|100)', 'screen': r'(?:art|weather|solar|extra-[a-z0-9_-]{1,42})',
                 'frame': r'[0-9a-f]{16}', 'fw': r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',
                 'board': '|'.join(sorted(BOARDS)),
+                'ota_approval': r'[0-9a-f]{16}',
                 'ota': r'(?:ok|rolled_back):[0-9.]{5,17}|failed:[A-Za-z0-9][A-Za-z0-9._-]{0,63}'}
     result = {}
     for key, pattern in patterns.items():

@@ -14,7 +14,9 @@ eligibility, image size and SHA-256 digest before starting the new image. The
 target must be newer than the running version and the running version must meet
 the release's minimum. The Inkplate only installs with at least 50% battery
 and outside quiet hours. It can pick up an approved update on a later connected
-wake when those conditions are met. Automatic GitHub checks by a standalone
+wake when those conditions are met. After three failed attempts for the same
+approval, the Inkplate reports `failed:attempts`. Select **Install** again to
+retry that version, or approve a newer one. Automatic GitHub checks by a standalone
 board are outside this release. The Inkplate's direct GitHub check is available
 with its [diagnostic build flag](../firmware/README.md#toolchain).
 
@@ -37,6 +39,18 @@ configured app. Preserve NVS by keeping its existing offset and size and
 avoiding a full-chip erase. The relocated LittleFS cache is reinitialized and
 frames are downloaded again. After the wired flash, check that the device
 retains its pairing and completes a normal refresh.
+
+On the Inkplate, the one-time wired flash with a private `config.h` provisions
+Wi-Fi, the host URL, timezone, display and wake settings, and any TLS certificate
+bundle and pairing key into NVS. Subsequent release images read these settings
+from NVS. An unprovisioned release image shows the waiting screen and sleeps.
+Keep the private build for wired recovery.
+
+A wired private build preserves the current settings after provisioning. To
+apply changed private settings deliberately, compile it with
+`-DVENTANAL_FORCE_PROVISION=1` in `compiler.cpp.extra_flags`. Each nonzero
+revision applies once, so use a new revision for each later reprovisioning.
+The replay counter stays in its existing NVS namespace.
 
 | Board | Wired migration |
 | --- | --- |
@@ -78,11 +92,8 @@ complete.
 2. Review the assets and release notes before signing. Each pair is named
    `ventanal-<board>-<version>.bin` and
    `ventanal-<board>-<version>.json`. The build uses public configuration.
-   **The Inkplate currently needs its installation settings compiled in.**
-   A generic Inkplate asset lacks the Wi-Fi, host and pairing settings needed
-   to confirm a healthy boot on a configured installation. Keep that asset
-   in draft until it can obtain those settings at runtime. Keep builds with
-   installation-specific settings private.
+   Inkplate release images rely on the settings provisioned by the wired
+   setup. Keep builds with installation-specific settings private.
 3. On the offline signing machine, sign the exact JSON bytes and verify the
    signature and image against the expected release public key. Repeat for each
    board. For example, for an installable Inkplate image:

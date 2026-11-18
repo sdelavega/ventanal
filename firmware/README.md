@@ -246,6 +246,8 @@ Settings → Security before trusting it. Use **Reveal board values** to copy
 `VENTANAL_HOST_CERT_PEM` (the complete PEM, as a C++ raw string) and
 `VENTANAL_DEVICE_KEY` (64 lowercase hex characters) into private `config.h`.
 Change `VENTANAL_HOST_URL` to the displayed HTTPS URL and build/upload normally.
+If the board already has provisioned settings, use a new force-provision
+revision as described in the [wired setup guide](../docs/updates.md#one-time-wired-setup).
 Keep these values out of logs and version control. Regeneration requires updating
 the certificate on the board. The device key stays valid until you explicitly
 choose **Re-pair board** and copy the new key. See the
@@ -283,7 +285,8 @@ handshake/header and total transfer timings without keys or proof contents.
 For an isolated diagnostic build only, pass
 `--build-property compiler.cpp.extra_flags=-DVENTANAL_SECURITY_CONFIG=/absolute/path/diagnostic.h`.
 That private header can `#undef VENTANAL_HOST_URL` and supply disposable TLS/key
-values without editing `config.h`. Omit this property for the production build.
+values without editing `config.h`. Use a new force-provision revision if the diagnostic build needs to replace
+stored settings. Omit the diagnostic header for a release build.
 
 ## Wake button gestures
 

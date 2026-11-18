@@ -156,7 +156,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         device = self.pairing_id
                         if device is None and ui.auth.mode == 'none':
                             device = OPEN_DEVICE
-                        firmware = ui.firmware.checkin(report.get('board'), device, report.get('fw'), report.get('ota'))
+                        firmware = ui.firmware.checkin(
+                            report.get('board'), device, report.get('fw'), report.get('ota'),
+                            report.get('ota_approval'),
+                        )
                 except sqlite3.Error:
                     logging.getLogger(__name__).warning('Unable to record board check-in')
             if path == '/manifest.json':

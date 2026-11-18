@@ -8,20 +8,32 @@
 
 class Preferences;
 
-inline constexpr size_t otaSlotSize = 4 * 1024 * 1024;
+// Layout values are checked against partitions.csv and upload.py by test_upload.py.
+inline constexpr size_t otaCacheOffset = 0x820000;
+inline constexpr size_t otaCacheSize = 0x17D0000;
+inline constexpr size_t otaSlotSize = 0x400000;
 inline constexpr size_t otaVersionCapacity = sizeof("65535.65535.65535");
 inline constexpr size_t otaReportCapacity = sizeof("rolled_back:65535.65535.65535");
+
+inline constexpr size_t otaApprovalCapacity = 17;
+inline constexpr uint8_t otaAttemptLimit = 3;
+
+inline bool validOtaApproval(const char* id) {
+    if (strlen(id) != otaApprovalCapacity - 1) return false;
+    return strspn(id, "0123456789abcdef") == otaApprovalCapacity - 1;
+}
 
 struct FirmwareOffer {
     char release[2049];
     char signature[89];
     char path[64];
+    char approval[otaApprovalCapacity];
 };
 inline FirmwareOffer manifestFirmware{};
 
 enum class OtaResult : uint8_t { None, Installing, Ok, RolledBack, Failed };
 enum class OtaFailure : uint8_t {
-    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted
+    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted, Attempts
 };
 struct OtaRecord {
     OtaResult result{};
@@ -68,7 +80,7 @@ inline void formatOtaReport(char (&out)[otaReportCapacity], const OtaRecord& rec
         case OtaResult::Failed: {
             constexpr const char* reasons[] = {
                 "unknown", "release", "path", "slot", "download", "write", "digest",
-                "schedule", "interrupted"
+                "schedule", "interrupted", "attempts"
             };
             const auto reason = static_cast<unsigned>(record.failure);
             snprintf(out, sizeof out, "failed:%s",
@@ -80,8 +92,31 @@ inline void formatOtaReport(char (&out)[otaReportCapacity], const OtaRecord& rec
     }
 }
 
+struct OtaAttempts {
+    char version[otaVersionCapacity]{};
+    char approval[otaApprovalCapacity]{};
+    uint8_t count{};
+};
+
+inline bool reserveOtaAttempt(OtaAttempts& attempts, const char* version, const char* approval) {
+    if (strcmp(attempts.version, version) || strcmp(attempts.approval, approval)) {
+        attempts = {};
+        snprintf(attempts.version, sizeof attempts.version, "%s", version);
+        snprintf(attempts.approval, sizeof attempts.approval, "%s", approval);
+    }
+    if (attempts.count >= otaAttemptLimit) return false;
+    ++attempts.count;
+    return true;
+}
+
+inline bool otaGithubCheckDue(bool synced, int64_t now, int64_t last) {
+    constexpr int64_t interval = 7 * 24 * 60 * 60;
+    return synced && now >= 1704067200 && (last <= 0 || (now >= last && now - last >= interval));
+}
+
 struct OtaBoot {
     OtaRecord record{};
+    OtaAttempts attempts{};
     bool pending = false;
     bool matching = false;
     bool rolledBack = false;
@@ -92,5 +127,5 @@ void acknowledgeOtaReport(Preferences& prefs, OtaBoot& boot);
 bool confirmOtaBoot(Preferences& prefs, OtaBoot& boot, bool manifestOk, bool screenDrawn);
 void rollbackOtaBoot();
 bool otaCacheLayout();
-void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk,
+void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
             int battery, int quietStart, int quietEnd);

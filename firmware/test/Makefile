@@ -7,7 +7,8 @@ SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean
-test: build/test_ota build/test_release build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
+test: build/test_settings build/test_ota build/test_release build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
+	./build/test_settings
 	./build/test_ota
 	./build/test_release
 	./build/test_budget
@@ -33,6 +34,10 @@ test: build/test_ota build/test_release build/test_budget build/test_extras buil
 	./build/test_net
 	./build/test_overlay
 	./build/test_wake
+
+build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_settings.cpp $(LDFLAGS) -o $@
 
 build/test_ota: test_ota.cpp ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
@@ -101,12 +106,12 @@ build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ve
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manifest_security.h $(wildcard fakes/*.h) Makefile
+build/test_security: test_security.cpp ../ventanal/settings.h ../ventanal/security.h ../ventanal/manifest_security.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) -o $@
 
 # Shared transport headers also invalidate the net/cache builds.
-build/test_net build/test_cache build/test_cache_abort: ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
+build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../ventanal/settings.h ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
 build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -140,6 +145,6 @@ build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.ino ../ven
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h
+build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h
 
 build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h

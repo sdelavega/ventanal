@@ -11,6 +11,7 @@ struct FakeWiFi {
     bool setSleep(wifi_ps_type_t value) { sleeping=value; ++sleepChanges; return true; }
     bool setSleep(bool value) { return setSleep(value ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE); }
     void disconnect(bool) {}
+    void persistent(bool) {}
     void mode(int) {}
     void begin(const char*, const char*) {}
     int status() { return WL_CONNECTED; }

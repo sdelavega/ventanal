@@ -2,11 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "net.h"
 #include "quiet.h"
-#ifdef VENTANAL_HOST_TEST
-#include "config.example.h"
-#else
-#include "config.h"
-#endif
+#include "settings.h"
 #include <ArduinoJson.h>
 #include <algorithm>
 #include "http.h"
@@ -20,8 +16,9 @@
 extern Inkplate display;
 
 bool wifiConnect(uint32_t timeoutMs) {
+    WiFi.persistent(false); // The settings blob is the only persistent credential source.
     WiFi.mode(WIFI_STA);
-    WiFi.begin(VENTANAL_WIFI_SSID, VENTANAL_WIFI_PASSWORD);
+    WiFi.begin(installation.ssid, installation.password);
     const uint32_t start = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) delay(50);
     const bool connected = WiFi.status() == WL_CONNECTED;
@@ -42,10 +39,10 @@ bool syncTime() {
             Serial.printf("time seeded=rtc\n");
         }
     }
-    setenv("TZ", VENTANAL_TZ, 1);
+    setenv("TZ", installation.timezone, 1);
     tzset();
     if (WiFi.status() != WL_CONNECTED) return false;
-    configTzTime(VENTANAL_TZ, "pool.ntp.org", "time.nist.gov");
+    configTzTime(installation.timezone, "pool.ntp.org", "time.nist.gov");
     const uint32_t start = millis();
     bool synced = false;
     // The IDF getter consumes COMPLETED and resets the status. Read it once.
@@ -63,7 +60,7 @@ bool syncTime() {
     setenv("TZ", "UTC0", 1);
     tzset();
     display.rtc.setEpoch(static_cast<uint32_t>(time(nullptr)));
-    setenv("TZ", VENTANAL_TZ, 1);
+    setenv("TZ", installation.timezone, 1);
     tzset();
     Serial.printf("time ntp=synced rtc=written\n");
     return true;
@@ -96,12 +93,13 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
     manifestFirmware.release[0] = '\0';
     manifestFirmware.signature[0] = '\0';
     manifestFirmware.path[0] = '\0';
+    manifestFirmware.approval[0] = '\0';
     TransportClient localClient;
     auto& client=requestClient(localClient);
     HTTPClient localHttp;
     auto& http=requestHttp(localHttp);
     configureHttp(http);
-    String url = String(VENTANAL_HOST_URL) + "/manifest.json";
+    String url = String(installation.host) + "/manifest.json";
     if(manifestBoardQuery[0]) url += String("?")+manifestBoardQuery;
     if(manifestSkipQuery[0]) url += String(manifestBoardQuery[0]?"&skips=":"?skips=")+manifestSkipQuery;
     if (!beginTransport(http, client, url.c_str())) return false;
@@ -201,6 +199,8 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
         && (!copyField("sig", manifestFirmware.signature, sizeof manifestFirmware.signature)
             || !copyField("path", manifestFirmware.path, sizeof manifestFirmware.path)))
         manifestFirmware.release[0] = '\0';
+    if (!copyField("approval", manifestFirmware.approval, sizeof manifestFirmware.approval)
+        || !validOtaApproval(manifestFirmware.approval)) manifestFirmware.approval[0] = '\0';
     manifestExtras=extras;
     art = a;
     weather = w;

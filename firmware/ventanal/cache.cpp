@@ -2,11 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "cache.h"
 #include "logic.h"
-#ifdef VENTANAL_HOST_TEST
-#include "config.example.h"
-#else
-#include "config.h"
-#endif
+#include "settings.h"
 #include <algorithm>
 #include "http.h"
 #include "security.h"
@@ -137,7 +133,7 @@ bool fetchFrame(const char* url, const char* path) {
 bool blitFrame(const char* path, Inkplate& d) {
     File f = LittleFS.open(path, "r");
     if (!validate(f)) { f.close(); return false; }
-    d.setRotation(VENTANAL_ROTATION);
+    d.setRotation(installation.rotation);
     if (d.width() != 1600 || d.height() != 1200) { f.close(); return false; }
     uint8_t row[800];
     for (int y = 0; y < 1200; ++y) {

@@ -10,6 +10,7 @@ from importlib.metadata import version
 import json
 import logging
 import re
+import secrets
 import sqlite3
 from time import monotonic
 from urllib.parse import urljoin, urlsplit
@@ -47,12 +48,15 @@ class CachedRelease:
             return False
         return True
 
-    def manifest_entry(self):
-        return {
+    def manifest_entry(self, approval):
+        entry = {
             "release": self.metadata,
             "sig": self.signature,
             "path": f"/firmware/{self.info.board}-{self.info.version}.bin",
         }
+        if approval:
+            entry["approval"] = approval
+        return entry
 
 
 def verified_metadata(metadata, signature):
@@ -86,6 +90,9 @@ class FirmwareStore:
                 CREATE TABLE IF NOT EXISTS firmware_poll (
                     id INTEGER PRIMARY KEY CHECK (id = 1), checked TEXT NOT NULL,
                     error TEXT NOT NULL);""")
+            db.execute("BEGIN IMMEDIATE")
+            if not any(column["name"] == "approval" for column in db.execute("PRAGMA table_info(firmware_devices)")):
+                db.execute("ALTER TABLE firmware_devices ADD COLUMN approval TEXT")
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=1)
@@ -198,8 +205,8 @@ class FirmwareStore:
             ):
                 raise ReleaseError("This firmware update is no longer available for the board")
             db.execute(
-                "UPDATE firmware_devices SET pending=?, pending_auto=0 WHERE board=? AND device=?",
-                (release_version, board, device),
+                "UPDATE firmware_devices SET pending=?, pending_auto=0, approval=? WHERE board=? AND device=?",
+                (release_version, secrets.token_hex(8), board, device),
             )
 
     def set_automatic(self, board, device, enabled):
@@ -214,7 +221,7 @@ class FirmwareStore:
             if not updated.rowcount:
                 raise ReleaseError("This board has not checked in")
 
-    def checkin(self, board, device, running, result):
+    def checkin(self, board, device, running, result, result_approval=None):
         """Record telemetry and select this device's offer in one transaction."""
         if board not in BOARDS or device is None:
             return None
@@ -225,14 +232,18 @@ class FirmwareStore:
                 "SELECT * FROM firmware_devices WHERE board=? AND device=?", (board, device)
             ).fetchone()
             pending, pending_auto, rolled_back = state["pending"], state["pending_auto"], state["rolled_back"]
+            approval = state["approval"]
             completed = False
-            if result and result != state["result"]:
+            if result:
                 outcome, detail = result.split(":", 1)
                 if outcome == "rolled_back" and (
                     rolled_back is None or version_tuple(detail) > version_tuple(rolled_back)
                 ):
                     rolled_back = detail
-                if outcome in ("ok", "rolled_back") and detail == pending:
+                # Two installs of the same version can report identical results.
+                # New clients identify the approval so stale retries cannot clear a new one.
+                if (outcome in ("ok", "rolled_back") and detail == pending
+                        and (result_approval is None or result_approval == approval)):
                     pending, pending_auto = None, 0
                     completed = True
             running_now = running or state["running"]
@@ -244,12 +255,16 @@ class FirmwareStore:
                     v for v in eligible if rolled_back is None or version_tuple(v) > version_tuple(rolled_back)
                 ), None)
                 pending_auto = int(pending is not None)
+                if pending_auto:
+                    approval = secrets.token_hex(8)
+            if pending is None:
+                approval = None
             db.execute(
-                """UPDATE firmware_devices SET running=?, result=?, pending=?, pending_auto=?, rolled_back=?
+                """UPDATE firmware_devices SET running=?, result=?, pending=?, pending_auto=?, rolled_back=?, approval=?
                    WHERE board=? AND device=?""",
-                (running_now, result or state["result"], pending, pending_auto, rolled_back, board, device),
+                (running_now, result or state["result"], pending, pending_auto, rolled_back, approval, board, device),
             )
-            return eligible[pending].manifest_entry() if running and pending is not None else None
+            return eligible[pending].manifest_entry(approval) if running and pending is not None else None
 
     def last_poll(self):
         with closing(self.connect()) as db:

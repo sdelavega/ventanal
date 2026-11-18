@@ -152,6 +152,27 @@ def test_device_approvals_are_isolated_and_survive_restart(tmp_path, signed):
     assert releases == []
 
 
+@pytest.mark.parametrize("identified", [False, True])
+def test_reapproved_version_clears_after_a_second_rollback(tmp_path, signed, identified):
+    store = FirmwareStore(tmp_path)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    device = "pair-A"
+    store.checkin(BOARD, device, "1.0.0", None)
+    store.set_automatic(BOARD, device, True)
+    first = store.checkin(BOARD, device, "1.0.0", None)["approval"]
+    assert store.checkin(BOARD, device, "1.0.0", "failed:attempts")["approval"] == first
+    result = "rolled_back:2.0.0"
+    assert store.checkin(BOARD, device, "1.0.0", result, first if identified else None) is None
+    store.approve(BOARD, device, "2.0.0")
+    second = store.checkin(BOARD, device, "1.0.0", None)["approval"]
+    assert second != first
+    if identified:
+        assert store.checkin(BOARD, device, "1.0.0", result, first)["approval"] == second
+    assert store.checkin(BOARD, device, "1.0.0", result, second if identified else None) is None
+    assert store.boards(device)[0][0]["pending"] is None
+    assert store.checkin(BOARD, device, "1.0.0", None) is None
+
+
 def test_cache_prunes_old_images_and_retains_pending_and_last_upload(tmp_path, signed):
     store = FirmwareStore(tmp_path)
     store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
@@ -330,11 +351,17 @@ def test_open_status_upload_install_and_result(web, signed):
     values = {"board": BOARD, "csrf": csrf, "version": "2.0.0"}
     assert request("/updates/install", data=urlencode({**values, "csrf": "wrong"}), headers=post_headers)[0] == 403
     assert request("/updates/install", data=urlencode(values), headers=post_headers)[0] == 303
-    assert json.loads(request(CHECKIN)[1])["firmware"] == {
-        "release": metadata.decode(), "sig": sig.decode(), "path": IMAGE_PATH,
-    }
+    offer = json.loads(request(CHECKIN)[1])["firmware"]
+    approval = offer.pop("approval")
+    assert re.fullmatch(r"[0-9a-f]{16}", approval)
+    assert offer == {"release": metadata.decode(), "sig": sig.decode(), "path": IMAGE_PATH}
     assert "firmware" not in json.loads(request("/manifest.json?board=lcd43b&fw=1.0.0")[1])
-    assert "firmware" not in json.loads(request(CHECKIN + "&ota=rolled_back:2.0.0")[1])
+    rollback = CHECKIN + "&ota=rolled_back:2.0.0&ota_approval="
+    assert "firmware" not in json.loads(request(rollback + approval)[1])
+    assert request("/updates/install", data=urlencode(values), headers=post_headers)[0] == 303
+    retry = json.loads(request(rollback + approval)[1])["firmware"]["approval"]
+    assert retry != approval
+    assert "firmware" not in json.loads(request(rollback + retry)[1])
     assert b"Last OTA result rolled_back:2.0.0" in request("/", headers=headers)[1]
     auto = {"board": BOARD, "csrf": csrf, "automatic": "yes"}
     assert request("/updates/automatic", data=urlencode(auto), headers=post_headers)[0] == 303

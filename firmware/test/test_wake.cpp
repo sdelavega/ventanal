@@ -39,7 +39,7 @@ bool confirmOtaBoot(Preferences&, OtaBoot& boot, bool manifestOk, bool screenDra
 }
 void rollbackOtaBoot() { esp_restart(); }
 bool otaCacheLayout() { return otaLayout; }
-void tryOta(Preferences&, const OtaBoot&, bool, int, int, int) {}
+void tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int) {}
 #include "../ventanal/ventanal.ino"
 static void simulateBoot(esp_reset_reason_t reason) {
     fakeReset=reason;
@@ -66,6 +66,15 @@ static void wake(int cause, bool critical=false) {
     }
 }
 int main() {
+    hostSettingsAvailable=false;
+    fakeReset=ESP_RST_POWERON;
+    fakeWake=0;
+    try { setup(); assert(false); } catch(const Sleeping&) {}
+    assert(waiting==1 && connections==0 && manifests==0 && downloads==0);
+    assert(buttonArmed && timerUs==0);
+    hostSettingsAvailable=true;
+    waiting=0;
+
     for(auto reason : {ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_WDT, ESP_RST_PANIC,
                        ESP_RST_BROWNOUT, ESP_RST_UNKNOWN, ESP_RST_EFUSE, ESP_RST_PWR_GLITCH, ESP_RST_CPU_LOCKUP}) {
         assert(isAbnormalReset(reason));

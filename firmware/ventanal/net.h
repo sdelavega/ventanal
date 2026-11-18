@@ -17,9 +17,9 @@ inline char manifestSkipQuery[280]{};
 #define VENTANAL_FIRMWARE_VERSION "1.0.0"
 #endif
 inline constexpr char VENTANAL_BOARD_ID[] = "inkplate13spectra";
-inline char manifestBoardQuery[192]{};
+inline char manifestBoardQuery[224]{};
 inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0,
-                           const OtaRecord& ota={}) {
+                           const OtaRecord& ota={}, const char* approval="") {
     if(pct<0 || pct>100 || (strcmp(screen,"art") && strcmp(screen,"weather") && strcmp(screen,"solar") && strncmp(screen,"extra-",6))) {
         manifestBoardQuery[0]=0; return;
     }
@@ -37,5 +37,9 @@ inline void setBoardReport(int pct, const char* screen, const char* frame, int m
     if(report[0]) {
         const size_t used=strlen(manifestBoardQuery);
         snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&ota=%s",report);
+    }
+    if(ota.result==OtaResult::RolledBack && validOtaApproval(approval)) {
+        const size_t used=strlen(manifestBoardQuery);
+        snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&ota_approval=%s",approval);
     }
 }

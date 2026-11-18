@@ -7,6 +7,7 @@ import struct
 import subprocess
 import sys
 
+# Keep in sync with partitions.csv and ota.h (checked by test_upload.py).
 EXPECTED = {
     "nvs": (1, 2, 0x9000, 24 * 1024),
     "otadata": (1, 0, 0xF000, 8 * 1024),
@@ -33,8 +34,8 @@ def flash_command(build: Path, port: str) -> list[str]:
     images = [
         (0, "ventanal.ino.bootloader.bin", 0x8000),
         (0x8000, "ventanal.ino.partitions.bin", 0x1000),
-        (0xF000, "boot_app0.bin", 0x2000),
-        (0x20000, "ventanal.ino.bin", 0x400000),
+        (entries["otadata"][2], "boot_app0.bin", entries["otadata"][3]),
+        (entries["ota_0"][2], "ventanal.ino.bin", entries["ota_0"][3]),
     ]
     command = [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", port,
                "--baud", "921600", "--before", "default-reset", "--after", "hard-reset",

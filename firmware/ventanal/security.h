@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
-#include "security_config.h"
+#include "settings.h"
 #include <Preferences.h>
 #include <HTTPClient.h>
 #include <string>
@@ -28,7 +28,7 @@ inline bool hex64(const char* s) {
     return true;
 }
 inline std::string deviceKey() {
-    const char* s=VENTANAL_DEVICE_KEY; if(!hex64(s)) return {};
+    const char* s=installation.deviceKey; if(!hex64(s)) return {};
     std::string key;
     for(unsigned i=0;i<64;i+=2) {
         auto nibble=[](char c) { return c<='9'?c-'0':c-'a'+10; };
@@ -37,8 +37,8 @@ inline std::string deviceKey() {
     return key;
 }
 inline bool securityConfigured() {
-    return (strlen(VENTANAL_HOST_CERT_PEM) + strlen(VENTANAL_DEVICE_KEY) > 0) ||
-           strncmp(VENTANAL_HOST_URL,"https://",8)==0;
+    return (strlen(installation.certificate) + strlen(installation.deviceKey) > 0) ||
+           strncmp(installation.host,"https://",8)==0;
 }
 inline std::string hmacHex(const std::string& key,const std::string& data) {
     unsigned char out[32];
@@ -109,11 +109,11 @@ inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* 
 #endif
     }
     const std::string key=deviceKey();
-    const std::string origin=VENTANAL_HOST_URL;
-    if(key.size()!=32 || !strlen(VENTANAL_HOST_CERT_PEM) || origin.rfind("https://",0)!=0 ||
+    const std::string origin=installation.host;
+    if(key.size()!=32 || !strlen(installation.certificate) || origin.rfind("https://",0)!=0 ||
        std::string(url).compare(0,origin.size(),origin)!=0 || url[origin.size()]!='/') return false;
 #ifndef VENTANAL_HOST_TEST
-    client.secure.setCACert(VENTANAL_HOST_CERT_PEM);
+    client.secure.setCACert(installation.certificate);
     client.secure.setHandshakeTimeout(5);
 #endif
 #ifdef VENTANAL_HOST_TEST
@@ -134,7 +134,7 @@ inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* 
 struct ExpectedHash { std::string url,sha; };
 inline std::vector<ExpectedHash> expectedHashes;
 inline const char* expectedHash(const char* url) {
-    const std::string origin=VENTANAL_HOST_URL;
+    const std::string origin=installation.host;
     if(std::string(url).compare(0,origin.size(),origin)!=0) return "";
     for(const auto& h:expectedHashes) if(h.url==url+origin.size()) return h.sha.c_str();
     return "";
