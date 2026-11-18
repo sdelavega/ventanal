@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
-#include <Preferences.h>
+#include "../common/installation.h"
 #include <cstdint>
 #include <cstring>
 
@@ -41,32 +41,15 @@ inline bool validSettings(const InstallationSettings& s) {
         && s.clock24h <= 1 && (s.rotation == 1 || s.rotation == 3);
 }
 
-inline bool loadSettings(InstallationSettings& out, const InstallationSettings* seed = nullptr,
-                         uint32_t forceRevision = 0) {
-    out = {};
-    Preferences prefs;
-    // A generic image opens the namespace read-only, including on first boot.
-    const bool canSeed = seed && validSettings(*seed);
-    if (!prefs.begin(settingsNamespace, !canSeed)) return false;
-    const bool present = prefs.isKey(settingsKey);
-    size_t length = present ? prefs.getBytesLength(settingsKey) : 0;
-    bool read = length >= sizeof out.schema && length <= sizeof out
-        && prefs.getBytes(settingsKey, &out, length) == length;
-    const bool force = forceRevision && (!read || length != sizeof out
-        || out.schema != settingsSchema || out.forcedRevision != forceRevision);
-    if (canSeed && (force || !present || (read && out.schema < settingsSchema))) {
-        out = *seed;
-        out.forcedRevision = forceRevision;
-        if (prefs.putBytes(settingsKey, &out, sizeof out) != sizeof out) {
-            out = {};
-            return false;
-        }
-        length = sizeof out;
-        read = prefs.getBytes(settingsKey, &out, length) == length;
-    }
-    if (read && length == sizeof out && validSettings(out)) return true;
-    out = {};
+inline bool migrateSettings(InstallationSettings&, size_t) {
+    // Schema 1 is the first stored format. Add old-schema conversions here.
     return false;
+}
+
+inline bool loadSettings(InstallationSettings& out, const InstallationSettings* seed = nullptr,
+                         uint32_t forceRevision = 0, bool persistMigration = true) {
+    return loadInstallationSettings(out, settingsNamespace, settingsKey, seed, forceRevision,
+                                    persistMigration, validSettings, migrateSettings);
 }
 
 #ifdef VENTANAL_HOST_TEST
@@ -78,8 +61,8 @@ inline InstallationSettings installation{
     VENTANAL_HOST_URL, VENTANAL_TZ, VENTANAL_HOST_CERT_PEM, VENTANAL_DEVICE_KEY
 };
 inline bool hostSettingsAvailable = true;
-inline bool initializeSettings() { return hostSettingsAvailable; }
+inline bool initializeSettings(bool) { return hostSettingsAvailable; }
 #else
 inline InstallationSettings installation{};
-bool initializeSettings();
+bool initializeSettings(bool persistMigration);
 #endif

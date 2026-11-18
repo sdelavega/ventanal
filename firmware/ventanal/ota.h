@@ -32,5 +32,6 @@ void acknowledgeOtaReport(Preferences& prefs, OtaBoot& boot);
 bool confirmOtaBoot(Preferences& prefs, OtaBoot& boot, bool manifestOk, bool screenDrawn);
 void rollbackOtaBoot();
 bool otaCacheLayout();
-void tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
+// Returns true when a failed attempt should defer frame downloads.
+bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
             int battery, int quietStart, int quietEnd);

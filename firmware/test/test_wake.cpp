@@ -10,13 +10,24 @@
 #include <vector>
 static int connections=0, manifests=0, downloads=0, readouts=0, waiting=0, charges=0;
 static bool online=true, frameOK=true, offlineDraw=false;
+static unsigned transientManifestFailures=0;
+static bool otaFails=false;
+static std::string waitingLabel;
 static ScreenInfo art{"aaaaaaaaaaaaaaaa","/frames/art",{1092,22,480,26,false}};
 static ScreenInfo weather{"bbbbbbbbbbbbbbbb","/frames/weather",{1236,30,334,136,true}};
 static uint32_t wifiDelay=0, timeDelay=0, manifestDelay=0, frameDelay=0;
 static std::vector<std::string> downloadPaths;
 bool wifiConnect(uint32_t) { ++connections; delay(wifiDelay); return online; }
 bool syncTime() { delay(timeDelay); return online; }
-bool fetchManifest(ScreenInfo& a,ScreenInfo& w) { ++manifests; delay(manifestDelay); if(!online)return false; a=art;w=weather;return true; }
+bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
+    ++manifests;
+    delay(manifestDelay);
+    if(transient) *transient=transientManifestFailures!=0;
+    if(transientManifestFailures) { --transientManifestFailures; return false; }
+    if(!online) return false;
+    a=art; w=weather;
+    return true;
+}
 bool fetchFrame(const char*,const char* path) { ++downloads; downloadPaths.push_back(path); delay(frameDelay); if(frameOK) files[path]={1}; return frameOK; }
 static std::string blitted;
 
@@ -25,7 +36,7 @@ static ReadoutRect lastReadout{};
 static time_t readoutTime=0;
 static int readoutPct=0;
 void drawReadout(Inkplate&,const ReadoutRect& rect,int pct,bool offline,bool,time_t at,bool) { lastReadout=rect; ++readouts;offlineDraw=offline;readoutTime=at;readoutPct=pct; }
-void drawWaiting(Inkplate&,const char*) { ++waiting; }
+void drawWaiting(Inkplate&,const char* label) { ++waiting; waitingLabel=label; }
 void drawChargeMe(Inkplate&) { ++charges; }
 static OtaBoot simulatedOtaBoot;
 static bool otaLayout=false;
@@ -39,7 +50,7 @@ bool confirmOtaBoot(Preferences&, OtaBoot& boot, bool manifestOk, bool screenDra
 }
 void rollbackOtaBoot() { esp_restart(); }
 bool otaCacheLayout() { return otaLayout; }
-void tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int) {}
+bool tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int) { return otaFails; }
 #include "../ventanal/ventanal.ino"
 static void simulateBoot(esp_reset_reason_t reason) {
     fakeReset=reason;
@@ -62,7 +73,7 @@ static void wake(int cause, bool critical=false) {
         assert(!buttonArmed && timerUs==0);
         assert(pwrHeld && deepHold && pwrLevel==0);
     } else {
-        assert(buttonArmed && timerUs>0);
+        assert(buttonArmed && (timerUs>0)==hostSettingsAvailable);
     }
 }
 int main() {
@@ -264,17 +275,20 @@ int main() {
     // Confirm after a completed frame refresh on the new slot.
     simulatedOtaBoot.pending=simulatedOtaBoot.matching=true;
     simulateBoot(ESP_RST_SW);
+    transientManifestFailures=1;
+    const int sleepsBeforeOta=lightSleeps;
     displayHook=[] { assert(otaConfirmations==0); };
     wake(0);
     displayHook={};
-    assert(otaConfirmations==1 && !otaPendingBoot);
+    assert(otaConfirmations==1 && !otaPendingBoot && lightSleeps==sleepsBeforeOta+1);
 
     // A cached frame drawn offline can't confirm the new app.
     online=false;
     preferences["wdt-count"]={1};
     simulateBoot(ESP_RST_SW);
     try { wake(0); assert(false); } catch(const Restarting&) {}
-    assert(otaConfirmations==1 && otaPendingBoot && preferences.at("wdt-count").at(0)==1);
+    assert(otaConfirmations==1 && otaPendingBoot && lightSleeps==sleepsBeforeOta+2
+           && preferences.at("wdt-count").at(0)==1);
     online=true;
 
     // The old slot must recover even when the failed image tripped a watchdog
@@ -286,6 +300,25 @@ int main() {
     before=connections;
     wake(0);
     assert(connections==before+1 && preferences.at("wdt-count").at(0)==0);
+    simulatedOtaBoot={};
+    otaFails=true;
+    files.erase("/weather.vnf");
+    const int downloadsBeforeOta=downloads;
+    wake(0);
+    assert(downloads==downloadsBeforeOta);
+    otaFails=false;
+
+    hostSettingsAvailable=false;
+    simulateBoot(ESP_RST_POWERON);
+    wake(0);
+    assert(waitingLabel=="Not set up" && buttonArmed && timerUs==0);
+    preferences["wdt-count"]={2};
+    simulateBoot(ESP_RST_TASK_WDT);
+    const int waitingBeforeResetLimit=waiting;
+    wake(0);
+    assert(waiting==waitingBeforeResetLimit && buttonArmed && timerUs==0);
+    hostSettingsAvailable=true;
+
     puts("wake cycle: cache provisioning and preservation, reset strikes, charge latch and normal draw passed");
     return 0;
 }

@@ -3,8 +3,8 @@
 #include "settings.h"
 
 #if defined(VENTANAL_RELEASE_BUILD)
-bool initializeSettings() {
-    return loadSettings(installation);
+bool initializeSettings(bool persistMigration) {
+    return loadSettings(installation, nullptr, 0, persistMigration);
 }
 #else
 #include "security_config.h"
@@ -14,12 +14,13 @@ bool initializeSettings() {
 #define VENTANAL_FORCE_PROVISION 0
 #endif
 
-bool initializeSettings() {
+bool initializeSettings(bool persistMigration) {
     static constexpr InstallationSettings seed{
         settingsSchema, 0, VENTANAL_WAKE_MINUTES, VENTANAL_QUIET_START, VENTANAL_QUIET_END,
         VENTANAL_CLOCK_24H, VENTANAL_ROTATION, VENTANAL_WIFI_SSID, VENTANAL_WIFI_PASSWORD,
         VENTANAL_HOST_URL, VENTANAL_TZ, VENTANAL_HOST_CERT_PEM, VENTANAL_DEVICE_KEY
     };
-    return loadSettings(installation, &seed, VENTANAL_FORCE_PROVISION);
+    return loadSettings(installation, persistMigration ? &seed : nullptr,
+                        VENTANAL_FORCE_PROVISION, persistMigration);
 }
 #endif

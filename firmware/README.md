@@ -12,11 +12,11 @@ rollback and release signing.
 
 ## Toolchain
 
-Install Arduino CLI and Soldered's board index (from the board repository README):
+Install Arduino CLI and the pinned Soldered board index:
 
 ```sh
 brew install arduino-cli
-arduino-cli config add board_manager.additional_urls https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/refs/heads/main/package_Inkplate_Boards_index.json
+arduino-cli config add board_manager.additional_urls https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/17588104356a3a76ce1c9592f2b5a496690d72f8/package_Inkplate_Boards_index.json
 # Dedicated sketchbook avoids scanning unrelated legacy hardware/libraries.
 arduino-cli config set directories.user "$HOME/Library/Arduino15/ventanal-sketchbook"
 arduino-cli core update-index
@@ -25,6 +25,9 @@ arduino-cli lib install 'InkplateLibrary@11.2.1' 'ArduinoJson@7.4.3'
 server/.venv/bin/pip install pyserial esptool
 arduino-cli board listall | grep -i 13SPECTRA
 ```
+
+Install the [owner release public key](../docs/updates.md#owner-signing-key)
+before building firmware for a deployed board.
 
 For a new installation, copy `ventanal/config.example.h` to `ventanal/config.h`
 and edit it privately. Compile against your private configuration; never print it
@@ -48,7 +51,7 @@ Do not use the stock uploader, merged image or generated flash_args for this
 layout. Optional compile properties
 `--build-property recipe.hooks.objcopy.postobjcopy.3.pattern=/usr/bin/true`
 and `--build-property recipe.hooks.objcopy.postobjcopy.4.pattern=/usr/bin/true`
-skip those unused artifacts (used during this task's verification).
+skip those unused artifacts.
 
 32 MB flash, OPI flash at 80 MHz, OPI PSRAM (16 MB fitted), UART0 serial,
 CDC on boot disabled. `PartitionScheme=custom` selects the sketch's CSV;
@@ -66,7 +69,8 @@ Pairing and counters stay in NVS.
 at most once a week. It uses the ESP-IDF certificate bundle and applies the
 same signed-image checks and battery and quiet-hours gates as host offers.
 The first boot of an updated image requires Wi-Fi, a valid host manifest, and
-a completed frame refresh.
+a completed frame refresh. A transient connection failure gets one light-sleep
+retry while the image is still pending.
 
 ## Modes and hardware checks
 

@@ -5,6 +5,7 @@ CXX = c++
 ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJson/src
 SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
 SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
+CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean check_lcd43b_chrome
@@ -272,4 +273,8 @@ build/test_lcd43b_installation: test_lcd43b_installation.cpp ../lcd43b/installat
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_lcd43b_installation.cpp $(LDFLAGS) -o $@
 build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h
 
-build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h ../common/ota_state.h
+build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h ../common/installation.h
+
+build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h ../common/release_key.h ../common/ota_state.h
+
+build/test_settings build/test_security build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../common/installation.h

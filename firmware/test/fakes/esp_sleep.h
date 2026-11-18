@@ -12,11 +12,13 @@ inline bool buttonArmed=false;
 struct Sleeping {};
 inline int esp_sleep_get_wakeup_cause() { return fakeWake; }
 inline void esp_sleep_enable_ext0_wakeup(int,int) { buttonArmed=true; }
-inline void esp_sleep_enable_timer_wakeup(uint64_t us) { timerUs=us; }
+inline int lightSleeps=0;
+inline int esp_sleep_enable_timer_wakeup(uint64_t us) { timerUs=us; return 0; }
+inline int esp_light_sleep_start() { assert(timerUs); ++lightSleeps; return 0; }
 inline int esp_sleep_disable_wakeup_source(int source) {
-    assert(source==ESP_SLEEP_WAKEUP_ALL);
+    assert(source==ESP_SLEEP_WAKEUP_ALL || source==ESP_SLEEP_WAKEUP_TIMER);
     timerUs=0;
-    buttonArmed=false;
+    if(source==ESP_SLEEP_WAKEUP_ALL) buttonArmed=false;
     return 0;
 }
 [[noreturn]] inline void esp_deep_sleep_start() { throw Sleeping{}; }

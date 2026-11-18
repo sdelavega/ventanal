@@ -69,10 +69,35 @@ def stage_sources(work, has_lcd):
             raise ValueError(f"Expected pioarduino 55.03.312-1 in {LCD}/platformio.ini")
 
 
+def prefix_maps(*directories):
+    paths = {path for directory in directories for path in (directory, directory.resolve())}
+    return " ".join(f'"-ffile-prefix-map={path}=."'
+                    for path in sorted(paths, key=lambda path: (len(str(path)), str(path))))
+
+
+def arduino_directories():
+    return [
+        Path(subprocess.check_output(
+            ["arduino-cli", "config", "get", f"directories.{name}"], cwd=ROOT, text=True,
+        ).strip())
+        for name in ("data", "user")
+    ]
+
+
+def ensure_no_home_path(data, board):
+    home = str(Path.home()).encode()
+    # No platform-specific strings utility is needed on the signing machine.
+    # Check the actual home as well as standard prefixes from precompiled inputs.
+    home_prefixes = (b"/Users/", b"/home/", b"/root/", b"/var/root/", b"\\Users\\", home)
+    if any(prefix in data for prefix in home_prefixes):
+        raise ValueError(f"{board} image contains a home directory path")
+
+
 def write_assets(image, output, board, version, minimum, notes_url):
     data = image.read_bytes()
     if not 0 < len(data) <= SLOT_SIZE or data[0] != 0xE9:
         raise ValueError(f"{board} did not produce an ESP application image that fits the OTA slot")
+    ensure_no_home_path(data, board)
     metadata = canonical_release_json({
         "board": board,
         "version": version,
@@ -89,7 +114,8 @@ def write_assets(image, output, board, version, minimum, notes_url):
 def build(args):
     if version_tuple(args.min_from_version) >= version_tuple(args.version):
         raise ValueError("--min-from-version must be older than the release")
-    if args.output.exists():
+    output = ROOT / args.output
+    if output.exists():
         raise ValueError("Choose a new output directory")
     lcd_exists = (ROOT / LCD / "platformio.ini").is_file()
     if args.board == "lcd43b" and not lcd_exists:
@@ -128,12 +154,12 @@ def build(args):
         def compile_board(command, image, board):
             print(shlex.join(command), flush=True)
             if args.dry_run:
-                print(f"Would write {args.output}/ventanal-{board}-{args.version}.{{bin,json}}")
+                print(f"Would write {output}/ventanal-{board}-{args.version}.{{bin,json}}")
             else:
                 subprocess.run(command, cwd=work, check=True)
                 write_assets(image, assets, board, args.version, args.min_from_version, notes_url)
 
-        prefix_map = f'"-ffile-prefix-map={work}=."'
+        prefix_map = prefix_maps(work, *(arduino_directories() if not args.dry_run else ()))
         cpp_flags = f'{prefix_map} -include "{defines}" "-I{sketch}"'
         if has_inkplate:
             compile_board([
@@ -150,14 +176,19 @@ def build(args):
             ], build_dir / "ventanal.ino.bin", "inkplate13spectra")
         if has_lcd:
             project = work / LCD
+            # Keep PlatformIO's core, packages, download cache and build paths
+            # inside the same prefix map as the staged project.
+            pio_core = work / "pio-core"
+            pio_build = work / "pio-build"
             compile_board([
-                *env, f"PLATFORMIO_BUILD_FLAGS={prefix_map} -Wl,--strip-debug",
+                *env, f"PLATFORMIO_CORE_DIR={pio_core}", f"PLATFORMIO_BUILD_DIR={pio_build}",
+                f"PLATFORMIO_BUILD_FLAGS={prefix_maps(work)} -Wl,--strip-debug",
                 f'PLATFORMIO_BUILD_SRC_FLAGS=-include "{defines}"',
                 args.pio, "run", "--project-dir", str(project), "--environment", "normal",
-            ], project / ".pio/build/normal/firmware.bin", "lcd43b")
+            ], pio_build / "normal/firmware.bin", "lcd43b")
         if not args.dry_run:
-            shutil.copytree(assets, args.output)
-            print(f"Wrote unsigned firmware assets to {args.output}")
+            shutil.copytree(assets, output)
+            print(f"Wrote unsigned firmware assets to {output}")
 
 
 def main():

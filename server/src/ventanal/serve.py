@@ -180,9 +180,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     else:
                         board_store.checkin(self.client_address[0], report, timeout=1)
                     if ui is not None:
+                        # Share the identity locks with stale approval cleanup.
                         with ui.auth.lock, ui.security.lock:
                             device = ui.firmware_identity(self.proof_key, self.pairing_id)
-                            if not device_manifest or report.get('board') == 'lcd43b':
+                            if device is not None and (not device_manifest or report.get('board') == 'lcd43b'):
                                 firmware = ui.firmware.checkin(
                                     report.get('board'), device, report.get('fw'), report.get('ota'),
                                     report.get('ota_approval'),

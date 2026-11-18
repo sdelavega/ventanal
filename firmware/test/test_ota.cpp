@@ -19,6 +19,10 @@ int main() {
     OtaRecord record{};
     assert(otaBootResult(record, false, OtaSlotState::Other, false) == OtaResult::None);
     record = {OtaResult::Installing, OtaFailure::None, 0x11, "2.0.0"};
+    assert(validOtaRecord(record));
+    record.version[0] = 'x';
+    assert(!validOtaRecord(record));
+    record.version[0] = '2';
     // Reset after the journal, before the boot partition was selected.
     assert(otaBootResult(record, false, OtaSlotState::Other, false) == OtaResult::Failed);
     // First boot in the new slot waits for the application check.
@@ -54,8 +58,12 @@ int main() {
     formatOtaReport(report, record);
     assert(!strcmp(report, "failed:interrupted"));
     record.failure = OtaFailure::Attempts;
+    record.slot = 0;
     formatOtaReport(report, record);
-    assert(!strcmp(report, "failed:attempts"));
+    assert(!strcmp(report, "failed:attempts")); // Legacy record.
+    setOtaFailure(record, OtaFailure::Download, true);
+    formatOtaReport(report, record);
+    assert(!strcmp(report, "failed:attempts:download"));
 
     OtaAttempts attempts{};
     const char* approval = "0123456789abcdef";
@@ -63,7 +71,9 @@ int main() {
     for (int i = 0; i < 3; ++i) assert(reserveOtaAttempt(attempts, "2.0.0", approval));
     assert(!reserveOtaAttempt(attempts, "2.0.0", approval));
     assert(reserveOtaAttempt(attempts, "2.0.0", "1123456789abcdef") && attempts.count == 1);
-    assert(reserveOtaAttempt(attempts, "2.1.0", "1123456789abcdef") && attempts.count == 1);
+    assert(reserveOtaAttempt(attempts, "2.1.0", "1123456789abcdef") && attempts.count == 2);
+    assert(reserveOtaAttempt(attempts, "2.1.0", "") && attempts.count == 1);
+    assert(reserveOtaAttempt(attempts, "2.2.0", "") && attempts.count == 1);
 
     constexpr int64_t now = 4500000000LL;
     constexpr int64_t week = 604800;

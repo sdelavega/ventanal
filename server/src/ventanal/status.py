@@ -16,8 +16,9 @@ def parse_board(query):
     patterns = {'bat_mv': r'[1-9][0-9]{3}', 'bat': r'(?:0|[1-9][0-9]?|100)', 'screen': r'(?:art|weather|solar|extra-[a-z0-9_-]{1,42})',
                 'frame': r'[0-9a-f]{16}', 'fw': r'[A-Za-z0-9][A-Za-z0-9._-]{0,63}',
                 'board': '|'.join(sorted(BOARDS)),
+                'test_release_key': r'1',
                 'ota_approval': r'[0-9a-f]{16}',
-                'ota': r'(?:ok|rolled_back):[0-9.]{5,17}|failed:[A-Za-z0-9][A-Za-z0-9._-]{0,63}'}
+                'ota': r'(?:ok|rolled_back):[0-9.]{5,17}|failed:[A-Za-z0-9][A-Za-z0-9._-]{0,63}|failed:attempts:[a-z]{1,24}'}
     result = {}
     for key, pattern in patterns.items():
         if key not in query: continue
@@ -71,6 +72,12 @@ class BoardStore(OwnerStore):
                        (datetime.now(timezone.utc).isoformat(), device, ip, json.dumps(values)))
             db.execute('DELETE FROM lcd_checkins WHERE rowid NOT IN '
                        '(SELECT rowid FROM lcd_checkins ORDER BY rowid DESC LIMIT 500)')
+
+    def lcd_reports_test_key(self):
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT data FROM lcd_checkins WHERE rowid IN '
+                              '(SELECT MAX(rowid) FROM lcd_checkins GROUP BY device)')
+            return any(json.loads(row[0]).get('test_release_key') == '1' for row in rows)
 
     def event(self, kind, detail):
         with closing(self.connect()) as db, db:
