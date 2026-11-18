@@ -9,3 +9,13 @@ build/
 
 # Design notes live in the private ventanal-notes repository (linked here locally).
 docs/superpowers
+
+# PlatformIO output and local installation settings
+/firmware/ventanal/.pio/
+/firmware/ventanal/sdkconfig.*
+/firmware/ventanal/platformio.local*.ini
+/firmware/ventanal/private_config.h
+/firmware/ventanal/.dummy/
+/firmware/ventanal/CMakeLists.txt
+/firmware/ventanal/dependencies.lock
+/firmware/ventanal/managed_components/

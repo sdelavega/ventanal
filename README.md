@@ -22,8 +22,8 @@ and the “CALL SIGN” placeholder. Colours simulate the panel.
 - Linux host with Python **3.13+**, systemd, network access to the data sources,
   and enough storage for museum images, frames and the local FCC index.
   The deployment installer targets Debian-family systems.
-- Build computer with Arduino CLI, Soldered's ESP32 core and Inkplate library,
-  USB serial support, and Python with esptool/pyserial.
+- Build computer with CPython 3.13, a PlatformIO virtual environment, and USB
+  serial support. The project installs its pinned ESP32 core and libraries.
 
 The host fetches art/weather/solar data, quantises images against a calibrated
 palette and publishes VNF frames plus a manifest. The board verifies downloads,
@@ -111,28 +111,25 @@ hardware details. Copy `firmware/ventanal/config.example.h` to the git-ignored
 - For password-protected operation, copy the certificate and device key from
   **Settings → Security → Reveal board values**. Keep them private.
 
-Install the [owner release public key](docs/updates.md#owner-signing-key).
-With the documented core and libraries installed, build and upload from the repo root:
+Install the [owner release public key](docs/updates.md#owner-signing-key) and
+select your private header in `firmware/ventanal/platformio.local.ini` as
+described in the firmware guide. With the PlatformIO venv installed, build
+and upload from the repository root:
 
 ```sh
-FQBN='soldered-inkplate-boards:esp32:Inkplate13SPECTRA:FlashSize=32M,FlashMode=opi,PSRAM=opi,PartitionScheme=custom,DebugLevel=none'
-arduino-cli compile --fqbn "$FQBN" --build-path firmware/build/release \
-  --build-property upload.maximum_size=4194304 \
-  --build-property recipe.hooks.objcopy.postobjcopy.3.pattern=/usr/bin/true \
-  --build-property recipe.hooks.objcopy.postobjcopy.4.pattern=/usr/bin/true \
-  firmware/ventanal
-server/.venv/bin/python firmware/tools/upload.py firmware/build/release --port /dev/cu.YOUR_BOARD
+export UV_CONSTRAINT="$PWD/tools/release/platformio-constraints.txt"
+firmware/.venv/bin/pio run -d firmware/ventanal -e normal && \
+  firmware/.venv/bin/python firmware/tools/upload.py firmware/ventanal/.pio/build/normal --port /dev/cu.YOUR_BOARD
 ```
 
-Use Python with esptool installed (the [firmware guide](firmware/README.md)
-shows how to prepare it). Substitute your serial port. The project uploader checks
-our custom partitions and writes the app at `0x20000`; the stock Arduino uploader,
-merged image and generated flash arguments use incompatible offsets. The helper
-preserves the filesystem. Keep build output out of commits. On cold boot the
-board connects, obtains the manifest, caches frames and displays its selection.
+Substitute your serial port. The upload helper validates the OTA partition
+layout and preserves NVS and the filesystem. On cold boot the board connects,
+obtains the manifest, caches frames and displays its selection.
 
 See [wireless firmware updates](docs/updates.md) for the wired OTA migration,
 update approval, rollback and release signing.
+
+Secure Boot and flash encryption are never enabled; see [security hardening](docs/security-hardening.md) for why and for the disabled scaffolding.
 
 ## Using Ventanal
 

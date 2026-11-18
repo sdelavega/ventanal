@@ -1,0 +1,4 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Match the hash-pinned CLI in requirements-platformio.txt in pioarduino's
+# child venv. PlatformIO's version check treats 6.2.0.post1 as a prerelease.
+pioarduino==6.2.0

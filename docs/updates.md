@@ -63,7 +63,8 @@ the WAKE button is pressed. Keep the private build for wired recovery.
 
 A wired private build preserves the current settings after provisioning. To
 apply changed private settings deliberately, compile it with
-`-DVENTANAL_FORCE_PROVISION=1` in `compiler.cpp.extra_flags`. Each nonzero
+`-DVENTANAL_FORCE_PROVISION=1` in `private_flags` in the ignored
+`platformio.local.ini`. Each nonzero
 revision applies once, so use a new revision for each later reprovisioning.
 The replay counter stays in its existing NVS namespace.
 
@@ -111,7 +112,7 @@ and `RELEASE_PUBLIC_KEY_HEX` in `server/src/ventanal/release.py`. Keep the
 private PEM offline and out of the repository, CI and GitHub releases.
 
 The checked-in key is a public test fixture. Firmware builds reject it by
-default. Use `-DVENTANAL_ALLOW_TEST_KEY=1` only for isolated bench builds. The
+default. Use the PlatformIO `bench` environment for isolated test-key builds. The
 board logs **TEST RELEASE KEY** at boot and reports it in check-in. For a bench
 host, set `VENTANAL_ALLOW_TEST_KEY=1` on the server process. Status warns when
 the test key is active, and the host disables OTA with the test key by default.
@@ -154,22 +155,19 @@ complete.
    verified and installable sets. Editing the JSON after signing invalidates
    its signature.
 
-For the local rebuild, use the [pinned Inkplate core and libraries](../firmware/README.md#toolchain),
-Arduino CLI 1.6.0 and CPython 3.13. From the repository root:
+For the local rebuild, use CPython 3.13 and the PlatformIO project pins.
+From the repository root:
 
 ```sh
 python3.13 -m venv /tmp/ventanal-release-venv
 . /tmp/ventanal-release-venv/bin/activate
-python -m pip install --require-hashes --only-binary=:all: -r tools/release/requirements.txt
+python -m pip install --require-hashes --only-binary=:all: -r tools/release/requirements-platformio.txt
 PYTHONPATH=server/src python tools/release/build.py 1.2.3 --output build/ventanal-1.2.3
 ```
 
-When the LCD project is present, use `tools/release/requirements-lcd.txt`
-instead. It includes the Inkplate requirements and installs the pinned
-`pioarduino` CLI. The LCD project pins its platform to `55.03.312-1`.
-The release owner should verify that the publisher of the `pioarduino` PyPI
-package is the intended upstream maintainer before signing the first LCD
-release. Hashes identify the exact artifacts used by the build.
+Both projects use pioarduino `55.03.312-1`. Verify the publisher of the
+`pioarduino` PyPI package before signing the first release. The hashes pin
+the Python build tooling used in CI and in the local rebuild.
 
 The script stages tracked firmware sources, uses public Inkplate settings,
 checks for home directory paths in the application binary, and writes the

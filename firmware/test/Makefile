@@ -2,13 +2,13 @@
 # Copyright (C) 2026 Stephen de la Vega
 CXX = c++
 .DEFAULT_GOAL := test
-ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJson/src
+ARDUINOJSON ?= $(firstword $(wildcard ../ventanal/.pio/libdeps/*/ArduinoJson/src) ../ventanal/.pio/libdeps/bench/ArduinoJson/src)
 SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
 SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
-.PHONY: test clean check_lcd43b_chrome check_lcd43b_pie
+.PHONY: test clean check_lcd43b_chrome check_lcd43b_pie check-arduinojson check-hardening
 
 # Validate the checked-in raster against the current server implementation.
 PYTHON ?= ../../server/.venv/bin/python
@@ -22,7 +22,7 @@ check_lcd43b_pie:
 	    -- firmware ':!firmware/lcd43b/scanout_dim_s3.S' ':!firmware/test/Makefile' || rc=$$?; \
 	    test "$$rc" -eq 1
 
-test: check_lcd43b_pie
+test: check_lcd43b_pie check-arduinojson check-hardening
 
 test: build/test_lcd43b_installation build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist
 	./build/test_lcd43b_installation
@@ -70,6 +70,16 @@ test: build/test_lcd43b_installation build/test_settings build/test_ota build/te
 	./build/test_lcd43b_sync
 	./build/test_lcd43b_persist
 
+build/test_release build/test_net build/test_security build/test_secure_transport: | check-arduinojson
+
+check-arduinojson:
+	@test -f "$(ARDUINOJSON)/ArduinoJson.h" || { \
+		echo "ArduinoJson headers not found. From the repo root, run:" >&2; \
+		echo "  firmware/.venv/bin/pio pkg install -d firmware/ventanal -e bench" >&2; \
+		echo "Or pass ARDUINOJSON=/path/to/ArduinoJson/src to make." >&2; \
+		exit 1; \
+	}
+
 build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_settings.cpp $(LDFLAGS) -o $@
@@ -105,27 +115,27 @@ build/test_overlay: ../ventanal/shade.h ../ventanal/shade_tables.h test_overlay.
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes test_overlay.cpp ../ventanal/overlay.cpp $(LDFLAGS) -o $@
 
-build/test_wake: test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/rtc_io.h fakes/driver/gpio.h Makefile
+build/test_wake: test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/rtc_io.h fakes/driver/gpio.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_stall: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
+build/test_stall: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_pwren: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
+build/test_pwren: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_PWRENTEST=1 -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_boottime build/test_bootconfirm: test_boottime.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_boottime build/test_bootconfirm: test_boottime.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST $(if $(filter build/test_bootconfirm,$@),-DVENTANAL_BOOT_CONFIRM_MS=7000,) -Ifakes test_boottime.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_ponretry: test_ponretry.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_ponretry: test_ponretry.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_ponretry_stall: test_ponretry_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_ponretry_stall: test_ponretry_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
@@ -133,11 +143,11 @@ build/test_owner: test_owner.cpp ../ventanal/owner.h ../ventanal/net.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes test_owner.cpp $(LDFLAGS) -o $@
 
-build/test_spares: test_spares.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_spares: test_spares.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_spares.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.ino ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
@@ -160,23 +170,23 @@ build/test_battcal: test_battcal.cpp ../ventanal/battery.h ../ventanal/logic.cpp
 # Calibration header participates in wake and transport builds.
 build/test_solar build/test_net build/test_secure_transport build/test_wake build/test_statelost build/test_spares build/test_stall build/test_pwren build/test_boottime build/test_bootconfirm build/test_ponretry build/test_ponretry_stall: ../ventanal/battery.h
 
-build/test_battcal_wake: test_battcal_wake.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/battery.h ../ventanal/logic.cpp ../ventanal/owner.h ../ventanal/net.h ../ventanal/logic.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h $(wildcard fakes/*.h) Makefile
+build/test_battcal_wake: test_battcal_wake.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/battery.h ../ventanal/logic.cpp ../ventanal/owner.h ../ventanal/net.h ../ventanal/logic.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_battcal_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_solar: ../ventanal/battery.h ../ventanal/owner.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h test_solar.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h $(wildcard fakes/*.h) Makefile
+build/test_solar: ../ventanal/battery.h ../ventanal/owner.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h test_solar.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_solar.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_longpress: test_longpress.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/owner.h ../ventanal/logic.h ../ventanal/logic.cpp ../ventanal/battery.h ../ventanal/quiet.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/net.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
+build/test_longpress: test_longpress.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/owner.h ../ventanal/logic.h ../ventanal/logic.cpp ../ventanal/battery.h ../ventanal/quiet.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/net.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_longpress.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_extras: test_extras.cpp test_solar.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/net.h ../ventanal/logic.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_extras: test_extras.cpp test_solar.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/net.h ../ventanal/logic.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_extras.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/owner.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/owner.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
@@ -289,3 +299,6 @@ build/test_settings build/test_security build/test_net build/test_cache build/te
 
 build/test_lcd43b_installation build/test_lcd43b_sync: ../common/installation.h
 build/test_lcd43b_sync: ../common/release_key.h
+
+check-hardening:
+	CXX="$(CXX)" ./check_hardening.sh

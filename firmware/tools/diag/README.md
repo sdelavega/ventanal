@@ -18,13 +18,24 @@ unfed 180000 ms whole-wake deadline and three-strike limit. On reset, the next
 sample's `after=pause` means a five-second pause on that recovery boot; the ROM
 reset and `reset=watchdog` lines distinguish it from an uninterrupted pause.
 
-Run `python3 firmware/tools/diag/prepare.py /tmp/ventanal-stall` once with a
-fresh scratch destination. It copies libraries from the installed Ventanal
-sketchbook and applies `busy.patch` only in the scratch copy. Compile with
-`arduino-cli --config-file /tmp/ventanal-stall/arduino.yaml compile` and the
-normal board arguments from task-robust-report.md, plus
-`--build-property compiler.cpp.extra_flags=-DVENTANAL_STALLTEST=1`.
-Use a dedicated build path. Never apply this patch to the installed library.
+After a normal PlatformIO build, run
+`python3 firmware/tools/diag/prepare.py /tmp/ventanal-stall` from the repository
+root. It applies `busy.patch` to a scratch copy of the pinned library. Create an
+ignored `firmware/ventanal/platformio.local-stall.ini` with:
+
+```ini
+[inkplate]
+diag_flags = -DVENTANAL_STALLTEST=1
+
+[env:diag]
+lib_deps =
+    symlink:///tmp/ventanal-stall/InkplateLibrary
+    bblanchon/ArduinoJson@7.4.3
+```
+
+Build `diag` and upload its artifact using the [firmware guide](../../README.md).
+Remove the diagnostic INI after the test. The `normal` environment uses the
+unpatched library.
 
 The patch retains the original driver signature, waits, delay(1), SPI commands,
 power sequence and GPIO configuration. It adds stage tags and Serial logging,
@@ -35,8 +46,8 @@ sites not exercised by Ventanal's full display path. `busy-stuck` is printed onc
 after five seconds and continues waiting. A normal DRF wait exceeds that
 threshold; only an unfinished attempt plus watchdog evidence identifies a stall.
 
-Capture through `stalltest done=40`, then upload a build made with the default
-Arduino configuration (installed unpatched library) and no diagnostic defines.
+Capture through `stalltest done=40`, then upload a build made with the PlatformIO
+`normal` environment.
 Capture a clean reset boot through `stack min-free bytes=`. Do not leave the
 board running the diagnostic. `analyze.py LOG` prints the refresh table and
 min/median/max wait statistics; `--json` includes entry voltage/time and levels.
