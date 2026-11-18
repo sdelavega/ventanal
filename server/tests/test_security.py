@@ -109,6 +109,17 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
               .sign(signer, hashes.SHA256()))
     security.state['certificate'] = legacy.public_bytes(serialization.Encoding.PEM).decode()
     assert security.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 7))
+    security.pair_lcd('desk', 'lcd43b')
+    _, lcd_key_hex = security.lcd_values('desk')
+    lcd_key = bytes.fromhex(lcd_key_hex)
+    lcd_path = '/devices/lcd43b/manifest.json'
+
+    def lcd_proof(identity, counter):
+        return identity.authenticate('GET', lcd_path, {
+            **proof(lcd_key, lcd_path, counter), 'X-Ventanal-Device': 'desk',
+        }, 'lcd43b')
+
+    assert lcd_proof(security, 7) == lcd_key
     original = security.path.read_bytes()
     assert Security(state).certificate == security.certificate
     command = ['regenerate-certificate', '--config', str(config)]
@@ -127,6 +138,8 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     assert rotated.state['previous'] == {
         'certificate': security.certificate, 'private_key': security.state['private_key'],
     }
+    assert lcd_proof(rotated, 7) is None
+    assert lcd_proof(rotated, 8) == lcd_key
     held = rotated.path.read_bytes()
     with pytest.raises(SystemExit):
         main([*command, '--confirm'])
@@ -148,6 +161,8 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     assert restored.key == security.key and restored.state['counter'] == 9
     assert not restored.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 9))
     assert restored.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 10))
+    assert lcd_proof(restored, 8) is None
+    assert lcd_proof(restored, 9) == lcd_key
     assert not restored.can_restore and restored.path.stat().st_mode & 0o777 == 0o600
     with pytest.raises(SystemExit):
         main([*restore, '--confirm'])
@@ -158,6 +173,8 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     forced = Security(state)
     assert forced.certificate != next_identity.certificate
     assert forced.state['previous']['certificate'] == next_identity.certificate
+    assert lcd_proof(forced, 9) is None
+    assert lcd_proof(forced, 10) == lcd_key
 
 
 @pytest.mark.parametrize('command', [
@@ -440,8 +457,9 @@ def test_counter_storage_failure_is_rejected(tmp_path,monkeypatch):
     assert s.accept('GET','/manifest.json',headers)
 
 
-def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
+def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path, monkeypatch):
     from ventanal.devices.lcd43b import _publish_frame
+    from ventanal.config import load_config
     from datetime import datetime, timezone
     import re
 
@@ -459,7 +477,10 @@ def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
     manifest_file = out / manifest_path.lstrip('/')
     manifest_file.write_text(json.dumps(publication))
     (out / 'manifest.json').write_text('{"version":1,"screens":{}}')
-    srv = make_server(out, '127.0.0.1', 0, cache_dir=cache, config_path=config, https_port=0)
+    cert_host = 'lcd.example.test'
+    monkeypatch.setattr('ventanal.security.host_names', lambda: ['127.0.0.1', cert_host])
+    srv = make_server(out, '127.0.0.1', 0, cache_dir=cache, config_path=config,
+                      https_port=0, rerender=lambda: None)
     thread = Thread(target=srv.serve_forever, daemon=True)
     thread.start()
     try:
@@ -474,7 +495,8 @@ def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
             assert client.get(lcd_poll).status_code == 403
         secure = f'https://127.0.0.1:{srv.tls_server.server_address[1]}'
         context = ssl.create_default_context(cadata=srv.ui.security.certificate)
-        with httpx.Client(base_url=secure, verify=context, trust_env=False) as client:
+        with httpx.Client(base_url=secure, verify=context, trust_env=False,
+                          headers={'Host': cert_host}) as client:
             def csrf(path):
                 return re.search(r'name="csrf" value="([^"]+)"', client.get(path).text)[1]
 
@@ -492,7 +514,13 @@ def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
 
             assert client.get('/security').status_code == 303
             assert client.get(lcd_poll).status_code == 403
+            assert client.get(lcd_poll, headers={'Host': 'unknown.example.test'}).status_code == 400
             assert client.post('/login', data={'csrf': csrf('/login'), 'password': password}).status_code == 303
+            assert client.post('/settings/field', data={
+                'csrf': csrf('/settings'), 'field': 'display.clock', 'display.clock': '12h',
+            }).json() == {'saved': True, 'error': ''}
+            cfg = load_config(config)
+            assert not cfg.clock_24h and cfg.lcd43b and cfg.device_id == 'lcd43b'
             assert client.post('/security', data={'action': 'pair-lcd', 'device': 'desk',
                                                   'csrf': 'invalid'}).status_code == 403
             desk = key_from(security('pair-lcd', 'desk'))
@@ -537,6 +565,27 @@ def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
             assert persisted.authenticate('GET', lcd_poll, {
                 **proof(hall, lcd_poll, 4), 'X-Ventanal-Device': 'hall'}, 'lcd43b') is None
             assert persisted.key == srv.ui.security.key
+
+            assert 'Revoke LCD pairing' in client.get('/security').text
+            revoke = {'action': 'revoke-lcd', 'device': 'desk', 'confirm': 'yes'}
+            with httpx.Client(base_url=secure, verify=context, trust_env=False,
+                              headers={'Host': cert_host}) as guest:
+                login = guest.get('/login')
+                guest_csrf = re.search(r'name="csrf" value="([^"]+)"', login.text)[1]
+                assert guest.post('/security', data={**revoke, 'csrf': guest_csrf}).status_code == 303
+            assert client.post('/security', data={**revoke, 'csrf': 'invalid'}).status_code == 403
+            assert security('revoke-lcd', 'desk').status_code == 400
+            assert lcd_get(lcd_poll, 'desk', new_desk, 2).status_code == 200
+            assert Security(cache).state['lcd_devices']['desk']['counter'] == 2
+
+            assert security('revoke-lcd', 'desk', confirm='yes').status_code == 200
+            assert security('reveal-lcd', 'desk').status_code == 400
+            assert lcd_get(lcd_poll, 'desk', new_desk, 3).status_code == 403
+            assert lcd_get(frame['url'], 'desk', new_desk, 4).status_code == 403
+            assert lcd_get(lcd_poll, 'hall', hall, 5).status_code == 200
+            assert client.get(board_poll, headers=proof(srv.ui.security.key, board_poll, 2)).status_code == 200
+            devices = Security(cache).state['lcd_devices']
+            assert set(devices) == {'hall'}
     finally:
         srv.shutdown()
         srv.server_close()

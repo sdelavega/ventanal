@@ -446,9 +446,9 @@ class UI:
             cfg = load_config(self.config_path)
             if post:
                 action=values.get('action')
-                if action in ('regenerate','repair','pair-lcd','repair-lcd','reveal-lcd') and not self.security.ready:
+                if action in ('regenerate','repair','pair-lcd','repair-lcd','reveal-lcd','revoke-lcd') and not self.security.ready:
                     send(400,'Security','Enable security before rotating its certificate or key.'); return
-                if action in ('enable','regenerate','restore','repair','repair-lcd') and values.get('confirm')!='yes':
+                if action in ('enable','regenerate','restore','repair','repair-lcd','revoke-lcd') and values.get('confirm')!='yes':
                     send(400,'Security','Confirm the security change before continuing.'); return
                 try:
                     if action=='enable':
@@ -461,6 +461,7 @@ class UI:
                         if not self.security.restore(): error=self.security.NO_PREVIOUS_CERTIFICATE
                     elif action=='repair': self.security.repair()
                     elif action=='reveal': reveal=True
+                    elif action=='revoke-lcd': self.security.revoke_lcd(values.get('device', ''))
                     elif action in ('pair-lcd', 'repair-lcd', 'reveal-lcd'):
                         device = values.get('device', '')
                         if action != 'reveal-lcd':
@@ -503,6 +504,9 @@ class UI:
                         body += form('/security', token, hidden+'<input type="hidden" name="action" value="repair-lcd">'
                                      '<label><input type="checkbox" name="confirm" value="yes" required>'
                                      'I understand this LCD must be updated afterwards.</label>', 'Re-pair LCD (new device key)')
+                    body += form('/security', token, hidden+'<input type="hidden" name="action" value="revoke-lcd">'
+                                 '<label><input type="checkbox" name="confirm" value="yes" required>'
+                                 'Remove the key and block this LCD from fetching updates.</label>', 'Revoke LCD pairing')
                 if lcd_values:
                     device, profile, key = lcd_values
                     body += ('<p>Copy the certificate as a C++ raw string and use the HTTPS URL above in your private LCD build configuration.</p>'

@@ -224,6 +224,16 @@ class Security:
             return [(device, entry['profile']) for device, entry in
                     sorted(self.state.get('lcd_devices', {}).items())]
 
+    def revoke_lcd(self, device):
+        with self.lock:
+            devices = self.state.get('lcd_devices', {}).copy()
+            if device not in devices:
+                raise ValueError('Unknown LCD pairing ID.')
+            del devices[device]
+            state = {**self.state, 'lcd_devices': devices}
+            private_write(self.path, canonical(state))
+            self.state = state
+
     def lcd_values(self, device):
         with self.lock:
             entry = self.state.get('lcd_devices', {}).get(device)
