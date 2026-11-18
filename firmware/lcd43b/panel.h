@@ -40,6 +40,7 @@ public:
     int prepare() const { return panel_ && waitForPresent() ? 1 - submitted_ : -1; }
     void present(int slot, lcd::ScanFrame scene, uint8_t brightness);
     esp_lcd_panel_handle_t handle() const { return panel_; }
+    uint32_t vsyncCount() const { return vsyncs_.load(std::memory_order_relaxed); }
 
 #ifdef VENTANAL_LCD_DIAG_PANEL
     void reportBounce(uint32_t now) { diag_.report(now, DrainUs, VBlankUs); }

@@ -7,10 +7,6 @@ Experimental port on the separate `port-lcd43b` branch for the Waveshare
 The board has an ESP32-S3 (16 MB flash, 8 MB PSRAM), an 800 × 480 RGB565 LCD,
 GT911 capacitive touch, and a CH422G expander controlling reset and backlight.
 
-The owner has checked the full-screen weather and solar pages, top-bar clock,
-art corner clock, Settings and persistence, gestures, and smooth text on hardware
-and reported “All good”. This guide describes that completed port.
-
 ## Screens and touch controls
 
 Art and spare artworks fill the display. Weather and optional ham solar use
@@ -105,38 +101,59 @@ when that check and the configured solar schedule allow it.
 ## Private configuration and building
 
 Never commit network credentials, host addresses, location or licence details.
-The `VENTANAL_LCD_CONFIG` build flag is the only private-configuration path;
-there is no local `config.h` fallback. Keep the header outside the repository.
-[config.example.h](config.example.h) documents the keys; `VENTANAL_DEVICE_ID` and
-`VENTANAL_TZ` have defaults when omitted.
+Keep the header outside the repository. [config.example.h](config.example.h)
+documents the keys and the defaults used by an unconfigured build.
 
-From the repository root, with the ESP32 Arduino core and required libraries
-installed:
+The LCD project uses PlatformIO Core 6.2.0 and pins
+[pioarduino 55.03.312-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.312-1)
+(Arduino-ESP32 3.3.12, ESP-IDF 5.5.5). On the first build, pioarduino's hybrid
+Arduino build compiles the ESP-IDF libraries with PSRAM XIP and 64-byte data
+cache lines.
+
+Install the compatible pioarduino Core in the existing PlatformIO venv before
+the first build. This platform's version check rejects Core `6.2.0-post.1`.
 
 ```sh
-arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,FlashMode=qio,USBMode=hwcdc,CDCOnBoot=cdc,PartitionScheme=default' \
-  --build-property 'compiler.cpp.extra_flags=-DVENTANAL_LCD_CONFIG="/path/to/private_config.h"' \
-  --build-path /tmp/lcd43b firmware/lcd43b
+~/.platformio/penv/bin/python -m pip install --no-deps 'pioarduino==6.2.0'
 ```
 
-The sketch-local [partitions.csv](partitions.csv) overrides the default layout.
-The build above emits `lcd43b.ino.partitions.bin` with a **4 MiB factory app**
-(`factory`, offset `0x10000`, size `0x400000`) and **11.9 MiB LittleFS**
-(`littlefs`, offset `0x410000`, size `0xBF0000`); that is the partition table
-used when flashing this build. Decoding the generated binary on 2026-11-17,
-using the public example configuration, confirmed these entries. The app binary
-was 1,197,456 bytes: about **28.6% of the real app slot**, leaving **2.86 MiB**
-of headroom. Exact usage varies with configuration and code changes.
+For a configured build, create the ignored file `firmware/lcd43b/platformio.local.ini`:
 
-arduino-cli still reports roughly **91% of 1,310,720 bytes (1.25 MiB)** because
-its size-report yardstick comes from `default.csv` for `PartitionScheme=default`.
-That report does not describe the app capacity of the emitted partition table.
+```ini
+[lcd43b]
+private_flags =
+    '-DVENTANAL_LCD_CONFIG="/absolute/path/to/private_config.h"'
+```
 
-Logs use native USB Serial/JTAG, with `USBMode=hwcdc,CDCOnBoot=cdc` required.
-Select the board's actual serial port; USB CDC ignores the baud rate. Replug USB
-after light sleep before flashing or collecting logs. Production builds leave
-`VENTANAL_LCD_DIAG_*` flags disabled. HTTPS pairing and signed-manifest support
-remain future work for this experimental port.
+For a secure override, add
+`'-DVENTANAL_LCD_SECURITY_CONFIG="/absolute/path/to/pairing_override.h"'`
+under `private_flags`. The same options apply to both environments.
+See the firmware guide for [LCD pairing](../README.md#waveshare-lcd-pairing).
+
+From the repository root:
+
+```sh
+~/.platformio/penv/bin/pio run -d firmware/lcd43b -e normal -e diag
+~/.platformio/penv/bin/pio run -d firmware/lcd43b -e normal -t upload --upload-port /dev/cu.usbmodem101
+~/.platformio/penv/bin/pio device monitor -d firmware/lcd43b --port /dev/cu.usbmodem101
+```
+
+Select the board's actual serial port. The board uses native USB Serial/JTAG.
+After light sleep, replug USB to restore the port. If the uploader cannot enter
+download mode, hold BOOT while plugging in.
+
+`normal` is the everyday build. `diag` starts a three-minute automatic screen
+cycle at boot, logs bounce and VSYNC statistics, and exercises shorter refresh
+and cache-save intervals. Use `-e diag -t upload` for that test and then restore
+`normal`. To add another existing build flag, put it under `private_flags` in
+the local file.
+
+Each build writes `firmware.bin` and `partitions.bin` in
+`firmware/lcd43b/.pio/build/<environment>/`. The [partition table](partitions.csv)
+defines a **4 MiB factory app** at `0x10000` and **11.9 MiB LittleFS** at
+`0x410000`. The project selects QIO flash, 16 MB flash capacity and 80 MHz octal
+PSRAM. The boot log reports PSRAM size, XIP, data cache line size and VSYNC
+cadence. Keep configured binaries and build output private.
 
 ## Anti-aliased fonts and rendering
 

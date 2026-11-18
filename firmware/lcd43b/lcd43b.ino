@@ -26,6 +26,7 @@
 #include <esp_task_wdt.h>
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
+#include <sdkconfig.h>
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
 #include <hal/usb_serial_jtag_ll.h>
 #endif
@@ -56,6 +57,12 @@
 #include "sync.h"
 #include "touch.h"
 #include <esp_sntp.h>
+
+#if defined(PLATFORMIO) && (!defined(CONFIG_SPIRAM_XIP_FROM_PSRAM) || \
+    !defined(CONFIG_SPIRAM_FETCH_INSTRUCTIONS) || !defined(CONFIG_SPIRAM_RODATA) || \
+    CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE != 64)
+#error The LCD build requires PSRAM XIP and a 64-byte data cache line.
+#endif
 #ifdef VENTANAL_LCD_DIAG_GESTURES
 #include "diag.h"
 #endif
@@ -301,6 +308,17 @@ bool beginPanel() {
     esp_lcd_rgb_panel_vsync_cb_t observer = nullptr;
 #endif
     return panel.begin(setLcdResetLine, observer);
+}
+
+void reportBootScanout(uint32_t now) {
+    static const uint32_t start = now;
+    static const uint32_t firstFrame = panel.vsyncCount();
+    static bool reported = false;
+    if (reported || now - start < 1000) return;
+    reported = true;
+    lcd::log("panel boot scanout vsyncs=%u span_ms=%u pclk_hz=%u bounce_rows=%d drain_us=%u\n",
+             unsigned(panel.vsyncCount() - firstFrame), unsigned(now - start),
+             Panel::Pclk, Panel::BounceRows, Panel::DrainUs);
 }
 
 void setBacklight(bool on);
@@ -1261,6 +1279,14 @@ void setup() {
     lcd::log("ventanal lcd43b boot\n");
     lcd::log("usb cdc hw=%d onboot=%d\n", ARDUINO_USB_MODE,
              ARDUINO_USB_CDC_ON_BOOT);
+    lcd::log("memory psram_bytes=%u xip=%d dcache_line_bytes=%d\n",
+             unsigned(ESP.getPsramSize()),
+#ifdef CONFIG_SPIRAM_XIP_FROM_PSRAM
+             1,
+#else
+             0,
+#endif
+             CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE);
     Wire.begin(8, 9);   // SDA=GPIO8, SCL=GPIO9, shared by expander and touch
     Wire.setClock(400000);
     if (!prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
@@ -1372,6 +1398,7 @@ void loop() {
     delay(2);
     return;
 #endif
+    reportBootScanout(now);
     if (lcd::pairingCounterFlash.exchange(false)) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
     if (refreshBusy && xSemaphoreTake(frameStaged, 0) == pdTRUE) applyResidentFrame();

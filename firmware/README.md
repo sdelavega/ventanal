@@ -286,8 +286,9 @@ published feed, and the pairing ID identifies the physical LCD. The PEM must
 cover the hostname or IP in the URL. During certificate rotation, include both
 complete PEM blocks in the raw string to support rollback.
 
-Build and upload the LCD sketch with the LCD board options. You can use a
-second private header selected by `VENTANAL_LCD_SECURITY_CONFIG` to override
+Build and upload the LCD firmware with the
+[LCD PlatformIO project](lcd43b/README.md#private-configuration-and-building).
+You can use a second private header selected by `VENTANAL_LCD_SECURITY_CONFIG` to override
 the pairing values for a test build. The LCD sends
 `X-Ventanal-Device` with each proof, stores its counter in `lcd-sec-counter`,
 and verifies the manifest signature before using the full frame hashes.
