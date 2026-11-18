@@ -169,6 +169,7 @@ uint32_t powerPollMs() {
 #endif
 }
 bool backlightState = false;
+bool backlightKnown = false;
 bool quietBlanking = false;
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
@@ -345,7 +346,7 @@ void reportBootScanout(uint32_t now) {
              Panel::Pclk, Panel::BounceRows, Panel::DrainUs);
 }
 
-void setBacklight(bool on);
+bool setBacklight(bool on);
 void backlightRefresh();
 void reclaimCacheMemory(size_t bytes);
 
@@ -679,17 +680,22 @@ void tickClock() {
              ok, settings.brightness);
 }
 
-void setBacklight(bool on) {
-    if (on == backlightState) return;
+bool setBacklight(bool on) {
+    if (backlightKnown && on == backlightState) return true;
+    backlightKnown = expander.setBacklight(on);
+    if (!backlightKnown) {
+        lcd::log("backlight error=expander requested=%d\n", on);
+        return false;
+    }
 #ifdef VENTANAL_LCD_DIAG_PANEL
     if (on) lcd::scanLit.store(true, std::memory_order_relaxed);
 #endif
     backlightState = on;
-    expander.setBacklight(on);
 #ifdef VENTANAL_LCD_DIAG_PANEL
     if (!on) lcd::scanLit.store(false, std::memory_order_relaxed);
 #endif
     lcd::log("backlight on=%d\n", on);
+    return true;
 }
 
 // Log label transitions only (captures stay quiet while nothing changes).
@@ -708,7 +714,10 @@ void logRefreshLabel() {
 // clock is trustworthy: before the first NTP sync the backlight stays on.
 void backlightRefresh() {
     quietBlanking = false;
-    if(!powerSession.screenOn) { setBacklight(false); return; }
+    if (!powerSession.screenOn || installQueued != lcd::UpdateSource::None) {
+        setBacklight(false);
+        return;
+    }
     if(powerSession.chargeShowing) { setBacklight(panel.handle() != nullptr); return; }
     tm local{};
     const time_t now = time(nullptr);
@@ -1094,7 +1103,7 @@ void tickUpdateBoot() {
 bool showUpdating() {
     // The settings page and update notice share the same PSRAM canvas.
     // Keep the panel dark while retiring and redrawing that canvas.
-    setBacklight(false);
+    if (!setBacklight(false)) return false;
     auto* pixels = localCanvas(true);
     if (!pixels) {
         backlightRefresh();
@@ -1104,11 +1113,11 @@ bool showUpdating() {
     lcd::drawText(pixels, lcd::WIDTH, lcd::HEIGHT, StatusFont, "Updating...",
                   150, 210, lcd::rgb565(255,170,0));
     clockSlot = -1;
-    if (!presentScreen(pixels, true) || !panel.waitForPresent()) {
+    if (!presentScreen(pixels, true) || !panel.waitForPresent() || !panel.waitForVsync()
+        || !setBacklight(true)) {
         backlightRefresh();
         return false;
     }
-    setBacklight(true);
     lcd::log("ota update-screen=presented\n");
     return true;
 }
@@ -1125,8 +1134,7 @@ void runQueuedUpdate() {
             updateNotice = "Update screen unavailable";
         } else {
             delay(1000);  // Leave the notice visible before blanking for the transfer.
-            {
-                ScanoutSavePause pause;
+            if (setBacklight(false)) {
                 refreshWatchdog.subscribe();
                 const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
                 refreshWatchdog.unsubscribe();
@@ -1139,6 +1147,8 @@ void runQueuedUpdate() {
                 lcd::log("ota=%s\n", report);
                 updateNotice = failure == OtaFailure::Attempts
                     ? "Attempt limit reached for this update" : "Installation failed";
+            } else {
+                updateNotice = "Could not blank the display";
             }
             settingsRefreshPending = true;  // Deliver the failure at the next check-in.
             powerSession.activity(millis());
@@ -1148,6 +1158,7 @@ void runQueuedUpdate() {
             returnStagingCanvas();
             show(screenIndex);
         }
+        panel.waitForPresent();
         backlightRefresh();
     } else if (checkQueued) {
         checkQueued = false;
@@ -1187,6 +1198,16 @@ void closeSettings(const char* reason) {
     returnStagingCanvas();
     show(screenIndex);
 }
+void queueInstall(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
+    // Blank at tap acceptance, before any clock redraw, buffer retirement,
+    // or worker completion can touch scan-out. Retry on the next tap if the
+    // expander did not acknowledge the blank.
+    if (!setBacklight(false)) return;
+    queuedOffer = offer;
+    installQueued = source;
+    lcd::log("ota install=queued\n");
+}
+
 void settingsTap(int x,int y) {
     if (updatesPage) {
         const bool busy = checkQueued || refreshCheckingUpdates || installQueued != lcd::UpdateSource::None;
@@ -1199,12 +1220,10 @@ void settingsTap(int x,int y) {
             updateNotice = "Checking for updates...";
             break;
         case lcd::UpdateHit::HostInstall:
-            installQueued = lcd::UpdateSource::Host;
-            queuedOffer = hostOffer;
+            queueInstall(lcd::UpdateSource::Host, hostOffer);
             return;
         case lcd::UpdateHit::GithubInstall:
-            installQueued = lcd::UpdateSource::GitHub;
-            queuedOffer = githubOffer;
+            queueInstall(lcd::UpdateSource::GitHub, githubOffer);
             return;
         default:
             return;
@@ -1524,7 +1543,7 @@ void setup() {
     Wire.begin(8, 9);   // SDA=GPIO8, SCL=GPIO9, shared by expander and touch
     Wire.setClock(400000);
     if (!expander.begin()) lcd::log("error=ch422g-begin\n");
-    expander.setBacklight(false);
+    setBacklight(false);
     installationReady = lcd::initializeInstallation(pendingUpdate);
     if (installationReady && !prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
     updateBoot = lcd::readUpdateBoot(prefs);
@@ -1590,7 +1609,7 @@ void setup() {
 #ifdef VENTANAL_LCD_DIAG_HW
     beginPanel();
     scanBus();
-    expander.setBacklight(true);
+    setBacklight(true);
     lcd::hwProbeBegin();
     return;  // no network worker or private configuration values in probe logs
 #endif
@@ -1648,12 +1667,19 @@ void loop() {
         delay(100);
         return;
     }
+    if (installQueued == lcd::UpdateSource::None) pollTouch(now);
     reportBootScanout(now);
     if (lcd::pairingCounterFlash.exchange(false)) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
     if (refreshBusy && xSemaphoreTake(frameStaged, 0) == pdTRUE) applyResidentFrame();
+    if (installQueued != lcd::UpdateSource::None) {
+        if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
+            applyFinishedRefresh();
+        runQueuedUpdate();
+        delay(2);
+        return;
+    }
     tickClock();
-    pollTouch(now);
     if(settingsPage.expired(millis())) closeSettings("idle");
     backlightRefresh();
     // The label hold (~2 s) expires here: redraw the cached frame clean.
