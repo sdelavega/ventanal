@@ -5,6 +5,14 @@
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include "esp32s3/rom/cache.h"
+#ifdef VENTANAL_LCD_DIAG_PANEL
+#include "soc/gdma_channel.h"
+#include "soc/gdma_reg.h"
+#include "soc/gdma_struct.h"
+#endif
+#ifdef VENTANAL_LCD_DIAG_PANEL_STALL
+#include "esp_rom_sys.h"
+#endif
 #endif
 
 bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observer) {
@@ -45,7 +53,17 @@ bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observ
     active_.store(0, std::memory_order_relaxed);
 #ifdef VENTANAL_LCD_DIAG_PANEL
     syncAt_ = 0;
+    dmaChannel_ = -1;
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    for (unsigned i = 0; i < sizeof(GDMA.channel) / sizeof(GDMA.channel[0]); ++i) {
+        if (GDMA.channel[i].out.peri_sel.sel == SOC_GDMA_TRIG_PERIPH_LCD0) {
+            dmaChannel_ = i;
+            break;
+        }
+    }
+#endif
     diag_.resetCadence();
+    lcd::log("bounce dma channel=%d\n", dmaChannel_);
 #endif
     esp_lcd_rgb_panel_event_callbacks_t callbacks{};
     callbacks.on_vsync = vsync;
@@ -98,6 +116,20 @@ void Panel::present(int slot, lcd::ScanFrame scene, uint8_t brightness) {
     requested_.store(slot, std::memory_order_release);
 }
 
+#ifdef VENTANAL_LCD_DIAG_PANEL
+__attribute__((always_inline)) inline void Panel::sampleDma() {
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+    if (dmaChannel_ < 0) return;
+    auto& channel = GDMA.channel[dmaChannel_].out;
+    constexpr uint32_t fifoFlags = GDMA_OUTFIFO_UDF_L1_CH0_INT_RAW_M |
+                                   GDMA_OUTFIFO_UDF_L3_CH0_INT_RAW_M;
+    const uint32_t status = channel.int_raw.val;
+    if (status & fifoFlags) channel.int_clr.val = status & fifoFlags;
+    diag_.dmaStatus(status & fifoFlags, status & GDMA_OUT_DSCR_ERR_CH0_INT_RAW_M);
+#endif
+}
+#endif
+
 bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
                            const esp_lcd_rgb_panel_event_data_t* event, void* context) {
     auto& self = *static_cast<Panel*>(context);
@@ -105,6 +137,8 @@ bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
     self.vsyncs_.fetch_add(1, std::memory_order_relaxed);
 #ifdef VENTANAL_LCD_DIAG_PANEL
     self.syncAt_ = uint32_t(esp_timer_get_time());
+    self.diag_.vsync(self.syncAt_, VBlankUs, HEIGHT / BounceRows);
+    self.sampleDma();
 #endif
     return self.observer_ && self.observer_(handle, event, nullptr);
 }
@@ -114,6 +148,13 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     auto& self = *static_cast<Panel*>(context);
 #ifdef VENTANAL_LCD_DIAG_PANEL
     const uint32_t start = uint32_t(esp_timer_get_time());
+    const bool prefill = self.syncAt_ && start - self.syncAt_ < 500 &&
+        pos < 2 * WIDTH * BounceRows;
+    const bool lastActive = !prefill && pos == WIDTH * BounceRows;
+    self.diag_.beginFill(start, lastActive);
+#ifdef VENTANAL_LCD_DIAG_PANEL_STALL
+    if (self.diag_.inject(lastActive)) esp_rom_delay_us(3000);
+#endif
 #endif
     // The driver may prefetch row zero before the physical VSYNC. Changing
     // source here (after VSYNC has armed it) keeps both prefetched buffers
@@ -126,7 +167,7 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     lcd::finishScanRows(static_cast<uint16_t*>(buffer), scene, WIDTH, pos, bytes);
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     // Warm the first cache lines of the next section while DMA drains this
-    // one. The section itself is larger than the S3's data cache.
+    // one, leaving cache space for the overlay and other work.
     constexpr unsigned PreloadBytes = 24 * 1024;
     const int next = pos + bytes / sizeof(uint16_t);
     const auto* pixels = next < WIDTH * HEIGHT ? scene.pixels :
@@ -136,8 +177,9 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
                                   PreloadBytes, 0);
 #endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
+    self.sampleDma();
     self.diag_.fill(start, pos, WIDTH, HEIGHT, BounceRows, DrainUs, VBlankUs,
-                    self.syncAt_ && start - self.syncAt_ < 500 && pos < 2 * WIDTH * BounceRows);
+                    prefill);
 #endif
     return false;
 }

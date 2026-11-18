@@ -17,7 +17,7 @@ public:
     static constexpr int WIDTH = 800;
     static constexpr int HEIGHT = 480;
     static constexpr size_t Bytes = size_t(WIDTH) * HEIGHT * sizeof(uint16_t);
-    static constexpr int BounceRows = 40;
+    static constexpr int BounceRows = 20;
     static constexpr unsigned Pclk = 13000000;
     static constexpr unsigned VSyncPulse = 4;
     static constexpr unsigned VBackPorch = 8;
@@ -43,7 +43,7 @@ public:
     esp_lcd_panel_handle_t handle() const { return panel_; }
 
 #ifdef VENTANAL_LCD_DIAG_PANEL
-    void reportBounce(uint32_t now) { diag_.report(now, DrainUs); }
+    void reportBounce(uint32_t now) { diag_.report(now, DrainUs, VBlankUs); }
 #endif
 
 private:
@@ -58,6 +58,8 @@ private:
     int submitted_ = 0;
     std::atomic<unsigned> armed_{0}; // VSYNC writes it; the next row-zero refill consumes it.
 #ifdef VENTANAL_LCD_DIAG_PANEL
+    void sampleDma();
+    int dmaChannel_ = -1;
     lcd::ScanoutDiag diag_;
     uint32_t syncAt_ = 0;
 #endif
