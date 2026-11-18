@@ -6,6 +6,7 @@
 #include <string>
 #include <functional>
 #include <algorithm>
+#define IRAM_ATTR
 using String = std::string;
 inline uint32_t fakeClock = 0;
 inline uint32_t millis() { return fakeClock++; }

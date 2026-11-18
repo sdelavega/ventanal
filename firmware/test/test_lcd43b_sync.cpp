@@ -579,8 +579,13 @@ int main() {
         state.drawn = true;
         strcpy(state.cachedIds[0], "bbbbbbbbbbbbbbbb");
         int screenIndex = 0, spareCursor = 0;
+        bool flashTouched = false;
         assert(lcd::applyRefresh(state, screenIndex, spareCursor, prefs,
-                                 result, false));
+                                 result, false, {}, &flashTouched));
+        assert(flashTouched);
+        assert(lcd::applyRefresh(state, screenIndex, spareCursor, prefs,
+                                 result, false, {}, &flashTouched));
+        assert(!flashTouched);
         assert(!state.offline);
         assert(!strcmp(state.cachedIds[0], "bbbbbbbbbbbbbbbb")); // only publication changes live ids
         assert(!prefs.isKey("id0"));                           // only deferred save writes cache ids
@@ -599,7 +604,7 @@ int main() {
         assert(!lcd::applyRefresh(state, screenIndex, spareCursor, prefs,
                                   failed, false));
 
-        // A shrunk screen list normalises the selection and persists it.
+        // A shrunk screen list normalises the RAM selection for deferred persistence.
         published.spareCount = 0;
         lcd::RefreshResult shrunk;
         shrunk.manifestOk = true;
@@ -610,8 +615,7 @@ int main() {
                           false);
         assert(screenIndex == 0);        // healed to art
         int stored = 0, cursor = 0;
-        assert(lcd::loadSelection(prefs, stored, cursor));
-        assert(stored == 0);
+        assert(!lcd::loadSelection(prefs, stored, cursor));
     }
     {   // redrawNeeded truth table (host-pinned): new content, first draw,
         // offline change or an explicit request each force a redraw.

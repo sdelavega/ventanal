@@ -14,6 +14,7 @@
 #include <algorithm>
 #include <cassert>
 #include <cstdio>
+#include <cstdarg>
 #include <vector>
 
 namespace {
@@ -22,6 +23,7 @@ constexpr int FB_W = Panel::WIDTH;   // 800
 constexpr int FB_H = Panel::HEIGHT;  // 480
 
 uint16_t fb[size_t(FB_W) * FB_H];   // the fake panel's frame buffer
+uint16_t back[size_t(FB_W) * FB_H];
 uint16_t src[size_t(FB_W) * FB_H];  // a full-frame source image
 
 struct BitmapCall {
@@ -34,6 +36,8 @@ unsigned newPanelCalls = 0, deleteCalls = 0;
 bool deleteFails=false;
 esp_lcd_rgb_panel_config_t lastConfig = {};
 
+esp_lcd_rgb_panel_event_callbacks_t events{};
+void* eventsContext = nullptr;
 int dummyPanel = 0;   // the fake handle's pointee
 
 }  // namespace
@@ -56,9 +60,22 @@ esp_err_t esp_lcd_panel_del(esp_lcd_panel_handle_t) {
 
 esp_err_t esp_lcd_panel_init(esp_lcd_panel_handle_t) { return ESP_OK; }
 
-esp_err_t esp_lcd_rgb_panel_get_frame_buffer(esp_lcd_panel_handle_t, uint32_t,
+esp_err_t esp_lcd_rgb_panel_register_event_callbacks(esp_lcd_panel_handle_t,
+    const esp_lcd_rgb_panel_event_callbacks_t* callbacks, void* context) {
+    events = *callbacks;
+    eventsContext = context;
+    return ESP_OK;
+}
+
+esp_err_t esp_lcd_rgb_panel_get_frame_buffer(esp_lcd_panel_handle_t, uint32_t count,
                                              void** fb0, ...) {
     *fb0 = fb;
+    if (count == 2) {
+        va_list args;
+        va_start(args, fb0);
+        *va_arg(args, void**) = back;
+        va_end(args);
+    }
     return ESP_OK;
 }
 
@@ -75,6 +92,8 @@ esp_err_t esp_lcd_panel_draw_bitmap(esp_lcd_panel_handle_t, int x_start,
         return ESP_ERR_INVALID_ARG;
     calls.push_back({x_start, y_start, x_end, y_end,
                      static_cast<const uint16_t*>(color_data)});
+    if (lastConfig.num_fbs == 2 && (color_data == back || color_data == fb))
+        return ESP_OK; // driver-owned full frames switch at a scan boundary
     const int w = x_end - x_start;
     const int h = y_end - y_start;
     const uint16_t* from = static_cast<const uint16_t*>(color_data);
@@ -199,6 +218,40 @@ int main() {
         assert(!panel.blitRegion(0,0,1,1,src));
         assert(panel.begin([](bool) { return true; }));
         assert(panel.blitDimmed(src,src,25));
+    }
+    {
+        Panel panel;
+        assert(panel.begin([](bool) { return true; }, 2));
+        assert(lastConfig.num_fbs == 2 && panel.bufferCount() == 2);
+        assert(panel.framebuffer() == back);
+        const auto oldFirst = fb[0];
+        assert(panel.blit(src) && calls.back().data == back && fb[0] == oldFirst);
+        assert(panel.framebuffer() == nullptr); // old front is still in use
+        events.on_vsync(panel.handle(), nullptr, eventsContext);
+        assert(panel.framebuffer() == nullptr);
+        events.on_vsync(panel.handle(), nullptr, eventsContext);
+        assert(panel.framebuffer() == nullptr); // scan timing alone is insufficient
+        events.on_frame_buf_complete(panel.handle(), nullptr, eventsContext);
+        assert(panel.framebuffer() == fb);
+
+        uint16_t clock = 0x4321;
+        assert(panel.blitRegion(4, 3, 1, 1, &clock));
+        assert(calls.back().data == fb && fb[3*FB_W+4] == clock);
+        assert(fb[0] == back[0] && fb[FB_W*FB_H-1] == back[FB_W*FB_H-1]);
+        events.on_frame_buf_complete(panel.handle(), nullptr, eventsContext);
+        events.on_vsync(panel.handle(), nullptr, eventsContext);
+        events.on_vsync(panel.handle(), nullptr, eventsContext);
+        clock = 0x1234;
+        assert(panel.blitRegion(4, 3, 1, 1, &clock));
+        assert(calls.back().data == back && back[3*FB_W+4] == clock);
+    }
+    {
+        Panel panel;
+        assert(panel.begin([](bool) { return true; }));
+        std::vector<uint8_t> wire(16 + Panel::Bytes);
+        for (size_t i = 0; i < Panel::Bytes; ++i) wire[16+i] = uint8_t(i % 251);
+        panel.copyBackground(panel.framebuffer(), wire.data() + 16);
+        assert(memcmp(fb, wire.data() + 16, Panel::Bytes) == 0);
     }
     puts("lcd43b panel: blit args (0,0,800,480), vertical lines, full cover,"
          " anti-flicker bounce config passed");

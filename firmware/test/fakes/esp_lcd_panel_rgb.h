@@ -38,6 +38,7 @@ typedef struct {
 typedef struct {
     lcd_clock_source_t clk_src;
     esp_lcd_rgb_timing_t timings;
+    size_t num_fbs;
     size_t data_width;
     size_t bits_per_pixel;
     size_t bounce_buffer_size_px;
@@ -60,3 +61,14 @@ esp_err_t esp_lcd_new_rgb_panel(const esp_lcd_rgb_panel_config_t* config,
 
 esp_err_t esp_lcd_rgb_panel_get_frame_buffer(esp_lcd_panel_handle_t panel,
                                              uint32_t fb_num, void** fb0, ...);
+
+typedef struct { int unused; } esp_lcd_rgb_panel_event_data_t;
+typedef bool (*esp_lcd_rgb_panel_vsync_cb_t)(esp_lcd_panel_handle_t,
+    const esp_lcd_rgb_panel_event_data_t*, void*);
+typedef struct {
+    esp_lcd_rgb_panel_vsync_cb_t on_vsync;
+    esp_lcd_rgb_panel_vsync_cb_t on_frame_buf_complete;
+} esp_lcd_rgb_panel_event_callbacks_t;
+
+esp_err_t esp_lcd_rgb_panel_register_event_callbacks(esp_lcd_panel_handle_t panel,
+    const esp_lcd_rgb_panel_event_callbacks_t* callbacks, void* context);

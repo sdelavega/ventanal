@@ -394,8 +394,14 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
-        auto* bytes = cache.staging && cache.allocated[slot]
-            ? static_cast<uint8_t*>(ps_malloc(info->size)) : nullptr;
+        uint8_t* bytes = nullptr;
+        if (cache.staging && cache.allocated[slot]) {
+            bytes = static_cast<uint8_t*>(ps_malloc(info->size));
+            if (!bytes && cache.reclaimWireMemory) {
+                cache.reclaimWireMemory();
+                bytes = static_cast<uint8_t*>(ps_malloc(info->size));
+            }
+        }
         if (!bytes) {
             log("download slot=%s skipped=no-psram bytes=%u\n", SLOT_NAMES[slot],
                 unsigned(info->size));

@@ -37,6 +37,8 @@ struct ResidentCache {
     // info pointer means drop; otherwise body contains the verified wire bytes.
     void (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
+    // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
+    void (*reclaimWireMemory)() = nullptr;
 };
 
 // Budgets (ms). The transfer budget bounds each stalled frame download;
@@ -150,17 +152,18 @@ void runRefresh(const char* hostUrl, const char* deviceId,
 inline bool applyRefresh(RefreshState& state, int& screenIndex,
                         int& spareCursor, Preferences& prefs,
                         const RefreshResult& result, bool requested,
-                        const DeviceSettings& settings = DeviceSettings{}) {
+                        const DeviceSettings& settings = DeviceSettings{},
+                        bool* flashTouched = nullptr) {
     const bool wasOffline = state.offline;
     const int previousSlot=screenSlot(screenIndex,state.manifest.screens[2].present,
                                       state.manifest.spareCount,settings);
     if (result.manifestOk) {
         state.manifest = result.manifest;
-        saveQuiet(prefs, state.manifest);
-        savePublishShape(prefs, state.manifest);
+        const bool quietChanged = saveQuiet(prefs, state.manifest);
+        const bool shapeChanged = savePublishShape(prefs, state.manifest);
+        if (flashTouched) *flashTouched = quietChanged || shapeChanged;
         remapSelection(screenIndex, spareCursor, previousSlot, state.manifest.screens[2].present,
                           state.manifest.spareCount,settings);
-        saveSelection(prefs, screenIndex, spareCursor);   // survive reboot
     }
     state.offline = !result.manifestOk;
     return redrawNeeded(requested, result.manifestOk, state.drawn,

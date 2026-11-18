@@ -24,6 +24,26 @@ void freshNvs() { preferences.clear(); }
 }  // namespace
 
 int main() {
+    {
+        lcd::DeferredSelection selection;
+        selection.restored(0, -1);
+        selection.activity(1000);
+        assert(!selection.due(1, -1, 60999, true));
+        selection.activity(60999);
+        assert(!selection.due(1, -1, 120998, true));
+        assert(selection.due(1, -1, 120999, true));
+        assert(selection.due(1, -1, 61000, false)); // quiet/off/timeout
+        assert(!selection.due(0, -1, 130000, false)); // returned to saved selection
+        assert(selection.due(0, 2, 130000, false)); // spare-only selection
+        selection.failed(130000);
+        assert(!selection.due(0, 2, 139999, false));
+        assert(selection.due(0, 2, 140000, false));
+        selection.restored(0, 2);
+        assert(!selection.due(0, 2, 140000, false));
+        selection.activity(UINT32_MAX - 100);
+        assert(!selection.due(1, 2, 59898, true));
+        assert(selection.due(1, 2, 59899, true));
+    }
     {   // Validated quiet settings persist and reload on a fresh boot.
         freshNvs();
         Preferences prefs;

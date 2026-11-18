@@ -70,11 +70,19 @@ constexpr uint16_t QUIET_NONE = 0xFFFF;
 
 // Persist the (manifest-validated) quiet window; an invalid or absent
 // window clears any previously stored one.
-inline void saveQuiet(Preferences& prefs, const DeviceManifest& manifest) {
+inline bool saveQuiet(Preferences& prefs, const DeviceManifest& manifest) {
+    bool changed = false;
     const uint16_t start = manifest.quietValid() ? uint16_t(manifest.quietStart) : QUIET_NONE;
     const uint16_t end = manifest.quietValid() ? uint16_t(manifest.quietEnd) : QUIET_NONE;
-    if (prefs.getUShort("quiet-start", QUIET_NONE) != start) prefs.putUShort("quiet-start", start);
-    if (prefs.getUShort("quiet-end", QUIET_NONE) != end) prefs.putUShort("quiet-end", end);
+    if (prefs.getUShort("quiet-start", QUIET_NONE) != start) {
+        prefs.putUShort("quiet-start", start);
+        changed = true;
+    }
+    if (prefs.getUShort("quiet-end", QUIET_NONE) != end) {
+        prefs.putUShort("quiet-end", end);
+        changed = true;
+    }
+    return changed;
 }
 
 // Load the persisted quiet window into the (freshly booted) manifest.
@@ -91,13 +99,21 @@ inline bool loadQuiet(Preferences& prefs, DeviceManifest& manifest) {
 // Persist the published screen shape so a boot before any manifest fetch
 // can still normalise the selection against the right list. Keep the
 // manifest clock preference alongside it for the same offline boot path.
-inline void savePublishShape(Preferences& prefs, const DeviceManifest& m) {
-    if (prefs.getUChar("solar-pub", 0) != m.screens[2].present)
+inline bool savePublishShape(Preferences& prefs, const DeviceManifest& m) {
+    bool changed = false;
+    if (prefs.getUChar("solar-pub", 0) != m.screens[2].present) {
         prefs.putUChar("solar-pub", m.screens[2].present);
-    if (prefs.getUChar("spare-count", 0) != m.spareCount)
+        changed = true;
+    }
+    if (prefs.getUChar("spare-count", 0) != m.spareCount) {
         prefs.putUChar("spare-count", m.spareCount);
-    if (prefs.getUChar("clock24h", 1) != m.clock24h)
+        changed = true;
+    }
+    if (prefs.getUChar("clock24h", 1) != m.clock24h) {
         prefs.putUChar("clock24h", m.clock24h);
+        changed = true;
+    }
+    return changed;
 }
 
 inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
@@ -143,11 +159,15 @@ inline void loadCacheLocations(Preferences& prefs, CacheLocation entries[SCREEN_
 }
 
 // The selection keeps the phase-1 keys ("screen", "spare-cursor").
-inline void saveSelection(Preferences& prefs, int screenIndex, int spareCursor) {
-    if (prefs.getUChar("screen", 255) != uint8_t(screenIndex))
-        prefs.putUChar("screen", uint8_t(screenIndex));
-    if (prefs.getUChar("spare-cursor", 0) != uint8_t(spareCursor))
-        prefs.putUChar("spare-cursor", uint8_t(spareCursor));
+inline bool saveSelection(Preferences& prefs, int screenIndex, int spareCursor) {
+    const auto save = [&prefs](const char* key, int value, uint8_t fallback) {
+        return prefs.getUChar(key, fallback) == uint8_t(value)
+            || prefs.putUChar(key, uint8_t(value)) == sizeof(uint8_t);
+    };
+    // The spare cursor uses 255 on disk for the RAM sentinel -1.
+    const bool screenSaved = save("screen", screenIndex, 255);
+    const bool spareSaved = save("spare-cursor", spareCursor, 0);
+    return screenSaved && spareSaved;
 }
 
 // Load the persisted selection (defaults: art, spare0). Returns false
@@ -156,7 +176,8 @@ inline bool loadSelection(Preferences& prefs, int& screenIndex,
                           int& spareCursor) {
     const bool stored = prefs.isKey("screen");
     screenIndex = int(prefs.getUChar("screen", 0));
-    spareCursor = int(prefs.getUChar("spare-cursor", 0));
+    const uint8_t cursor = prefs.getUChar("spare-cursor", 0);
+    spareCursor = cursor == 255 ? -1 : int(cursor);
     return stored;
 }
 

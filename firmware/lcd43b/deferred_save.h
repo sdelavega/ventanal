@@ -15,6 +15,39 @@ inline bool persistNow(bool backlightOn, bool quiet, uint32_t elapsedMs, bool pe
     return pending && (quiet || !backlightOn || elapsedMs >= MAX_SAVE_DELAY_MS);
 }
 
+// Track the saved pair independently of frame availability and LittleFS.
+class DeferredSelection {
+public:
+    static constexpr uint32_t IdleMs = 60000;
+    static constexpr uint32_t RetryMs = 10000;
+
+    void restored(int screen, int spare) {
+        savedScreen_ = screen;
+        savedSpare_ = spare;
+        retrying_ = false;
+    }
+
+    void activity(uint32_t now) { lastActivity_ = now; }
+
+    bool due(int screen, int spare, uint32_t now, bool backlightOn) const {
+        return (screen != savedScreen_ || spare != savedSpare_) &&
+            (!backlightOn || now - lastActivity_ >= IdleMs) &&
+            (!retrying_ || now - failedAt_ >= RetryMs);
+    }
+
+    void failed(uint32_t now) {
+        failedAt_ = now;
+        retrying_ = true;
+    }
+
+private:
+    int savedScreen_ = 0;
+    int savedSpare_ = 0;
+    uint32_t lastActivity_ = 0;
+    uint32_t failedAt_ = 0;
+    bool retrying_ = false;
+};
+
 struct FrameBody {
     std::shared_ptr<uint8_t> bytes;
     size_t size = 0;
