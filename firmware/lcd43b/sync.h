@@ -39,7 +39,7 @@ struct ResidentCache {
     bool forceDownloads = false;
     void (*manifestVerified)() = nullptr;
     // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
-    void (*reclaimWireMemory)() = nullptr;
+    void (*reclaimWireMemory)(size_t bytes) = nullptr;
 };
 
 // Budgets (ms). The transfer budget bounds each stalled frame download;

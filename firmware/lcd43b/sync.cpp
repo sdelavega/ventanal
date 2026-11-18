@@ -378,7 +378,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
         if (cache.staging && cache.allocated[slot]) {
             bytes = static_cast<uint8_t*>(ps_malloc(info->size));
             if (!bytes && cache.reclaimWireMemory) {
-                cache.reclaimWireMemory();
+                cache.reclaimWireMemory(info->size);
                 bytes = static_cast<uint8_t*>(ps_malloc(info->size));
             }
         }

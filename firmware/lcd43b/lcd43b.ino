@@ -346,6 +346,7 @@ void reportBootScanout(uint32_t now) {
 
 void setBacklight(bool on);
 void backlightRefresh();
+void reclaimCacheMemory(size_t bytes);
 
 // Loop owns these buffers. A scene's packed overlays stay immutable until
 // the bounce callback has switched away from that scene.
@@ -387,7 +388,13 @@ void retirePixels(const uint16_t* pixels) {
 }
 
 uint16_t* localCanvas() {
-    if (!canvas) canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
+    if (!canvas) {
+        canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
+        if (!canvas) {
+            reclaimCacheMemory(Panel::Bytes);
+            canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
+        }
+    }
     retirePixels(canvas);
     return canvas;
 }
@@ -754,6 +761,7 @@ struct PendingFrame {
     int slot;
     const lcd::FrameInfo* info;
     const lcd::FrameBody* body;
+    size_t requestedBytes = 0;
 };
 PendingFrame pendingFrame;
 SemaphoreHandle_t frameStaged;       // worker -> loop: decoded frame ready
@@ -768,10 +776,10 @@ bool stageResidentFrame(int slot, const lcd::FrameInfo* info, const lcd::FrameBo
     return frameAccepted;
 }
 
-void requestWireMemory() {
+void requestWireMemory(size_t bytes) {
     // The worker parks just as it does for decoded-frame publication.
     // Only loop may release or recreate the scan-out buffers.
-    pendingFrame = {-1, nullptr, nullptr};
+    pendingFrame = {-1, nullptr, nullptr, bytes};
     xSemaphoreGive(frameStaged);
     xSemaphoreTake(frameCopied, portMAX_DELAY);
 }
@@ -792,6 +800,7 @@ void applyResidentFrame() {
             free(canvas);
             canvas = nullptr;
         }
+        reclaimCacheMemory(frame.requestedBytes);
         xSemaphoreGive(frameCopied);
         return;
     }
@@ -843,12 +852,13 @@ bool pendingCacheSave(uint32_t now) {
     return false;
 }
 
-void persistDeferred() {
+bool persistDeferred(bool memoryPressure) {
     const uint32_t now = millis();
 
     // The spare backing a selected override must stay available until its
     // archive is committed. Other slots can save in either order.
-    const auto due = [now](const lcd::DeferredSave& save) {
+    const auto due = [now, memoryPressure](const lcd::DeferredSave& save) {
+        if (memoryPressure) return save.body.bytes && save.ready(now);
         uint32_t elapsed = now - save.queuedAt;
 #ifdef VENTANAL_LCD_DIAG_PANEL
         if (elapsed >= 12000) elapsed = lcd::MAX_SAVE_DELAY_MS; // exercise the deadline
@@ -856,7 +866,7 @@ void persistDeferred() {
         return lcd::persistNow(backlightState, quietBlanking, elapsed, save.ready(now));
     };
     int slot = -1;
-    const bool saveFrames = mounted && !settingsPage.active;
+    const bool saveFrames = mounted && (memoryPressure || !settingsPage.active);
     lcd::DeferredSave* chosen = saveFrames && due(deferredOverride) ? &deferredOverride : nullptr;
     if (saveFrames && !chosen) {
         for (int i = 0; i < lcd::SCREEN_SLOTS; ++i) {
@@ -867,8 +877,9 @@ void persistDeferred() {
             }
         }
     }
-    const bool saveSelection = selectionSave.due(screenIndex, spareCursor, now, backlightState);
-    if (!chosen && !saveSelection) return;
+    const bool saveSelection = !memoryPressure &&
+        selectionSave.due(screenIndex, spareCursor, now, backlightState);
+    if (!chosen && !saveSelection) return false;
 
     const bool wasLit = backlightState;
     ScanoutSavePause pause;
@@ -903,6 +914,15 @@ void persistDeferred() {
             chosen->failedAt = millis();
             chosen->retrying = true;
         }
+    }
+    return chosen != nullptr;
+}
+
+void reclaimCacheMemory(size_t bytes) {
+    // Queued frames own their compressed bodies until LittleFS commits them.
+    // A cold cache can fill PSRAM before the regular dark-screen save window.
+    while (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < bytes) {
+        if (!persistDeferred(true)) break;
     }
 }
 
@@ -1059,48 +1079,55 @@ void tickUpdateBoot() {
     }
 }
 
+bool showUpdating() {
+    // The settings page and update notice share the same PSRAM canvas.
+    // Keep the panel dark while retiring and redrawing that canvas.
+    setBacklight(false);
+    auto* pixels = localCanvas();
+    if (!pixels) return false;
+    lcd::drawSettingsChrome(pixels, false);
+    lcd::drawText(pixels, lcd::WIDTH, lcd::HEIGHT, StatusFont, "Updating...",
+                  150, 210, lcd::rgb565(255,170,0));
+    clockSlot = -1;
+    if (!presentScreen(pixels, true) || !panel.waitForPresent()) return false;
+    setBacklight(true);
+    lcd::log("ota update-screen=presented\n");
+    return true;
+}
+
 void runQueuedUpdate() {
     if (refreshBusy) return;
     if (installQueued != lcd::UpdateSource::None) {
         const auto source = installQueued;
         installQueued = lcd::UpdateSource::None;
         const auto& current = source == lcd::UpdateSource::Host ? hostOffer : githubOffer;
-        auto* pixels = localCanvas();
         if (!current.version[0] || !lcd::sameOffer(current, queuedOffer)) {
             updateNotice = "Offer changed. Select the current update.";
-        } else if (!pixels) {
+        } else if (!showUpdating()) {
             updateNotice = "Update screen unavailable";
         } else {
-            lcd::drawSettingsChrome(pixels, false);
-            lcd::drawText(pixels, lcd::WIDTH, lcd::HEIGHT, StatusFont, "Updating...",
-                          150, 210, lcd::rgb565(255,170,0));
-            clockSlot = -1;
-            if (!presentScreen(pixels, true) || !panel.waitForPresent()) {
-                updateNotice = "Update screen unavailable";
-            } else {
-                setBacklight(true);
-                delay(1000);  // Give the owner time to see the message before blanking.
-                {
-                    ScanoutSavePause pause;
-                    refreshWatchdog.subscribe();
-                    const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
-                    refreshWatchdog.unsubscribe();
-                    if (failure == OtaFailure::None) {
-                        lcd::log("ota reboot=%s\n", current.version);
-                        esp_restart();
-                    }
-                    char report[otaReportCapacity];
-                    formatOtaReport(report, updateBoot.journal.record);
-                    lcd::log("ota=%s\n", report);
-                    updateNotice = failure == OtaFailure::Attempts
-                        ? "Attempt limit reached for this update" : "Installation failed";
+            delay(2000);  // Leave the notice visible before blanking for the transfer.
+            {
+                ScanoutSavePause pause;
+                refreshWatchdog.subscribe();
+                const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
+                refreshWatchdog.unsubscribe();
+                if (failure == OtaFailure::None) {
+                    lcd::log("ota reboot=%s\n", current.version);
+                    esp_restart();
                 }
-                settingsRefreshPending = true;  // Deliver the failure at the next check-in.
-                powerSession.activity(millis());
+                char report[otaReportCapacity];
+                formatOtaReport(report, updateBoot.journal.record);
+                lcd::log("ota=%s\n", report);
+                updateNotice = failure == OtaFailure::Attempts
+                    ? "Attempt limit reached for this update" : "Installation failed";
             }
+            settingsRefreshPending = true;  // Deliver the failure at the next check-in.
+            powerSession.activity(millis());
         }
         if (settingsPage.active) showSettings();
         else show(screenIndex);
+        backlightRefresh();
     } else if (checkQueued) {
         checkQueued = false;
         if (!startRefresh(false, true)) {
@@ -1152,11 +1179,11 @@ void settingsTap(int x,int y) {
         case lcd::UpdateHit::HostInstall:
             installQueued = lcd::UpdateSource::Host;
             queuedOffer = hostOffer;
-            break;
+            return;
         case lcd::UpdateHit::GithubInstall:
             installQueued = lcd::UpdateSource::GitHub;
             queuedOffer = githubOffer;
-            break;
+            return;
         default:
             return;
         }
@@ -1380,7 +1407,7 @@ void restoreTouchWake() {
 }
 void sleepPower() {
     setBacklight(false);
-    persistDeferred(); // selection becomes due on the same transition to dark
+    persistDeferred(false); // selection becomes due on the same transition to dark
     // Let loop() drain one file per pass before entering light sleep.
     if (!settingsPage.active && pendingCacheSave(millis())) {
         powerSession.sleep();
@@ -1635,7 +1662,7 @@ void loop() {
         powerSession.refreshStarted(started);
         if(started) settingsRefreshPending=false;
     }
-    persistDeferred();
+    persistDeferred(false);
     if (!updateBoot.pending) tickPower();
     delay(2);
 }
