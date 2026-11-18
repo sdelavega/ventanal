@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 
 #include "panel.h"
+#include <cassert>
 
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
 #include "esp32s3/rom/cache.h"
@@ -110,6 +111,8 @@ bool Panel::references(const uint16_t* pixels) const {
 }
 
 void Panel::present(int slot, lcd::ScanFrame scene, uint8_t brightness) {
+    assert(panel_ && slot == 1 - submitted_ &&
+           active_.load(std::memory_order_acquire) == unsigned(submitted_));
     scene.brightnessQuarters = brightness / 25;
     scenes_[slot] = scene;
     submitted_ = slot;

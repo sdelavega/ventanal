@@ -310,6 +310,7 @@ bool beginPanel() {
     return panel.begin(setLcdResetLine, observer);
 }
 
+// Deliberately runs outside diag fencing to verify scanout cadence alongside the XIP/64B boot log.
 void reportBootScanout(uint32_t now) {
     static const uint32_t start = now;
     static const uint32_t firstFrame = panel.vsyncCount();
@@ -356,7 +357,11 @@ void retirePixels(const uint16_t* pixels) {
     }
     // A broken scan interrupt cannot acknowledge pointer retirement.
     // Stop DMA before any caller writes or frees the old source.
-    if (!panel.stop()) ESP.restart();
+    if (!panel.stop()) {
+        lcd::log("panel restart=scanout-retirement-dma-stop-failed\n"); // Flushes when USB is open.
+        delay(20);
+        ESP.restart();
+    }
 }
 
 uint16_t* localCanvas() {
@@ -396,6 +401,7 @@ void loadResidentCache() {
     const uint32_t started = millis();
     for (auto& pixels : statusPixels)
         pixels = static_cast<StatusPixels*>(ps_malloc(sizeof(StatusPixels)));
+    if (!statusPixels[0] || !statusPixels[1]) lcd::log("status pixels error=allocation\n");
     unsigned allocated = 0;
     unsigned loaded = 0;
     constexpr int firstSpare = lcd::SCREEN_SLOTS - lcd::SPARE_SLOTS;
@@ -495,6 +501,11 @@ void saveRtcAfterNtp() {
 // Settings owns the panel while open. Every other redraw routes here, and
 // minute updates use CLOCK_GAP even when the underlying selection is artwork.
 void closeSettings(const char* reason);
+constexpr bool patchFitsPanel(lcd::ScanRect r) {
+    return r.x >= 0 && r.y >= 0 && r.w > 0 && r.h > 0 &&
+           r.w <= Panel::WIDTH - r.x && r.h <= Panel::HEIGHT - r.y;
+}
+
 void copyPatch(uint16_t* out, const uint16_t* source, lcd::ScanRect r) {
     for (int y = 0; y < r.h; ++y)
         memcpy(out + y * r.w, source + (r.y + y) * lcd::WIDTH + r.x, size_t(r.w) * 2);
@@ -511,12 +522,14 @@ bool presentScreen(const uint16_t* source, bool localSettings = false, bool* clo
         if (auto* status = statusPixels[sceneIndex]) {
             if (state.offline) {
                 constexpr lcd::ScanRect r{0, 0, StatusWidth, OfflineHeight};
+                static_assert(patchFitsPanel(r));
                 copyPatch(status->offline, source, r);
                 lcd::drawOfflineMark(status->offline, r.w, r.h);
                 scene.patches[0] = {r, status->offline};
             }
             if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
                 constexpr lcd::ScanRect r{0, lcd::HEIGHT - 46, StatusWidth, RefreshHeight};
+                static_assert(patchFitsPanel(r));
                 copyPatch(status->refresh, source, r);
                 const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
                               || refreshLabel.label() == lcd::RefreshLabel::Failed;
@@ -528,6 +541,7 @@ bool presentScreen(const uint16_t* source, bool localSettings = false, bool* clo
     }
     if (clockSlot >= 0 && clockPixels[sceneIndex]) {
         auto* pixels = clockPixels[sceneIndex];
+        static_assert(patchFitsPanel(lcd::CLOCK_GAP) && patchFitsPanel(lcd::ART_CORNER));
         const auto r = lcd::readoutRect(clockSlot);
         if (!lcd::isLcarsSlot(clockSlot)) copyPatch(pixels, source, r);
         const bool valid = renderClock(pixels);
@@ -657,8 +671,9 @@ public:
     }
     ~ScanoutSavePause() {
         if (!restore_) return;
-        if (panel.waitForVsync() && panel.waitForVsync() && panel.waitForPresent())
-            backlightRefresh();
+        if (!(panel.waitForVsync() && panel.waitForVsync() && panel.waitForPresent()))
+            lcd::log("panel save pause scanout=timeout\n");
+        backlightRefresh();
     }
 private:
     bool restore_;
@@ -1041,7 +1056,6 @@ void handleGesture(Gesture gesture, int x, int y) {
                 cached[i]=owner.spares[i].id[0];
             }
             char skipped[17]; strcpy(skipped,lcd::selectedArtId(owner));
-            uint8_t* oldOverride = ownOverrideFrame ? overrideFrame : nullptr;
             const bool swapped=lcd::swapArt(owner,settings.showArt,cached,[](int next) {
                 return residentFrames[3 + next] != nullptr;
             });
@@ -1049,8 +1063,10 @@ void handleGesture(Gesture gesture, int x, int y) {
                 lcd::log("spare skipped=no-psram\n");
                 break;
             }
-            if (owner.cursor < 0) clearOverrideSave();
+            uint8_t* oldOverride = nullptr;
+            if (owner.cursor < 0) oldOverride = clearOverrideSave();
             else {
+                oldOverride = ownOverrideFrame ? overrideFrame : nullptr;
                 const int slot = 3 + owner.cursor;
                 overrideFrame = residentFrames[slot];
                 ownOverrideFrame = false;

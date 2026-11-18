@@ -94,6 +94,15 @@ int main() {
     assert(!panel->references(source.data()) && panel->references(second.data()));
     assert(bounce.front() == second.front() && bounce.back() == second.back());
 
+    const int dimSlot = panel->prepare();
+    assert(dimSlot == 1);
+    panel->present(dimSlot, {second.data()}, 25);
+    vsync();
+    refill(0);
+    uint16_t dimmed;
+    lcd::dimRgb565(second.data(), &dimmed, 1, 25);
+    assert(bounce.front() == dimmed && bounce.back() == dimmed);
+
     // Compare the exact RGB565 scaling for all possible input colours.
     std::vector<uint16_t> colours(65536), expected(65536);
     for (unsigned i = 0; i < colours.size(); ++i) colours[i] = i;
