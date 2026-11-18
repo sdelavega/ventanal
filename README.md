@@ -7,12 +7,12 @@ downloads them, displays the selected screen, and sleeps. Cached screens work
 without Wi-Fi. Ventanal 1.0.0 is free software under GPL-3.0-or-later.
 
 ![Seasonal museum art with soft-shade credit](docs/images/art.png)
-![Weather example for Boulder, CO 80302](docs/images/weather.png)
+![Weather example for St. Augustine, FL 32084](docs/images/weather.png)
 ![Solar conditions with CALL SIGN placeholder](docs/images/solar.png)
 
-These previews come from the deterministic test goldens, rather than live owner
-data. The weather example is Boulder, CO 80302 (40.01 N, 105.27 W); solar uses a
-public test location and the “CALL SIGN” placeholder. Colours simulate the panel.
+These previews come from the deterministic test goldens. Weather uses St. Augustine,
+FL 32084 (29.91 N, 81.36 W, `America/New_York`). Solar uses a public test location
+and the “CALL SIGN” placeholder. Colours simulate the panel.
 
 ## Requirements and architecture
 

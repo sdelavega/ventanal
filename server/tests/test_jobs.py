@@ -39,7 +39,7 @@ def setup_job(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, 'render_art', lambda *a: (object(), {'title': 'Snow'}))
     monkeypatch.setattr(jobs, 'quantize', lambda *a: np.zeros((1200, 1600), dtype=np.uint8))
     monkeypatch.setattr(jobs, 'simulate', lambda *a: Image.new('RGB', (16, 12)))
-    monkeypatch.setattr(jobs, 'geocode', lambda *a: (40.01, -105.27, 'Boulder'))
+    monkeypatch.setattr(jobs, 'geocode', lambda *a: (29.9144193, -81.3628995, 'ST. AUGUSTINE · FL'))
     monkeypatch.setattr(jobs, 'fetch_weather', lambda *a, **k: object())
     monkeypatch.setattr(jobs, 'fetch_alerts', lambda *a: [])
     monkeypatch.setattr(jobs, 'fetch_iem', lambda *a: None)

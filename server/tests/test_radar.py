@@ -40,12 +40,13 @@ def radar_client(*, age=0, world='1\n0\n0\n-1\n0\n3', png=None, status=200):
 
 
 def test_bbox_square_miles():
-    west, south, east, north = bbox_around(40.01, -105.27, 150, 1)
+    lat, lon = 29.9144193, -81.3628995
+    west, south, east, north = bbox_around(lat, lon, 150, 1)
     assert north - south == pytest.approx(4.34, abs=0.05)
-    assert (west + east) / 2 == pytest.approx(-105.27)
-    assert (south + north) / 2 == pytest.approx(40.01)
-    assert (east - west) * np.cos(np.radians(40.01)) == pytest.approx(north - south)
-    wide = bbox_around(40.01, -105.27, 150, 2)
+    assert (west + east) / 2 == pytest.approx(lon)
+    assert (south + north) / 2 == pytest.approx(lat)
+    assert (east - west) * np.cos(np.radians(lat)) == pytest.approx(north - south)
+    wide = bbox_around(lat, lon, 150, 2)
     assert wide[2] - wide[0] == pytest.approx(2 * (east - west))
 
 

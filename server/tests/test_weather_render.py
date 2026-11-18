@@ -27,7 +27,7 @@ NOW = datetime(2026, 11, 15, 14, 32, tzinfo=ZoneInfo('America/New_York'))
 def sample():
     """The approved mockup's seven temperatures, probabilities and radar blobs."""
     cfg = replace(load_config(ROOT / 'server/ventanal.example.toml'),
-                  zip='80302', clock_24h=True, units='imperial', here_label='es')
+                  zip='32084', clock_24h=True, units='imperial', here_label='es')
     values = [(61, 44, 61, 40), (55, 38, 61, 80), (49, 31, 0, 0),
               (52, 33, 0, 5), (60, 40, 3, 10), (63, 46, 80, 30), (57, 39, 3, 15)]
     weather = Weather(Current(58, 62, 8, 'NE', 2),
@@ -46,7 +46,8 @@ def sample():
     lines = [[(x - 784, 0), (x - 784, 461)] for x in range(860, 1570, 80)]
     lines += [[(0, y - 234), (781, y - 234)] for y in range(310, 696, 80)]
     alerts = [Alert('Frost likely Tue–Wed nights', '', 'Minor', None)]
-    return weather, alerts, radar, {'states': lines[:2], 'counties': lines[2:]}, 'BOULDER · CO', (40.01, -105.27), NOW, cfg
+    boundaries = {'states': lines[:2], 'counties': lines[2:]}
+    return weather, alerts, radar, boundaries, 'ST. AUGUSTINE · FL', (29.9144193, -81.3628995), NOW, cfg
 
 
 def test_readout_block_reserved(sample):
@@ -116,7 +117,7 @@ def test_time_and_location_text(sample, monkeypatch):
     args[1] = [Alert('Freeze warning', '', 'Severe', NOW.replace(hour=23, minute=0))]
     args[-1] = replace(args[-1], clock_24h=False, units='metric')
     render_weather(*args)
-    assert 'BOULDER · CO · 80302 · 40.01N 105.27W' in texts
+    assert 'ST. AUGUSTINE · FL · 32084 · 29.91N 81.36W' in texts
     assert 'WIND NE 8 KM/H' in texts
     assert 'RAIN 40% AFTER 6:00 PM' in texts
     assert 'SUNSET 5:16 PM' in texts

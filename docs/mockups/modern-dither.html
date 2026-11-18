@@ -99,7 +99,7 @@ function wText(c,real){
  const T=(t,x,y,size,col,wt='700',al='left')=>{c.font=`${wt} ${size}px Antonio`;c.fillStyle=col;c.textAlign=al;c.textBaseline='alphabetic';c.fillText(t,x,y)};
  const y_=real?Y:M.gold,w_=real?W:M.white,k_=K,r_=real?R:M.red,t_=real?W:M.tgray;
  T('ATMOSPHERIC CONDITIONS',330,148,64,y_);
- T('BOULDER · CO · 80302 · 40.01N 105.27W',332,194,30,t_,'400');
+ T('ST. AUGUSTINE · FL · 32084 · 29.91N 81.36W',332,194,30,t_,'400');
  // corner readout
  c.fillStyle=k_;for(let i=0;i<4;i++){if(i<3)c.fillRect(1262+i*22,40,16,26);else{c.lineWidth=2.5;c.strokeStyle=k_;c.strokeRect(1263+i*22,41,14,24)}}
  c.fillRect(1350,47,4,12);

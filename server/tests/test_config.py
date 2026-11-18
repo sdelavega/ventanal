@@ -53,18 +53,18 @@ def test_bad_palette_rejected(tmp_path):
 
 
 def test_zip_plus4_kept(tmp_path):
-    path = changed_config(tmp_path, 'zip = "00000"', 'zip = "80302-1234"')
-    assert load_config(path).zip == "80302-1234"
+    path = changed_config(tmp_path, 'zip = "00000"', 'zip = "32084-1234"')
+    assert load_config(path).zip == "32084-1234"
 
 
 def test_coordinates_and_wrapping_season(tmp_path):
     path = changed_config(
         tmp_path, 'zip = "00000"',
-        'latitude = 40.01\nlongitude = -105.27\nplace_name = "Boulder"',
+        'latitude = 29.9144193\nlongitude = -81.3628995\nplace_name = "St. Augustine"',
     )
     path.write_text(path.read_text().replace('end = "12-31"', 'end = "02-28"'))
     cfg = load_config(path)
-    assert (cfg.zip, cfg.latitude, cfg.longitude, cfg.place_name) == (None, 40.01, -105.27, "Boulder")
+    assert (cfg.zip, cfg.latitude, cfg.longitude, cfg.place_name) == (None, 29.9144193, -81.3628995, "St. Augustine")
     assert cfg.seasons[0].end == (2, 28)
 
 
@@ -78,7 +78,7 @@ def test_uncovered_season_dates_rejected(tmp_path, old, new, gap):
 
 
 @pytest.mark.parametrize(("old", "new", "key"), [
-    ('zip = "00000"', 'zip = 80302', "location.zip"),
+    ('zip = "00000"', 'zip = 32084', "location.zip"),
     ('zip = "00000"', 'latitude = 91\nlongitude = 0', "location.latitude"),
     ('zip = "00000"', 'latitude = 35', "location.longitude"),
     ('units = "imperial"', 'units = "kelvin"', "display.units"),

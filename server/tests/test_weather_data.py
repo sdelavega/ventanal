@@ -37,14 +37,14 @@ def config(**kwargs):
 
 def test_geocode_uses_5_digits(tmp_path):
     requests = []
-    with client_for(fixture('zippopotam_80302.json'), requests) as client:
-        result = geocode(config(zip='80302-1234'), client, tmp_path)
-        assert requests[0].url.path.endswith('/us/80302')
+    with client_for(fixture('zippopotam_32084.json'), requests) as client:
+        result = geocode(config(zip='32084-1234'), client, tmp_path)
+        assert requests[0].url.path.endswith('/us/32084')
         assert requests[0].headers['User-Agent'] == USER_AGENT
-        assert result == (40.01, -105.27, 'BOULDER · CO')
+        assert result == (29.9144193, -81.3628995, 'ST. AUGUSTINE · FL')
         assert (tmp_path / 'geocode.json').is_file()
-        assert geocode(config(zip='80302'), client, tmp_path) == result
-        assert geocode(config(zip='80302', place_name='My place'), client, tmp_path)[2] == 'My place'
+        assert geocode(config(zip='32084'), client, tmp_path) == result
+        assert geocode(config(zip='32084', place_name='My place'), client, tmp_path)[2] == 'My place'
         assert len(requests) == 1
         geocode(config(zip='10001'), client, tmp_path)
         assert len(requests) == 2
@@ -60,8 +60,8 @@ def test_geocode_coordinates_and_override(tmp_path):
 
 def test_geocode_corrupt_cache_recovers(tmp_path):
     (tmp_path / 'geocode.json').write_text('{broken')
-    with client_for(fixture('zippopotam_80302.json'), []) as client:
-        assert geocode(config(zip='80302'), client, tmp_path)[2] == 'BOULDER · CO'
+    with client_for(fixture('zippopotam_32084.json'), []) as client:
+        assert geocode(config(zip='32084'), client, tmp_path)[2] == 'ST. AUGUSTINE · FL'
 
 
 @pytest.mark.parametrize('units', ['imperial', 'metric'])
@@ -163,7 +163,7 @@ def test_compass8(degree, expected):
 def test_http_errors_propagate(operation, tmp_path):
     with client_for({}, [], status=503) as client, pytest.raises(httpx.HTTPStatusError):
         if operation == 'geocode':
-            geocode(config(zip='80302'), client, tmp_path)
+            geocode(config(zip='32084'), client, tmp_path)
         elif operation == 'weather':
             fetch_weather(40.7484, -73.9967, 'metric', client)
         else:
