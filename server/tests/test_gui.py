@@ -89,7 +89,9 @@ def test_settings_roundtrip_and_backups(tmp_path):
 @pytest.fixture
 def web(tmp_path):
     path = tmp_path / 'settings.toml'
-    path.write_text(EXAMPLE.read_text().replace('/var/lib/ventanal', str(tmp_path)).replace('/var/cache/ventanal', str(tmp_path/'cache')))
+    path.write_text(EXAMPLE.read_text().replace('/var/lib/ventanal', str(tmp_path))
+                    .replace('/var/cache/ventanal', str(tmp_path/'cache'))
+                    .replace('[server]', '[server]\nallowed_hosts = ["Frame.Example.Test."]'))
     srv = make_server(tmp_path, '127.0.0.1', 0, cache_dir=tmp_path/'cache', config_path=path, rerender=lambda: None, https_port=0)
     t = Thread(target=srv.serve_forever, daemon=True); t.start()
     cookie = ''
@@ -116,10 +118,17 @@ def test_routes_setup_skip_and_csrf(web):
     r, srv, root = web
     status, body, token = r()
     assert status == 200 and 'Choose a password' in body
-    assert r('/setup', {'password':'secret', 'confirm':'secret'})[0] == 403
-    assert r('/setup/skip', {'csrf':token})[0] == 200
+    setup_token = srv.ui.auth.setup_token()
+    assert setup_token not in body and 'name="setup_token"' in body
+    assert 'minlength="10"' in body
+    assert r('/setup', {'password':'test secret', 'confirm':'test secret'})[0] == 403
+    assert r('/setup/skip', {'csrf':token})[0] == 403
+    assert r('/setup/skip', {'csrf':token, 'setup_token':'wrong'})[0] == 403
+    assert r('/setup/skip', {'csrf':token, 'setup_token':setup_token})[0] == 200
     assert srv.ui.auth.mode == 'unset'
     assert r('/setup/confirm-skip', {'csrf':token, 'confirm':'yes'})[0] == 303
+    assert Auth(root/'cache').setup_token() is None
+    assert r('/setup/skip', {'csrf':token, 'setup_token':setup_token})[0] == 403
     status, body, token = r()
     assert 'NO PASSWORD SET' in body and 'never' in body
     status, _, token = r('/settings')
@@ -134,10 +143,17 @@ def test_routes_setup_skip_and_csrf(web):
 def test_password_routes_and_change(web):
     r, srv, root = web
     _, _, token = r()
-    assert r('/setup', {'csrf':token,'password':'secret','confirm':'different'})[0] == 400
-    assert r('/setup', {'csrf':token,'password':'secret','confirm':'secret'})[0] == 303
+    setup = {'csrf': token, 'password': '0123456789', 'confirm': '0123456789'}
+    assert r('/setup', setup)[0] == 403
+    assert r('/setup', {**setup, 'setup_token': 'wrong'})[0] == 403
+    setup['setup_token'] = srv.ui.auth.setup_token()
+    assert r('/setup', {**setup, 'confirm': 'different'})[0] == 400
+    assert r('/setup', {**setup, 'password': 'ninechars', 'confirm': 'ninechars'})[0] == 400
+    assert srv.ui.auth.mode == 'unset' and srv.tls_server is None
+    assert r('/setup', setup)[0] == 303
+    assert Auth(root/'cache').setup_token() is None
     _, _, token = r('/login')
-    assert r('/login', {'csrf':token,'password':'secret'})[0] == 303
+    assert r('/login', {'csrf':token,'password':setup['password']})[0] == 303
     _, body, token = r()
     assert 'NO PASSWORD SET' not in body
     assert r('/logout', {'csrf':token})[0] == 303
@@ -145,20 +161,80 @@ def test_password_routes_and_change(web):
     _, _, token = r('/login')
     assert r('/login', {'csrf':token, 'password':'wrong'})[0] == 401
     srv.ui.auth.attempts.clear()
-    assert r('/login', {'csrf':token, 'password':'secret'})[0] == 303
+    assert r('/login', {'csrf':token, 'password':setup['password']})[0] == 303
     _, _, token = r('/password')
-    assert r('/password', {'csrf':token,'current':'wrong','password':'new','confirm':'new'})[0] == 400
-    assert r('/password', {'csrf':token,'current':'secret','password':'new','confirm':'new'})[0] == 303
-    assert srv.ui.auth.verify('new')
+    assert r('/password', {'csrf':token,'current':'wrong','password':'new password','confirm':'new password'})[0] == 400
+    assert r('/password', {'csrf':token,'current':setup['password'],'password':'new','confirm':'new'})[0] == 400
+    assert r('/password', {'csrf':token,'current':setup['password'],'password':'new password','confirm':'new password'})[0] == 303
+    assert srv.ui.auth.verify('new password')
     (root/'manifest.json').write_text('{}')
     assert r('/manifest.json?bat=90&screen=weather&frame=0123456789abcdef&fw=1.0.0')[0] == 200
     assert BoardStore(root/'cache').latest()['bat'] == 90
 
 
+def test_setup_token_cli(web, capsys):
+    from ventanal.cli import main
+    _, srv, root = web
+    args = ['setup-token', '--config', str(root/'settings.toml')]
+    main(args)
+    assert capsys.readouterr().out.strip() == srv.ui.auth.setup_token()
+    srv.ui.auth.none()
+    main(args)
+    assert capsys.readouterr().out == 'Setup is already complete.\n'
+
+
+def test_auth_rejects_incomplete_session_secret(tmp_path):
+    (tmp_path/'session.secret').touch()
+    with pytest.raises(ValueError, match='Invalid session secret'):
+        Auth(tmp_path)
+
+
+def test_host_allowlist_in_open_mode_and_on_tls(web):
+    import socket
+    _, srv, _ = web
+
+    def request(connection, method, path, hosts):
+        try:
+            connection.putrequest(method, path, skip_host=True)
+            for host in hosts:
+                connection.putheader('Host', host)
+            connection.endheaders()
+            response = connection.getresponse()
+            response.read()
+            return response.status
+        finally:
+            connection.close()
+
+    def http(method, path, *hosts):
+        return request(HTTPConnection(*srv.server_address, timeout=2), method, path, hosts)
+
+    assert http('GET', '/', 'unknown.example.test') == 400
+    srv.ui.auth.none()
+    hostname = socket.gethostname().removesuffix('.')
+    for host in ('127.0.0.1:8765', '[::1]:8765', 'LOCALHOST', hostname, hostname+'.local', 'frame.example.test:8765'):
+        assert http('GET', '/settings', host) == 200
+    for hosts in ((), ('localhost', 'localhost'), ('localhost, unknown.example.test',),
+                  ('localhost:65536',), ('localhost:',), ('http://localhost',), ('::1',)):
+        assert http('GET', '/manifest.json', *hosts) == 400
+    assert http('POST', '/settings', 'unknown.example.test') == 400
+    assert http('HEAD', '/manifest.json', 'unknown.example.test') == 400
+    assert http('OPTIONS', '/', 'unknown.example.test') == 400
+
+    srv.ui.auth.set_password('test password', 'test password')
+    srv.ui.enable_security()
+    assert http('GET', '/', 'unknown.example.test') == 400
+    assert http('GET', '/', 'localhost') == 308
+    context = ssl.create_default_context(cadata=srv.ui.security.certificate)
+    for path, host, status in (('/login', 'frame.example.test', 200),
+                               ('/manifest.json', 'unknown.example.test', 400)):
+        connection = HTTPSConnection('127.0.0.1', srv.tls_server.server_address[1], timeout=2, context=context)
+        assert request(connection, 'GET', path, (host,)) == status
+
+
 def test_settings_errors_and_escape(web):
     r, srv, root = web
     _, _, token = r()
-    r('/setup/skip', {'csrf':token})
+    r('/setup/skip', {'csrf':token, 'setup_token':srv.ui.auth.setup_token()})
     r('/setup/confirm-skip', {'csrf':token,'confirm':'yes'})
     _, _, token = r('/settings')
     status, body, _ = r('/settings', {'csrf':token,'location.zip':'<script>'})
@@ -171,13 +247,13 @@ def test_http_rejects_direct_skip_and_throttles(web):
     _, _, token = r()
     assert r('/setup/confirm-skip', {'csrf':token,'confirm':'yes'})[0] == 400
     assert srv.ui.auth.mode == 'unset'
-    r('/setup', {'csrf':token,'password':'secret','confirm':'secret'})
+    r('/setup', {'csrf':token,'setup_token':srv.ui.auth.setup_token(),'password':'test secret','confirm':'test secret'})
     _, _, token = r()
     r('/logout', {'csrf':token})
     _, _, token = r('/login')
     assert r('/login', {'csrf':token,'password':'wrong'})[0] == 401
-    assert r('/login', {'csrf':token,'password':'secret'})[0] == 429
-    assert r('/login', {'csrf':'é','password':'secret'})[0] == 403
+    assert r('/login', {'csrf':token,'password':'test secret'})[0] == 429
+    assert r('/login', {'csrf':'é','password':'test secret'})[0] == 403
     assert r('/setup')[0] == 303
     assert r('/static/Antonio-Regular.ttf')[0] == 200
 
@@ -250,7 +326,7 @@ def test_legacy_manifest_records_checkin_and_head_post_do_not(web):
 def test_settings_rows_and_background_error(web):
     r,srv,root=web
     _,_,token=r()
-    r('/setup/skip',{'csrf':token}); r('/setup/confirm-skip',{'csrf':token,'confirm':'yes'})
+    r('/setup/skip',{'csrf':token, 'setup_token':srv.ui.auth.setup_token()}); r('/setup/confirm-skip',{'csrf':token,'confirm':'yes'})
     _,_,token=r('/settings')
     before=(root/'settings.toml').read_bytes()
     status,body,_=r('/settings', {'csrf':token,'action':'rows','seasons.count':'6'})
@@ -385,10 +461,10 @@ def test_security_panel_auth_csrf_reveal_and_rotation(web):
     r,srv,_=web
     assert r('/security')[0]==403  # Requires a password even in open mode.
     _,_,token=r('/setup')
-    assert r('/setup',{'csrf':token,'password':'secret','confirm':'secret'})[0]==303
+    assert r('/setup',{'csrf':token,'setup_token':srv.ui.auth.setup_token(),'password':'test secret','confirm':'test secret'})[0]==303
     assert r('/security')[0]==303
     _,_,token=r('/login')
-    assert r('/login',{'csrf':token,'password':'secret'})[0]==303
+    assert r('/login',{'csrf':token,'password':'test secret'})[0]==303
     status,body,token=r('/security')
     assert status==200 and 'Security ON' in body
     key=srv.ui.security.key.hex(); cert=srv.ui.security.certificate
@@ -416,10 +492,10 @@ def test_existing_config_displays_https_default(web):
 
 def test_existing_password_requires_explicit_activation_and_tls_login(web):
     r,srv,_=web
-    srv.ui.auth.set_password('existing','existing')
+    srv.ui.auth.set_password('existing password','existing password')
     assert not srv.ui.security.ready and srv.tls_server is None
     _,_,token=r('/login')
-    assert r('/login',{'csrf':token,'password':'existing'})[0]==303
+    assert r('/login',{'csrf':token,'password':'existing password'})[0]==303
     status,body,token=r('/security')
     assert status==200 and 'activation required' in body
     assert r('/security',{'csrf':token,'action':'enable'})[0]==400
@@ -427,7 +503,7 @@ def test_existing_password_requires_explicit_activation_and_tls_login(web):
     assert r('/security',{'csrf':token,'action':'regenerate','confirm':'yes'})[0]==400
     assert r('/security',{'csrf':token,'action':'repair','confirm':'yes'})[0]==400
     assert r('/security',{'csrf':token,'action':'enable','confirm':'yes'})[0]==303
-    assert srv.ui.auth.verify('existing') and srv.ui.security.ready
+    assert srv.ui.auth.verify('existing password') and srv.ui.security.ready
     assert r('/security')[0]==303  # HTTP-era sessions invalidated; HTTPS login required.
 
 
@@ -435,7 +511,7 @@ def test_status_release_versions(web):
     from importlib.metadata import version
     r, srv, root = web
     _, _, token = r()
-    r('/setup/skip', {'csrf': token})
+    r('/setup/skip', {'csrf': token, 'setup_token': srv.ui.auth.setup_token()})
     assert r('/setup/confirm-skip', {'csrf': token, 'confirm': 'yes'})[0] == 303
     srv.ui.store.checkin('192.0.2.1', {'fw': '1.0.0', 'screen': 'weather'})
     status, body, _ = r('/')

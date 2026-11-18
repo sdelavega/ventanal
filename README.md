@@ -60,16 +60,26 @@ The example sections are:
 | `art.credentials.paris` | Optional Paris Musées token; keep private |
 | `weather` | Radar source/radius, marker caption and optional NWS contact |
 | `panel` | Six measured RGB colours, updated through Calibration |
-| `server` | HTTP/HTTPS listeners, output and cache directories |
+| `server` | HTTP/HTTPS listeners, allowed hostnames, output and cache directories |
 | `ham` | Optional US amateur call sign for local FCC verification |
 
 Battery calibration adds optional `battery.full_mv`. Auth, transport identities
 and Extras licences live separately in private state; they are not TOML settings.
 
-Visit `http://192.168.0.10:8765` (substitute your host address). On first visit,
-choose a password and confirm it. Explicitly skipping the password requires a
-second confirmation and leaves the installation unprotected. Password setup
-starts HTTPS; follow the Security pairing procedure below before using the board.
+Open the host's HTTP address on port 8765. On first visit, enter the one-time
+setup token printed by the installer and choose a password of at least 10
+characters. If you missed the token or are upgrading an installation that has
+never completed setup, run this on the host:
+
+```sh
+sudo -u ventanal /opt/ventanal/venv/bin/ventanal setup-token
+```
+
+Keep the token private. Both the password and the token travel over HTTP during
+initial setup, so complete that step over a trusted connection. To run without
+a password, enter the same token and confirm the network-access warning.
+Either choice consumes the token. Password setup starts HTTPS. Follow the
+Security pairing procedure below before using the board.
 Use **Settings** to adjust location, schedules and sources; fields save directly.
 
 ### Firmware
@@ -163,6 +173,11 @@ until verified. [Source documentation](docs/art-sources.md) includes token steps
 rights checks and provider terms.
 
 ## Security and pairing
+
+The server accepts requests addressed to IP literals, `localhost`, its machine
+hostname, and that hostname with `.local` appended. For a custom DNS name, list
+it in `server.allowed_hosts` in the TOML file and restart the service. List names
+without schemes or ports.
 
 With a password and security enabled, the browser/board use HTTPS, the board pins
 the host certificate, manifests and board reports are authenticated, and signed

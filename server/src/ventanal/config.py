@@ -13,6 +13,14 @@ from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 
+def normalize_hostname(value: str) -> str | None:
+    name = value.removesuffix(".").lower()
+    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    if value.isascii() and len(name) <= 253 and re.fullmatch(rf"{label}(?:\.{label})*", name):
+        return name
+    return None
+
+
 @dataclass(frozen=True)
 class Season:
     """Inclusive month/day bounds; start greater than end wraps the year."""
@@ -50,6 +58,7 @@ class Config:
     image_cache_bytes: int = 2 * 1024**3
     https_host: str = "0.0.0.0"
     https_port: int = 8766
+    allowed_hosts: tuple[str, ...] = ()
     ham_call_sign: str = ""
     battery_full_mv: int | None = None
     ignored: tuple[str, ...] = ()
@@ -214,6 +223,12 @@ def validate_config(data: dict) -> Config:
         raise ConfigError("server.https_listen: expected host:port with port 1..65535")
     if shost.startswith("[") and shost.endswith("]"): shost = shost[1:-1]
 
+    allowed_hosts = server.get("allowed_hosts", [])
+    if not isinstance(allowed_hosts, list) or any(
+        not isinstance(name, str) or normalize_hostname(name) is None for name in allowed_hosts
+    ):
+        raise ConfigError("server.allowed_hosts: expected an array of hostnames without ports")
+
     credentials = art.get('credentials', {})
     if not isinstance(credentials, dict) or any(
         not isinstance(ident, str) or not isinstance(fields, dict) or any(
@@ -272,6 +287,7 @@ def validate_config(data: dict) -> Config:
         panel_rgb=tuple(palette),
         listen_host=host,
         listen_port=int(port),
+        allowed_hosts=tuple(normalize_hostname(name) for name in allowed_hosts),
         output_dir=Path(_string(server.get("output_dir"), "server.output_dir")),
         cache_dir=Path(_string(server.get("cache_dir"), "server.cache_dir")),
     )

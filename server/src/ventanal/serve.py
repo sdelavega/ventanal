@@ -4,6 +4,7 @@
 """A read-only HTTP surface limited to published display assets."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Address, IPv6Address
 import logging
 import json
 import ssl
@@ -14,7 +15,28 @@ import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 import fcntl
+from ventanal.config import load_config, normalize_hostname
 from ventanal.owner import OwnerStore, parse_skips
+
+
+def allowed_host(headers, names):
+    hosts = headers.get_all('Host', [])
+    if len(hosts) != 1:
+        return False
+    authority = re.fullmatch(r'(\[[0-9a-fA-F:.]+\]|[^:\[\]]+)(?::([0-9]{1,5}))?', hosts[0].strip(' \t'))
+    if not authority:
+        return False
+    name, port = authority.groups()
+    if port is not None and not 1 <= int(port) <= 65535:
+        return False
+    try:
+        if name.startswith('['):
+            IPv6Address(name[1:-1])
+        else:
+            IPv4Address(name)
+    except ValueError:
+        return normalize_hostname(name) in names
+    return True
 
 
 def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None = None, config_path: Path | None = None, rerender=None, https_host=None, https_port=None) -> ThreadingHTTPServer:
@@ -23,9 +45,15 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     from ventanal.status import BoardStore, parse_board
     if config_path is not None:
         from ventanal.ui import UI
+        cfg = load_config(config_path)
         ui = UI(config_path, cache_dir, rerender)
     else:
         ui = None
+    hostname = socket.gethostname().removesuffix('.')
+    names = {'localhost', normalize_hostname(hostname), normalize_hostname(f'{hostname}.local')}
+    names.discard(None)
+    if ui is not None:
+        names.update(cfg.allowed_hosts)
 
     def active():
         return ui is not None and ui.auth.mode == 'password' and ui.security.ready
@@ -34,6 +62,22 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         @property
         def protocol_version(self):
             return 'HTTP/1.1' if active() and isinstance(self.connection, ssl.SSLSocket) else 'HTTP/1.0'
+
+        def parse_request(self):
+            if not super().parse_request():
+                return False
+            if not allowed_host(self.headers, names):
+                self.send_error(400, 'Invalid Host header')
+                return False
+            return True
+
+        def handle_expect_100(self):
+            # Defer the interim response until the route is ready to read the body.
+            return True
+
+        def continue_body(self):
+            if self.protocol_version == 'HTTP/1.1' and self.request_version == 'HTTP/1.1' and self.headers.get('Expect', '').lower() == '100-continue':
+                super().handle_expect_100()
 
         def transport(self):
             if not active(): return True
@@ -81,7 +125,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 try:
                     with (root / 'manifest.json').open() as f:
                         manifest = json.load(f)
-                    from ventanal.config import load_config
                     cfg = load_config(config_path)
                     from ventanal.solar.licence import verify
                     if not verify(cfg.cache_dir/'fcc.sqlite3', cfg.ham_call_sign, cfg.zip, datetime.now(timezone.utc)).ok:
@@ -165,8 +208,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     server = Server((host, port), Handler)
     server.ui = ui
     if ui is not None:
-        from ventanal.config import load_config
-        cfg = load_config(config_path)
         tls_lock = RLock()
         def start_tls():
             with tls_lock:

@@ -28,4 +28,6 @@ for unit in ventanal-serve.service ventanal-tick.service ventanal-tick.timer ven
 done
 systemctl daemon-reload
 systemctl enable ventanal-serve.service ventanal-tick.timer ventanal-fcc.timer
+echo 'Ventanal first-run setup (keep the token private, if one is issued):'
+runuser -u ventanal -- /opt/ventanal/venv/bin/ventanal setup-token
 systemctl restart ventanal-serve.service ventanal-tick.timer ventanal-fcc.timer

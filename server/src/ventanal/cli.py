@@ -27,7 +27,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='ventanal')
     parser.add_argument('--config', type=Path, default=Path('/etc/ventanal/ventanal.toml'))
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('tick', 'serve', 'render-art', 'render-weather', 'chart', 'calibrate', 'skipped'):
+    for name in ('tick', 'serve', 'render-art', 'render-weather', 'chart', 'calibrate', 'skipped', 'setup-token'):
         command = commands.add_parser(name)
         command.add_argument('--config', type=Path, default=argparse.SUPPRESS)
         if name == 'skipped':
@@ -50,6 +50,10 @@ def main(argv=None):
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     logging.getLogger('httpx').setLevel(logging.WARNING)
     cfg = load_config(args.config)
+    if args.command == 'setup-token':
+        from ventanal.auth import Auth
+        print(Auth(cfg.cache_dir).setup_token() or 'Setup is already complete.')
+        return
     now = datetime.now(ZoneInfo(cfg.timezone))
     if args.command == 'serve':
         with make_server(cfg.output_dir, cfg.listen_host, cfg.listen_port, cache_dir=cfg.cache_dir, config_path=args.config) as server:

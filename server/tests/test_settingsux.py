@@ -49,7 +49,7 @@ def test_field_endpoint(web):
     assert srv.ui.render_effects == {'schedule'}  # metadata only; no frame tick
 
 def test_field_auth(web):
-    r,srv,_=web; srv.ui.auth.set_password('secret','secret')
+    r,srv,_=web; srv.ui.auth.set_password('test secret','test secret')
     assert r('/settings/field', {'field':'display.units'})[0]==303
 
 def test_debounce_and_no_overlap(web):

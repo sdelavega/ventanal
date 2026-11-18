@@ -13,9 +13,9 @@ from ventanal.status import parse_board
 
 def login(web):
     r, srv, _ = web
-    srv.ui.auth.set_password('fixture', 'fixture')
+    srv.ui.auth.set_password('fixture password', 'fixture password')
     _, _, token = r('/login')
-    assert r('/login', {'csrf': token, 'password': 'fixture'})[0] == 303
+    assert r('/login', {'csrf': token, 'password': 'fixture password'})[0] == 303
     return r, srv, r('/')[2]
 
 
@@ -28,7 +28,7 @@ def test_telemetry():
 
 def test_auth(web):
     r, srv, _ = web
-    srv.ui.auth.set_password('fixture','fixture')
+    srv.ui.auth.set_password('fixture password','fixture password')
     assert r('/battery', {'action':'full'})[0] == 303
     r, srv, token = login(web)
     assert r('/battery', {'csrf':'wrong','action':'full'})[0] == 403

@@ -33,10 +33,9 @@ def upload(server, token, data, filename='photo.png', content_type='image/png', 
     # Bind the upload and subsequent requests to this explicit session.
     token = session['csrf'] if token is None else token
     boundary = 'ventanal-test-boundary'
-    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="csrf"\r\n\r\n{token}\r\n'
-            f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n').encode()+data+f'\r\n--{boundary}--\r\n'.encode()
+    body = (f'--{boundary}\r\nContent-Disposition: form-data; name="photo"; filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n').encode()+data+f'\r\n--{boundary}--\r\n'.encode()
     c = HTTPConnection(*server.server_address)
-    c.request('POST', '/calibration/upload', body, {'Cookie':f'ventanal={cookie}', 'Content-Type':f'multipart/form-data; boundary={boundary}', 'Content-Length':str(length or len(body))})
+    c.request('POST', '/calibration/upload', body, {'Cookie':f'ventanal={cookie}', 'X-CSRF-Token':token, 'Content-Type':f'multipart/form-data; boundary={boundary}', 'Content-Length':str(length or len(body))})
     response=c.getresponse(); result=(response.status,response.read().decode()); c.close()
     return result, session, cookie
 
@@ -133,7 +132,7 @@ def test_upload_csrf_size_and_auth(web):
     _,server,_,_=ready(web)
     assert upload(server,'wrong',b'bad')[0][0]==403
     assert upload(server,None,b'',length=150*1024*1024+65537)[0][0]==413
-    server.ui.auth.set_password('fixture','fixture')
+    server.ui.auth.set_password('fixture password','fixture password')
     assert session_request(server,'invalid','/calibration/photo')[0]==303
 
 
@@ -285,11 +284,10 @@ def test_upload_measure_paper_balances_and_rejects_bad_corners(web,monkeypatch):
 def test_nested_multipart_is_rejected_without_disconnect(web):
     _,server,_,_=ready(web)
     session,cookie=server.ui.auth.issue(True)
-    body=(f'--outer\r\nContent-Disposition: form-data; name="csrf"\r\n\r\n{session["csrf"]}\r\n'
-          '--outer\r\nContent-Disposition: form-data; name="photo"; filename="photo.png"\r\nContent-Type: multipart/mixed; boundary=inner\r\n\r\n'
+    body=('--outer\r\nContent-Disposition: form-data; name="photo"; filename="photo.png"\r\nContent-Type: multipart/mixed; boundary=inner\r\n\r\n'
           '--inner\r\nContent-Type: image/png\r\n\r\nbad\r\n--inner--\r\n--outer--\r\n').encode()
     c=HTTPConnection(*server.server_address)
-    c.request('POST','/calibration/upload',body,{'Cookie':f'ventanal={cookie}','Content-Type':'multipart/form-data; boundary=outer'})
+    c.request('POST','/calibration/upload',body,{'Cookie':f'ventanal={cookie}','X-CSRF-Token':session['csrf'],'Content-Type':'multipart/form-data; boundary=outer'})
     response=c.getresponse(); response.read(); c.close()
     assert response.status==400
 
@@ -386,18 +384,34 @@ def test_published_previews_preserve_every_pixel_and_slot(web):
     assert len(set(paths)) == 4
 
 
-def test_large_upload_authenticates_before_reading_body(web):
-    _,server,_,_=ready(web)
-    server.ui.auth.set_password('fixture','fixture')
+@pytest.mark.parametrize(('mode', 'proof', 'status'), [
+    ('unset', 'valid', 403), ('password', 'anonymous', 303), ('none', 'missing', 403),
+    ('none', 'wrong', 403), ('none', 'duplicate', 403), ('none', 'no-cookie', 403),
+])
+def test_large_upload_checks_access_before_reading_body(web, mode, proof, status):
+    _,server,_=web
+    if mode == 'none':
+        server.ui.auth.none()
+    elif mode == 'password':
+        server.ui.auth.set_password('fixture password','fixture password')
+    session, cookie = server.ui.auth.issue(False)
     connection=HTTPConnection(*server.server_address,timeout=2)
     try:
         connection.putrequest('POST','/calibration/upload')
+        if proof != 'no-cookie':
+            connection.putheader('Cookie', f'ventanal={cookie}')
+        if proof != 'missing':
+            connection.putheader('X-CSRF-Token', 'wrong' if proof == 'wrong' else session['csrf'])
+        if proof == 'duplicate':
+            connection.putheader('X-CSRF-Token', session['csrf'])
         connection.putheader('Content-Type','multipart/form-data; boundary=fixture')
         connection.putheader('Content-Length',str(150*1024*1024))
         # No body is sent: attempting to consume it would hit the socket timeout.
         connection.endheaders()
         response=connection.getresponse()
-        assert response.status==303 and response.getheader('Location')=='/login'
+        assert response.status == status
+        if status == 303:
+            assert response.getheader('Location') == '/login'
         response.read()
     finally:
         connection.close()

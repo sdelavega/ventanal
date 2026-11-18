@@ -69,7 +69,7 @@ def test_https_and_plain_protection(tmp_path):
     try:
         r,_=request(HTTPConnection(*srv.server_address),'/manifest.json'); assert r.status==200
         srv.ui.enable_security()
-        srv.ui.auth.set_password('test','test')
+        srv.ui.auth.set_password('test password','test password')
         for path in ['/manifest.json','/frames/a.vnf','/previews/a.png','/%6danifest.json','/fr%61mes/a.vnf']:
             r,_=request(HTTPConnection(*srv.server_address),path); assert r.status==403
         r,_=request(HTTPConnection(*srv.server_address),'/login'); assert r.status==308 and r.getheader('Location').startswith('https://') and not r.getheader('Set-Cookie')
