@@ -299,7 +299,7 @@ and [RGB driver implementation](https://github.com/espressif/esp-idf/blob/v5.5.5
 
 Native USB Serial/JTAG loses its clocks during light sleep and some hosts do
 not recover while D+ stays asserted. After successful wake-source arming, this
-firmware drops its USB PHY pads before manual sleep and restores them on return
+diagnostic power build drops its USB PHY pads before manual sleep and restores them on return
 (including rollback if sleep is rejected). Wake causes are processed only after
 a successful sleep. Serial monitors
 must reopen the device after that disconnect. This never resets GT911 or the
@@ -310,3 +310,9 @@ deferral, touch wake, critical countdown and touch-probe backoff. A critical
 transition from a dark screen resumes the panel and shows the full warning.
 `VENTANAL_LCD_DIAG_PANEL` disables idle timeout in RAM to keep its VSYNC stress
 observer running; persisted settings remain unchanged.
+
+The pre-sleep USB pad workaround did not restore CDC during the Task 7 fix
+round 1 hardware capture on macOS. It is enabled only by
+`VENTANAL_LCD_DIAG_POWER` or explicit `VENTANAL_LCD_USB_SLEEP_REENUM`; normal
+firmware leaves it disabled. Replug USB to restore serial after manual sleep.
+The normal default timeout is Never, so an unconfigured normal build stays awake.

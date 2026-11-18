@@ -791,7 +791,8 @@ void sleepPower() {
     Serial.flush();
     const int result=lcd::sleepWithUsb(int(armed),[] { return int(esp_light_sleep_start()); },
         [](bool enabled) {
-#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
+#if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE && (defined(VENTANAL_LCD_DIAG_POWER) || defined(VENTANAL_LCD_USB_SLEEP_REENUM))
+            // Experimental: hardware capture did not recover CDC on this host.
             usb_serial_jtag_ll_phy_enable_pad(enabled);
             if(!enabled) delay(20); // let the host observe detach before clocks stop
 #else
