@@ -18,6 +18,7 @@ import json
 import logging
 import os
 import struct
+import zlib
 
 from pathlib import Path
 
@@ -151,7 +152,8 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
 
 
 def _publish_frame(out, base_url: str, name: str, data: bytes, now) -> dict:
-    """Atomically publish an encoded frame and return its manifest entry."""
+    """Atomically publish a zlib-wrapped VNR1 frame and describe its wire bytes."""
+    data = zlib.compress(data, level=9)
     digest = hashlib.sha256(data).hexdigest()
     ident = digest[:16]
     frames = out / 'frames'
@@ -172,6 +174,7 @@ def _publish_frame(out, base_url: str, name: str, data: bytes, now) -> dict:
         'id': ident,
         'url': f'{base_url}/frames/{name}-{ident}.vnr',
         'size': len(data),
+        'encoding': 'zlib',
         'sha256': digest,
         'rendered': now.isoformat(timespec='seconds'),
     }

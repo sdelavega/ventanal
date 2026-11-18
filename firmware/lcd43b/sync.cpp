@@ -7,6 +7,7 @@
 // fakes and AddressSanitizer watching the frame buffer).
 
 #include "sync.h"
+#include "inflate.h"
 
 #ifdef VENTANAL_HOST_TEST
 #include "config.example.h"
@@ -83,6 +84,8 @@ bool syncTime(Watchdog& watchdog) {
 bool fetchManifest(const char* hostUrl, const char* deviceId,
                    DeviceManifest& out, Watchdog& watchdog, const char* skips) {
     HTTPClient http;
+    // Skip ids are 16 lowercase hex digits (including restored owner state).
+    // The comma and tilde separators are permitted literally in a query.
     const String url = String(hostUrl) + "/devices/" + deviceId
                      + "/manifest.json" + (skips[0] ? String("?skips=")+skips : String());
     http.begin(url);
@@ -116,26 +119,47 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
 
 }  // namespace
 
-// Commit an already verified frame via .tmp + rename. Recover scan-out
-// even on errors, since a partial write may also have suspended the cache.
-bool writeCachedFrame(const char* path, const uint8_t* buffer,
-                      FlashDone flashDone) {
-    const uint32_t started = millis();
+// Both writers run on the main loop while rendering is idle. Rename only
+// after a complete write, keeping the old frame on an I/O failure.
+template<class Write>
+bool commitFrame(const char* path, Write write) {
     const String temporary = String(path) + ".tmp";
     File out = LittleFS.open(temporary, "w");
-    size_t written = 0;
-    while (out && written < FRAME_BYTES) {
-        const size_t n = out.write(buffer + written, FRAME_BYTES - written);
-        if (!n) break;
-        written += n;
-    }
+    const bool complete = out && write(out);
     out.close();
-    const bool ok = written == FRAME_BYTES && LittleFS.rename(temporary.c_str(), path);
+    const bool ok = complete && LittleFS.rename(temporary.c_str(), path);
     if (!ok) LittleFS.remove(temporary);
-    if (flashDone) flashDone("frame-commit");
-    log("cache commit path=%s ok=%d ms=%lu\n", path, ok,
-        static_cast<unsigned long>(millis() - started));
     return ok;
+}
+
+static bool writeAll(File& out, const uint8_t* bytes, size_t size) {
+    while (size) {
+        const size_t n = out.write(bytes, size);
+        if (!n) return false;
+        bytes += n;
+        size -= n;
+    }
+    return true;
+}
+
+bool writeCachedFrame(const char* path, const FrameBody& body) {
+    return commitFrame(path, [&](File& out) {
+        return writeAll(out, body.bytes.get(), body.size);
+    });
+}
+
+bool copyCachedFrame(const char* path, const char* source) {
+    File in = LittleFS.open(source, "r");
+    if (!in || in.size() < HEADER_BYTES || in.size() > FRAME_WIRE_MAX) return false;
+    return commitFrame(path, [&](File& out) {
+        uint8_t chunk[1024];
+        for (size_t remaining = in.size(); remaining;) {
+            const size_t size = std::min(sizeof chunk, remaining);
+            if (in.read(chunk, size) != size || !writeAll(out, chunk, size)) return false;
+            remaining -= size;
+        }
+        return true;
+    });
 }
 
 void configureTimezone() {
@@ -164,43 +188,45 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
     watchdog.feed();
     const int status = http.GET();
     watchdog.feed();
-    if (status == 200 && http.getSize() == int(FRAME_BYTES)) {
+    if (status == 200 && http.getSize() == int(info.size)) {
         size_t got = 0;
         uint32_t lastProgress = millis();
         bool idle = false;
         WiFiClient* stream = http.getStreamPtr();
-        while (got < FRAME_BYTES && millis() - started < TRANSFER_BUDGET_MS) {
+        while (stream && got < info.size && millis() - started < TRANSFER_BUDGET_MS) {
             watchdog.feed();
             const int available = stream->available();
             if (available > 0) {
                 // Every read is bounded by the bytes still missing, so the
                 // PSRAM staging buffer can never overflow no matter what
                 // the server sends (pinned by test_lcd43b_sync).
-                const size_t remaining = FRAME_BYTES - got;
+                const size_t remaining = info.size - got;
                 const size_t n = std::min({size_t(available), CHUNK_BYTES,
                                           remaining});
-                const int read = stream->readBytes(buffer + got, n);
-                if (read <= 0) break;
-                got += size_t(read);
-                lastProgress = millis();
-            } else {
-                if (!http.connected()) break;
-                if (millis() - lastProgress >= BODY_IDLE_MS) {
-                    idle = true;
-                    break;
+                const int read = stream->read(buffer + got, n);
+                if (read < 0) break;
+                if (read > 0) {
+                    got += size_t(read);
+                    lastProgress = millis();
+                    continue;
                 }
-                delay(2);
             }
+            if (!http.connected()) break;
+            if (millis() - lastProgress >= BODY_IDLE_MS) {
+                idle = true;
+                break;
+            }
+            delay(2);
         }
         // Connection-close framing with a bounded completion check: the
-        // frame is only committed after the server hangs up with exactly
+        // frame is only accepted after the server hangs up with exactly
         // the advertised bytes. Trailing bytes reject the download
         // whenever they arrive — a delayed packet after a hash-matching
         // frame is malformed, not verified — and a connection that
         // neither delivers nor closes within the grace window is
         // incomplete: fail closed, keep the previous cache entry.
         bool closed = false;
-        if (got == FRAME_BYTES) {
+        if (got == info.size) {
             const uint32_t closeStarted = millis();
             while (true) {
                 watchdog.feed();
@@ -218,8 +244,8 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
         }
         ok = closed && !excess
           && strncmp(info.id, info.sha256, 16) == 0
-          && frameVerified(buffer, FRAME_BYTES, info.sha256);
-        retryable = got < FRAME_BYTES;
+          && frameHashMatches(buffer, info.size, info.sha256, 64);
+        retryable = got < info.size;
         const char* outcome = ok ? "verified" : excess ? "excess"
             : idle ? "body-idle"
             : retryable ? (millis() - started >= TRANSFER_BUDGET_MS
@@ -237,8 +263,9 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
     return ok;
 }
 
-static bool receiveFrame(const char* hostUrl, const FrameInfo& info,
+bool receiveFrame(const char* hostUrl, const FrameInfo& info,
                          const char* slotName, uint8_t* buffer, Watchdog& watchdog) {
+    if (!buffer || !validWireSize(info.encoding, info.size)) return false;
     const uint32_t started = millis();
     bool retryable = false;
     if (receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable))
@@ -251,25 +278,11 @@ static bool receiveFrame(const char* hostUrl, const FrameInfo& info,
     return receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable);
 }
 
-bool downloadFrame(const char* hostUrl, const FrameInfo& info,
-                   const char* slotName, uint8_t* buffer, Watchdog& watchdog,
-                   FlashDone flashDone) {
-    const String path = String("/") + slotName + ".vnr";
-    return receiveFrame(hostUrl, info, slotName, buffer, watchdog)
-        && writeCachedFrame(path.c_str(), buffer, flashDone);
-}
-
-static bool preserveOverride(const ResidentCache* cache, int slot) {
-    if (!cache || slot < SCREEN_SLOTS - SPARE_SLOTS) return true;
-    const uint8_t* frame = cache->protectSpare(slot);
-    return !frame || writeCachedFrame("/override.vnr", frame, cache->flashDone);
-}
-
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
                 const DeviceSettings& settings, const char* skips,
-                const ResidentCache* cache) {
+                const ResidentCache& cache) {
     result = RefreshResult{};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
@@ -293,37 +306,24 @@ void runRefresh(const char* hostUrl, const char* deviceId,
                                 settings,slots,SCREEN_SLOTS);
     for(int i=0;i<count;++i) visible[slots[i]]=true;
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
-    uint8_t* buffer = cache ? cache->staging : static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
-    for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
+    // Get the small, frequently updated pages onto the display before art.
+    for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
         const FrameInfo* info = published[slot];
         if (!info || !info->present) {
-            // Dropped screens: erase the cached frame HERE, on the worker —
-            // a ~750 KB LittleFS erase takes over a second of flash time
-            // and must never stall the touch poll in loop().
-            if (currentIds[slot][0] && !preserveOverride(cache, slot)) {
-                cache->publish(slot, nullptr, nullptr);
-                continue;
-            }
             result.dropSlot[slot] = true;
-            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
-            const String temporary = path + ".tmp";
-            const bool removed = LittleFS.remove(path);
-            const bool removedTemp = LittleFS.remove(temporary);
-            if (cache && cache->flashDone && (removed || removedTemp || currentIds[slot][0]))
-                cache->flashDone("cache-drop");
-            if (removed)
-                log("cache removed slot=%s\n", SLOT_NAMES[slot]);
-            if (cache && currentIds[slot][0]) cache->publish(slot, "", nullptr);
+            if (currentIds[slot][0]) cache.publish(slot, nullptr, {});
             continue;
         }
         if (!visible[slot]) {
             log("download slot=%s skipped=hidden\n", SLOT_NAMES[slot]);
             continue; // keep hidden cached frames and ids
         }
-        const bool unchanged = !strcmp(currentIds[slot], info->id) &&
-            (cache ? !cache->forceDownloads
-                   : LittleFS.exists(String("/") + SLOT_NAMES[slot] + ".vnr"));
+        bool force = cache.forceDownloads;
+#ifdef VENTANAL_LCD_DIAG_PANEL
+        force |= slot == 1; // sample weather transport each diagnostic refresh
+#endif
+        const bool unchanged = !force && !strcmp(currentIds[slot], info->id);
         if (unchanged) {
             log("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
             strlcpy(result.frameIds[slot], info->id,
@@ -331,22 +331,23 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
-        if (!buffer || (cache && !cache->allocated[slot])) {
-            log("download slot=%s skipped=no-psram\n", SLOT_NAMES[slot]);
+        auto* bytes = cache.staging && cache.allocated[slot]
+            ? static_cast<uint8_t*>(ps_malloc(info->size)) : nullptr;
+        if (!bytes) {
+            log("download slot=%s skipped=no-psram bytes=%u\n", SLOT_NAMES[slot],
+                unsigned(info->size));
             result.frameFailed[slot] = true;
             continue;
         }
-        const bool received = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], buffer, watchdog);
-        bool committed = false;
-        if (received) {
-            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
-            const bool sameId = strcmp(currentIds[slot], info->id) == 0;
-            committed = (sameId || preserveOverride(cache, slot)) &&
-                writeCachedFrame(path.c_str(), buffer, cache ? cache->flashDone : nullptr);
-            if (cache) cache->publish(slot, committed ? info->id : nullptr,
-                                      committed ? buffer : nullptr);
-        }
-        if (committed) {
+        FrameBody body{std::shared_ptr<uint8_t>(bytes, free), info->size};
+        const bool received = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog);
+        const uint32_t decodeStart = millis();
+        const bool decoded = received && decodeFrame(info->encoding, bytes, info->size, cache.staging);
+        if (received)
+            log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],
+                unsigned(info->size), decoded, static_cast<unsigned long>(millis() - decodeStart));
+        if (decoded) {
+            cache.publish(slot, info, body);
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
@@ -357,7 +358,6 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameFailed[slot] = true;
         }
     }
-    if (!cache) free(buffer);
 }
 
 }  // namespace lcd

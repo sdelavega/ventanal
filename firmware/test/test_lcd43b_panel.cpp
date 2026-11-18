@@ -115,6 +115,8 @@ int main() {
         assert(calls[0].x_end == FB_W);
         assert(calls[0].y_end == FB_H);
         assert(calls[0].data == src);
+        assert(panel.blit(panel.framebuffer()));
+        assert(calls.size() == 1); // in-place composition needs no driver copy
     }
 
     {   // Test pattern: white vertical lines at x=0 and x=799 on black stay

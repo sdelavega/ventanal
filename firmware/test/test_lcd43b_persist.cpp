@@ -7,6 +7,7 @@
 // clock becomes trustworthy, then applies the persisted window.
 
 #include "../lcd43b/persist.h"
+#include "../lcd43b/deferred_save.h"
 #include "../lcd43b/clock.h"
 
 #include "Preferences.h"
@@ -120,16 +121,17 @@ int main() {
         freshNvs();
         Preferences prefs;
         assert(prefs.begin("ventanal", false));
-        char ids[lcd::SCREEN_SLOTS][17] = {};
-        strlcpy(ids[0], "aaaaaaaaaaaaaaaa", sizeof ids[0]);
-        strlcpy(ids[5], "0123456789abcdef", sizeof ids[5]);
-        for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
-            lcd::saveCacheId(prefs, slot, ids[slot]);
-        char loaded[lcd::SCREEN_SLOTS][17] = {};
-        assert(lcd::loadCacheIds(prefs, loaded));
-        assert(!strcmp(loaded[0], "aaaaaaaaaaaaaaaa"));
-        assert(!strcmp(loaded[1], ""));
-        assert(!strcmp(loaded[5], "0123456789abcdef"));
+        prefs.putString("id0", "aaaaaaaaaaaaaaaa"); // legacy raw frame
+        lcd::CacheLocation spare{"0123456789abcdef", true};
+        assert(lcd::saveCacheLocation(prefs, 5, spare));
+        lcd::CacheLocation loaded[lcd::SCREEN_SLOTS];
+        lcd::loadCacheLocations(prefs, loaded);
+        assert(!strcmp(loaded[0].id, "aaaaaaaaaaaaaaaa") && !loaded[0].alternate);
+        assert(!loaded[1].id[0]);
+        assert(!strcmp(loaded[5].id, spare.id) && loaded[5].alternate);
+        assert(lcd::saveCacheLocation(prefs, 5, {}));
+        lcd::loadCacheLocations(prefs, loaded);
+        assert(!loaded[5].id[0]);
         lcd::saveSelection(prefs, 4, 2);
         int screenIndex = 0, spareCursor = 0;
         assert(lcd::loadSelection(prefs, screenIndex, spareCursor));
@@ -139,9 +141,9 @@ int main() {
         freshNvs();
         Preferences prefs;
         assert(prefs.begin("ventanal", false));
-        char ids[lcd::SCREEN_SLOTS][17] = {};
-        assert(!lcd::loadCacheIds(prefs, ids));
-        assert(!strcmp(ids[0], ""));
+        lcd::CacheLocation entries[lcd::SCREEN_SLOTS];
+        lcd::loadCacheLocations(prefs, entries);
+        assert(!entries[0].id[0]);
         lcd::DeviceManifest boot;
         assert(!lcd::loadQuiet(prefs, boot));
         assert(!boot.quietValid());
@@ -156,6 +158,29 @@ int main() {
         int screenIndex = 9, spareCursor = 9;
         lcd::loadSelection(prefs, screenIndex, spareCursor);
         assert(screenIndex == 0 && spareCursor == 0);
+    }
+    {   // Dark windows are immediate. A lit display waits for the deadline.
+        assert(!lcd::persistNow(false, true, lcd::MAX_SAVE_DELAY_MS, false));
+        assert(lcd::persistNow(false, false, 0, true));
+        assert(lcd::persistNow(false, true, 0, true));
+        assert(!lcd::persistNow(true, false, lcd::MAX_SAVE_DELAY_MS - 1, true));
+        assert(lcd::persistNow(true, false, lcd::MAX_SAVE_DELAY_MS, true));
+
+        lcd::DeferredSave save;
+        auto oldBytes = std::make_shared<uint8_t>(1);
+        std::weak_ptr<uint8_t> previous = oldBytes;
+        save.replace("aaaaaaaaaaaaaaaa", {oldBytes, 1}, 100);
+        oldBytes.reset();
+        auto current = std::make_shared<uint8_t>(2);
+        save.replace("bbbbbbbbbbbbbbbb", {current, 1}, 300);
+        assert(previous.expired());
+        assert(save.ready(300) && save.queuedAt == 100);
+        save.failedAt = 400;
+        save.retrying = true;
+        assert(!save.ready(10399) && save.ready(10400));
+        assert(!strcmp(save.id, "bbbbbbbbbbbbbbbb") && save.body.bytes == current);
+        save.replace("", {}, 450);
+        assert(save.pending && save.queuedAt == 100 && !save.id[0] && !save.body.bytes);
     }
     puts("lcd43b persist: quiet, publish shape, cache ids, offline boot in"
          " quiet hours passed");

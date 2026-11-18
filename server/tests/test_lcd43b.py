@@ -12,6 +12,7 @@ from threading import Thread
 from zoneinfo import ZoneInfo
 
 import hashlib
+import zlib
 import httpx
 import numpy as np
 from PIL import Image
@@ -393,7 +394,9 @@ def test_device_manifest_hashes_and_schema(tmp_path, monkeypatch):
     for name in ('art', 'weather'):
         entry = manifest['screens'][name]
         data = (root / 'frames' / f"{name}-{entry['id']}.vnr").read_bytes()
-        assert entry['size'] == len(data) == 768016
+        assert entry['encoding'] == 'zlib'
+        assert entry['size'] == len(data) < lcd43b.FRAME_SIZE
+        assert len(zlib.decompress(data)) == lcd43b.FRAME_SIZE
         assert entry['sha256'] == hashlib.sha256(data).hexdigest()
         assert entry['url'] == f"/devices/lcd43b/frames/{name}-{entry['id']}.vnr"
         assert entry['id'] == hashlib.sha256(data).hexdigest()[:16]
@@ -423,6 +426,8 @@ def test_device_manifest_lists_optional_spares(tmp_path, monkeypatch):
     assert entry['url'].startswith('/devices/lcd43b/frames/spare0-')
     data = (value.output_dir / 'devices' / 'lcd43b' / 'frames'
             / f"spare0-{entry['id']}.vnr").read_bytes()
+    assert entry['encoding'] == 'zlib'
+    assert zlib.decompress(data).startswith(b'VNR1')
     assert entry['sha256'] == hashlib.sha256(data).hexdigest()
 
 
@@ -603,7 +608,9 @@ def test_epaper_outputs_unchanged_after_a_successful_publish(tmp_path, monkeypat
     for entry in manifest['screens'].values():
         data = device[f"devices/lcd43b/frames/"
                       f"{entry['url'].rsplit('/', 1)[1]}"]
-        assert entry['size'] == len(data) == 768016
+        assert entry['encoding'] == 'zlib'
+        assert entry['size'] == len(data) < lcd43b.FRAME_SIZE
+        assert len(zlib.decompress(data)) == lcd43b.FRAME_SIZE
         assert entry['sha256'] == hashlib.sha256(data).hexdigest()
 
 

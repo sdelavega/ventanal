@@ -106,24 +106,38 @@ inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
     m.spareCount = uint8_t(prefs.getUChar("spare-count", 0) % (SPARE_SLOTS + 1));
 }
 
-// Cache ids keep the phase-1 keys ("id0".."id5") so a re-flash retains the
-// cache state.
-inline void saveCacheId(Preferences& prefs, int slot, const char* id) {
-    char key[8];
+// The NVS pointer includes the cache bank. A save writes the inactive file
+// first, so losing power before the NVS update still leaves the old frame
+// available. Legacy 16-character ids point at the primary file.
+struct CacheLocation {
+    char id[17]{};
+    bool alternate = false;
+};
+
+inline bool saveCacheLocation(Preferences& prefs, int slot, const CacheLocation& entry) {
+    char key[8], value[18] = {};
     snprintf(key, sizeof key, "id%d", slot);
-    if (prefs.getString(key, "") != id) prefs.putString(key, id);
+    if (entry.id[0]) {
+        memcpy(value, entry.id, 16);
+        if (entry.alternate) value[16] = '1';
+    }
+    if (prefs.getString(key, "") == value) return true;
+    prefs.putString(key, value);
+    return prefs.getString(key, "") == value;
 }
 
-inline bool loadCacheIds(Preferences& prefs, char ids[SCREEN_SLOTS][17]) {
-    bool any = false;
+inline void loadCacheLocations(Preferences& prefs, CacheLocation entries[SCREEN_SLOTS]) {
     for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
+        entries[slot] = {};
         char key[8];
         snprintf(key, sizeof key, "id%d", slot);
-        const String id = prefs.getString(key, "");
-        strlcpy(ids[slot], id.c_str(), 17);
-        any = any || ids[slot][0];
+        const String value = prefs.getString(key, "");
+        const size_t size = value.length();
+        if ((size != 16 && !(size == 17 && value.c_str()[16] == '1'))
+            || !lowerHex(value.c_str(), 16)) continue;
+        memcpy(entries[slot].id, value.c_str(), 16);
+        entries[slot].alternate = size == 17;
     }
-    return any;
 }
 
 // The selection keeps the phase-1 keys ("screen", "spare-cursor").

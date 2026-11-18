@@ -4,8 +4,9 @@
 // Ventanal phase-1 firmware for the Waveshare ESP32-S3-Touch-LCD-4.3B.
 // The board applies its configured idle timeout on USB and battery. It fetches the
 // per-device manifest every ten minutes and on demand, hash-verifies and
-// commits changed VNR1 RGB565 frames to LittleFS and blits from PSRAM
-// to the 800x480 panel. Touch: tap right half = next screen, left
+// displays changed VNR1 RGB565 frames from PSRAM on the 800x480 panel.
+// It saves their original zlib payloads when the screen is dark or the
+// save deadline expires. Touch: tap right half = next screen, left
 // half = previous screen, double tap = next spare artwork, press >= 1.5 s
 // = refresh now. The backlight follows the manifest's (persisted) quiet
 // hours; any touch lights it for 60 s during quiet hours. Offline keeps
@@ -15,8 +16,8 @@
 // task watchdog, so loop() keeps polling touch and servicing the
 // backlight while Wi-Fi waits, NTP waits and up to six 60 s transfers
 // run. The worker only performs network I/O and frame staging; every
-// state change is applied by loop() through lcd::applyRefresh, so UI
-// state has a single writer (host-tested in sync.h).
+// state change and cache write is applied by loop(), so UI and flash
+// cache state have a single writer (host-tested in sync.h).
 
 #include <Arduino.h>
 #include <LittleFS.h>
@@ -47,6 +48,7 @@
 
 #include "ch422g.h"
 #include "frame.h"
+#include "inflate.h"
 #include "gesture.h"
 #include "gt911.h"
 #include "log.h"
@@ -120,6 +122,11 @@ lcd::RefreshState state;   // manifest, cache ids, offline flag
 uint8_t* residentFrames[lcd::SCREEN_SLOTS]{};
 uint8_t* overrideFrame = nullptr;
 lcd::ResidentCache refreshCache;
+bool mounted = false;
+lcd::CacheLocation persistedFrames[lcd::SCREEN_SLOTS];
+lcd::DeferredSave deferredFrames[lcd::SCREEN_SLOTS];
+lcd::DeferredSave deferredOverride;
+int overrideSource = -1;  // persisted spare to copy if no wire payload is in RAM
 int screenIndex = 0;       // current screen within the screen list
 int spareCursor = -1;      // legacy selection key; OwnerState owns swapping
 OwnerState owner;
@@ -145,6 +152,7 @@ uint32_t powerPollMs() {
 #endif
 }
 bool backlightState = false;
+bool quietBlanking = false;
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
 uint32_t lastTouchPollMs = 0;
@@ -321,16 +329,34 @@ uint16_t* clockPixels = nullptr;
 uint16_t* clockDimmed = nullptr;
 int clockSlot = -1;
 
+String residentPath(int slot, bool alternate) {
+    return String("/") + lcd::SLOT_NAMES[slot] + (alternate ? "-alt.vnr" : ".vnr");
+}
+
 bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
-    if (!frame || strlen(id) != 16) return false;
+    if (!mounted || !frame || strlen(id) != 16) return false;
     File file = LittleFS.open(path, "r");
-    if (!file || file.size() != lcd::FRAME_BYTES ||
-        file.read(frame, lcd::FRAME_BYTES) != lcd::FRAME_BYTES ||
-        !lcd::cachedFrameValid(frame, id)) {
-        lcd::log("cache boot path=%s ok=0\n", path);
-        return false;
+    const size_t bytes = file ? file.size() : 0;
+    if (bytes >= lcd::HEADER_BYTES && bytes <= lcd::FRAME_WIRE_MAX) {
+        // An old cache stores a raw VNR1 frame. The zlib wrapper starts
+        // with a different magic, even if it happens to have the same size.
+        if (bytes == lcd::FRAME_BYTES && file.read(frame, lcd::HEADER_BYTES) == lcd::HEADER_BYTES
+            && lcd::headerValid(frame)) {
+            if (file.read(frame + lcd::HEADER_BYTES, lcd::PIXEL_BYTES) == lcd::PIXEL_BYTES
+                && lcd::cachedFrameValid(frame, id)) return true;
+        } else if (file.seek(0)) {
+            auto* wire = static_cast<uint8_t*>(ps_malloc(bytes));
+            if (wire) {
+                const bool valid = file.read(wire, bytes) == bytes
+                    && lcd::frameHashMatches(wire, bytes, id, 16)
+                    && lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame);
+                free(wire);
+                if (valid) return true;
+            }
+        }
     }
-    return true;
+    lcd::log("cache boot path=%s ok=0\n", path);
+    return false;
 }
 
 void loadResidentCache() {
@@ -341,36 +367,44 @@ void loadResidentCache() {
     clockDimmed = static_cast<uint16_t*>(ps_malloc(clockBytes));
     if (!clockBackground || !clockPixels || !clockDimmed)
         lcd::log("clock error=allocation\n");
-    refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
     unsigned allocated = 0;
     unsigned loaded = 0;
     constexpr int firstSpare = lcd::SCREEN_SLOTS - lcd::SPARE_SLOTS;
     for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
-        if (slot == firstSpare)
-            overrideFrame = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
         residentFrames[slot] = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
         refreshCache.allocated[slot] = residentFrames[slot] != nullptr;
         if (residentFrames[slot]) ++allocated;
-        const String path = String("/") + lcd::SLOT_NAMES[slot] + ".vnr";
-        if (loadResidentFrame(path.c_str(), residentFrames[slot], state.cachedIds[slot]))
+        const auto& saved = persistedFrames[slot];
+        const String path = residentPath(slot, saved.alternate);
+        if (loadResidentFrame(path.c_str(), residentFrames[slot], saved.id)) {
+            strcpy(state.cachedIds[slot], saved.id);
             ++loaded;
-        else
-            state.cachedIds[slot][0] = 0;
+        }
     }
-    if (state.cachedIds[0][0]) owner.mainChanged(state.cachedIds[0]);
+    const bool mainChanged = state.cachedIds[0][0] && strcmp(owner.mainId, state.cachedIds[0]);
+    if (mainChanged) {
+        owner.mainChanged(state.cachedIds[0]);
+        lcd::saveOwner(prefs, owner);
+    }
     if (owner.overrideArt.id[0]) {
-        bool restored = false;
-        for (int slot = firstSpare; overrideFrame && slot < lcd::SCREEN_SLOTS; ++slot) {
+        overrideFrame = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
+        bool restored = loadResidentFrame("/override.vnr", overrideFrame, owner.overrideArt.id);
+        for (int slot = firstSpare; !restored && overrideFrame && slot < lcd::SCREEN_SLOTS; ++slot) {
             if (strcmp(state.cachedIds[slot], owner.overrideArt.id) != 0) continue;
             memcpy(overrideFrame, residentFrames[slot], lcd::FRAME_BYTES);
+            deferredOverride.replace(owner.overrideArt.id, {}, millis());
+            overrideSource = slot;
             restored = true;
-            break;
         }
-        if (!restored && !loadResidentFrame("/override.vnr", overrideFrame, owner.overrideArt.id)) {
+        if (!restored) {
+            free(overrideFrame);
+            overrideFrame = nullptr;
             owner.overrideArt = {};
             owner.cursor = -1;
+            lcd::saveOwner(prefs, owner);
         }
     }
+    refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
     const size_t clockUsed = clockBytes * (unsigned(clockBackground != nullptr) +
         unsigned(clockPixels != nullptr) + unsigned(clockDimmed != nullptr));
     const size_t panelBytes = panel.handle() ? lcd::PIXEL_BYTES : 0;
@@ -534,6 +568,7 @@ void logRefreshLabel() {
 // refreshed with every accepted manifest) and only applies once the wall
 // clock is trustworthy: before the first NTP sync the backlight stays on.
 void backlightRefresh() {
+    quietBlanking = false;
     if(!powerSession.screenOn) { setBacklight(false); return; }
     if(powerSession.chargeShowing) { setBacklight(true); return; }
     tm local{};
@@ -542,7 +577,8 @@ void backlightRefresh() {
     const bool quiet = lcd::quietApplies(local.tm_year + 1900,
                                          local.tm_hour * 60 + local.tm_min,
                                          state.manifest);
-    setBacklight(!quiet || millis() < touchUntilMs);
+    quietBlanking = quiet && millis() >= touchUntilMs;
+    setBacklight(!quietBlanking);
 }
 
 // --- Refresh worker ------------------------------------------------------
@@ -581,73 +617,128 @@ bool refreshRequested = false;
 lcd::DeviceSettings refreshSettings; // copied before worker starts; immutable until it finishes
 lcd::RefreshResult refreshStaging;   // worker writes, loop copies while parked
 char refreshIds[lcd::SCREEN_SLOTS][17]{};
-enum class CacheEvent { ProtectSpare, Publish, RestartScanout };
 struct PendingFrame {
-    CacheEvent event;
     int slot;
-    const char* detail; // frame id, or the flash operation to log
-    const uint8_t* bytes;
+    const lcd::FrameInfo* info;
+    const lcd::FrameBody* body;
 };
-void handOffFrame(PendingFrame frame);
 PendingFrame pendingFrame;
-const uint8_t* spareToArchive = nullptr;
-int replacingSpare = -1;
-bool deferredSwap = false;
-SemaphoreHandle_t frameStaged;       // worker -> loop: cache operation pending
-SemaphoreHandle_t frameCopied;       // loop -> worker: cache operation applied
+SemaphoreHandle_t frameStaged;       // worker -> loop: decoded frame ready
+SemaphoreHandle_t frameCopied;       // loop -> worker: scratch and body consumed
 
-void handOffFrame(PendingFrame frame) {
-    pendingFrame = frame;
+void stageResidentFrame(int slot, const lcd::FrameInfo* info, const lcd::FrameBody& body) {
+    pendingFrame = {slot, info, &body};
     xSemaphoreGive(frameStaged);
     xSemaphoreTake(frameCopied, portMAX_DELAY);
 }
 
-void stageResidentFrame(int slot, const char* id, const uint8_t* frame) {
-    handOffFrame({CacheEvent::Publish, slot, id, frame});
-}
-
-void noteWorkerFlash(const char* operation) {
-    handOffFrame({CacheEvent::RestartScanout, -1, operation, nullptr});
-}
-
-// The loop marks a spare in use before the worker can replace it on disk.
-// The worker may read its old pixels until it hands back the result.
-const uint8_t* protectSpare(int slot) {
-    handOffFrame({CacheEvent::ProtectSpare, slot, nullptr, residentFrames[slot]});
-    return spareToArchive;
+void clearOverrideSave() {
+    deferredOverride = {};
+    overrideSource = -1;
+    free(overrideFrame);
+    overrideFrame = nullptr;
 }
 
 void applyResidentFrame() {
-    const auto& frame = pendingFrame;
-    if (frame.event == CacheEvent::RestartScanout) {
-        restartScanout(frame.detail);
-    } else if (frame.event == CacheEvent::ProtectSpare) {
-        const auto& id = state.cachedIds[frame.slot];
-        replacingSpare = frame.slot;
-        spareToArchive = id[0] && strcmp(id, owner.overrideArt.id) == 0
-            ? frame.bytes : nullptr;
-    } else {
-        if (frame.detail) {
-            auto& id = state.cachedIds[frame.slot];
-            if (frame.bytes) memcpy(residentFrames[frame.slot], frame.bytes, lcd::FRAME_BYTES);
-            strlcpy(id, frame.detail, sizeof id);
-            lcd::saveCacheId(prefs, frame.slot, id);
-            if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
-                owner.mainChanged(id);
-                lcd::saveOwner(prefs, owner);
-            }
-            restartScanout("cache-id");
-        }
-        replacingSpare = -1;
+    const auto frame = pendingFrame;
+    auto& id = state.cachedIds[frame.slot];
+    const char* nextId = frame.info ? frame.info->id : "";
+    if (frame.info) std::swap(residentFrames[frame.slot], refreshCache.staging);
+    const bool changed = strcmp(id, nextId) != 0;
+    if (mounted && (changed || refreshCache.forceDownloads)) {
+        auto& save = deferredFrames[frame.slot];
+        save.replace(nextId, *frame.body, millis());
+        lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
+                 unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
+    }
+    strcpy(id, nextId);
+    if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
+        owner.mainChanged(id);
+        clearOverrideSave();
     }
     xSemaphoreGive(frameCopied);
+    if (changed && !settingsPage.active && screenSlot(screenIndex) == frame.slot)
+        show(screenIndex);
+}
+
+bool pendingCacheSave(uint32_t now) {
+    if (deferredOverride.ready(now)) return true;
+    for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
+        if (slot != overrideSource && deferredFrames[slot].ready(now)) return true;
+    return false;
+}
+
+void persistDeferredFrame() {
+    if (!mounted || settingsPage.active) return;
+    const uint32_t now = millis();
+
+    // The spare backing a selected override must stay available until its
+    // archive is committed. Other slots can save in either order.
+    const auto due = [now](const lcd::DeferredSave& save) {
+        uint32_t elapsed = now - save.queuedAt;
+#ifdef VENTANAL_LCD_DIAG_PANEL
+        if (elapsed >= 12000) elapsed = lcd::MAX_SAVE_DELAY_MS; // exercise the deadline
+#endif
+        return lcd::persistNow(backlightState, quietBlanking, elapsed, save.ready(now));
+    };
+    int slot = -1;
+    lcd::DeferredSave* chosen = due(deferredOverride) ? &deferredOverride : nullptr;
+    if (!chosen) {
+        for (int i = 0; i < lcd::SCREEN_SLOTS; ++i) {
+            if (i == overrideSource || !due(deferredFrames[i])) continue;
+            if (!chosen || now - deferredFrames[i].queuedAt > now - chosen->queuedAt) {
+                chosen = &deferredFrames[i];
+                slot = i;
+            }
+        }
+    }
+    if (!chosen) return;
+
+    const bool wasLit = backlightState;
+    if (wasLit) setBacklight(false);
+    const uint32_t started = millis();
+    const size_t bytes = chosen->body.size;
+    bool ok;
+    if (slot < 0) {
+        if (chosen->body.bytes) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
+        else {
+            const String source = residentPath(overrideSource, persistedFrames[overrideSource].alternate);
+            ok = lcd::copyCachedFrame("/override.vnr", source.c_str());
+        }
+        if (ok) overrideSource = -1;
+    } else {
+        lcd::CacheLocation next;
+        strcpy(next.id, chosen->id);
+        next.alternate = !persistedFrames[slot].alternate;
+        const String path = residentPath(slot, next.alternate);
+        ok = (!chosen->body.bytes || lcd::writeCachedFrame(path.c_str(), chosen->body))
+            && lcd::saveCacheLocation(prefs, slot, next);
+        if (ok) {
+            persistedFrames[slot] = next;
+            if (slot == 0) lcd::saveOwner(prefs, owner);
+        }
+    }
+    restartScanout("frame-persist");
+    lcd::log("cache persist slot=%s id=%.16s bytes=%u ok=%d ms=%lu wait_ms=%lu lit=%d\n",
+        slot < 0 ? "override" : lcd::SLOT_NAMES[slot], chosen->id, unsigned(bytes), ok,
+        static_cast<unsigned long>(millis() - started),
+        static_cast<unsigned long>(started - chosen->queuedAt), wasLit);
+    if (ok) *chosen = {};
+    else {
+        chosen->failedAt = millis();
+        chosen->retrying = true;
+    }
+    if (wasLit) {
+        delay(30); // allow the queued restart to reach VSYNC before lighting the panel
+        backlightRefresh();
+    }
 }
 
 void refreshWorker(void*) {
     refreshWatchdog.subscribe();
     lcd::runRefresh(VENTANAL_HOST_URL, VENTANAL_DEVICE_ID, refreshIds,
                     refreshStaging, refreshWatchdog, refreshSettings, refreshSkips,
-                    &refreshCache);
+                    refreshCache);
     refreshWatchdog.unsubscribe();
     xSemaphoreGive(refreshStaged);
     // Park until loop() has copied the result, so the staging buffer is
@@ -807,24 +898,34 @@ void handleGesture(Gesture gesture, int x, int y) {
         break;
     case Gesture::DoubleTap:
         {
+            if (!mounted) { lcd::log("spare skipped=littlefs-unmounted\n"); break; }
             if(!settings.showArt) { lcd::log("spare skipped=art-hidden\n"); break; }
             bool cached[3];
             for(int i=0;i<3;++i) {
                 strcpy(owner.spares[i].id,state.cachedIds[3+i]);
-                cached[i]=overrideFrame && owner.spares[i].id[0];
+                cached[i]=owner.spares[i].id[0];
             }
             char skipped[17]; strcpy(skipped,lcd::selectedArtId(owner));
             const bool swapped=lcd::swapArt(owner,settings.showArt,cached,[](int next) {
-                if (replacingSpare == 3 + next) {
-                    deferredSwap = true;
-                    return false;
-                }
+                // Swaps and frame publication both run in loop(). Any tap
+                // queued during a hand-off is classified before it gets here.
+                if (!overrideFrame)
+                    overrideFrame = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
+                if (!overrideFrame) return false;
                 memcpy(overrideFrame, residentFrames[3+next], lcd::FRAME_BYTES);
                 return true;
             });
             if (!swapped) {
-                lcd::log("spare deferred=commit\n");
+                lcd::log("spare skipped=no-psram\n");
                 break;
+            }
+            if (owner.cursor < 0) clearOverrideSave();
+            else {
+                const int slot = 3 + owner.cursor;
+                const auto& save = deferredFrames[slot];
+                const bool inRam = save.pending && save.body.bytes;
+                overrideSource = inRam ? -1 : slot;
+                deferredOverride.replace(owner.overrideArt.id, inRam ? save.body : lcd::FrameBody{}, millis());
             }
             if(strlen(skipped)==16 && strlen(lcd::selectedArtId(owner))==16
                && strcmp(skipped,lcd::selectedArtId(owner))) ++skipRevision;
@@ -962,6 +1063,11 @@ void restoreTouchWake() {
 }
 void sleepPower() {
     setBacklight(false);
+    // Let loop() drain one file per pass before entering light sleep.
+    if (!settingsPage.active && pendingCacheSave(millis())) {
+        powerSession.sleep();
+        return;
+    }
     if(!panel.stop()) { lcd::log("power error=panel-stop\n"); delay(1000); return; }
     powerSession.sleep();
     // Manual light sleep cannot preserve association. The existing worker
@@ -1041,13 +1147,13 @@ void setup() {
     Wire.setClock(400000);
     if (!prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
     // Mount the partition named "littlefs" (spiffs subtype); first boot formats.
-    if (!LittleFS.begin(true, "/littlefs", 10, "littlefs"))
-        lcd::log("error=littlefs-mount\n");
+    mounted = LittleFS.begin(true, "/littlefs", 10, "littlefs");
+    if (!mounted) lcd::log("error=littlefs-mount\n");
     // Restore persisted state so an offline boot still honours quiet hours
     // and the screen list matches the cache before the first fetch.
-    lcd::loadCacheIds(prefs, state.cachedIds);
+    lcd::loadCacheLocations(prefs, persistedFrames);
     lcd::loadOwner(prefs,owner);
-    if(!owner.mainId[0]) owner.mainChanged(state.cachedIds[0]);
+    if(!owner.mainId[0]) owner.mainChanged(persistedFrames[0].id);
     lcd::loadSelection(prefs, screenIndex, spareCursor);
     lcd::loadQuiet(prefs, state.manifest);
     lcd::loadPublishShape(prefs, state.manifest);
@@ -1098,7 +1204,7 @@ void setup() {
     touchBootDiag();
 #endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
-    {   // Keep cached frames visible while the first refresh recommits them.
+    {   // Observe scan-out while refreshing and saving cached frames.
         esp_lcd_rgb_panel_event_callbacks_t callbacks = {};
         callbacks.on_vsync = panelVsync;
         if (esp_lcd_rgb_panel_register_event_callbacks(panel.handle(),
@@ -1122,8 +1228,6 @@ void setup() {
     refreshCopied = xSemaphoreCreateBinary();
     frameStaged = xSemaphoreCreateBinary();
     frameCopied = xSemaphoreCreateBinary();
-    refreshCache.flashDone = noteWorkerFlash;
-    refreshCache.protectSpare = protectSpare;
     refreshCache.publish = stageResidentFrame;
     powerSession.activity(millis());
     show(screenIndex);            // cached frame, or the waiting screen
@@ -1158,10 +1262,6 @@ void loop() {
 #endif
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
     if (refreshBusy && xSemaphoreTake(frameStaged, 0) == pdTRUE) applyResidentFrame();
-    if (deferredSwap && replacingSpare < 0) {
-        deferredSwap = false;
-        handleGesture(Gesture::DoubleTap, 0, 0);
-    }
     tickClock();
     pollTouch(now);
     if(settingsPage.expired(millis())) closeSettings("idle");
@@ -1191,6 +1291,7 @@ void loop() {
         powerSession.refreshStarted(started);
         if(started) settingsRefreshPending=false;
     }
+    persistDeferredFrame();
     tickPower();
     delay(2);
 }

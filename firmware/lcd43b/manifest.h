@@ -9,7 +9,7 @@
 //    "spares": [{...}, ...],        // optional, at most three
 //    "quiet": {"start": "23:00", "end": "06:00"}}
 // Every frame entry carries id (16 lowercase hex), url (under /devices/),
-// size (exactly one VNR1 frame) and a full lowercase-hex SHA-256.
+// encoding, wire size and the full lowercase-hex SHA-256 of the wire bytes.
 
 #include <ArduinoJson.h>
 #include <cstdint>
@@ -26,6 +26,8 @@ struct FrameInfo {
     char id[17] = {};
     char url[128] = {};
     char sha256[65] = {};
+    size_t size = FRAME_BYTES;
+    FrameEncoding encoding = FrameEncoding::Raw;
     bool present = false;
 };
 
@@ -50,26 +52,25 @@ inline int parseClock(const char* text) {
     return hour * 60 + minute;
 }
 
-inline bool lowerHex(const char* text, size_t length) {
-    for (size_t i = 0; i < length; ++i) {
-        const char c = text[i];
-        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
-    }
-    return true;
-}
-
 inline bool parseFrameInfo(JsonVariantConst value, FrameInfo& out) {
     const char* id = value["id"] | "";
     const char* url = value["url"] | "";
     const char* sha = value["sha256"] | "";
     const size_t size = value["size"] | 0u;
-    if (strlen(id) != 16 || strlen(sha) != 64 || size != FRAME_BYTES) return false;
+    const char* encoding = value["encoding"] | "";
+    FrameEncoding format = FrameEncoding::Raw;
+    if (strcmp(encoding, "zlib") == 0) format = FrameEncoding::Zlib;
+    else if (!value["encoding"].isNull()) return false;  // legacy entries omit it
+    if (strlen(id) != 16 || strlen(sha) != 64 || !validWireSize(format, size))
+        return false;
     if (strlen(url) >= sizeof out.url) return false;
     if (!lowerHex(id, 16) || !lowerHex(sha, 64)) return false;
     if (strncmp(url, "/devices/", 9) != 0 || strstr(url, "..")) return false;
     strcpy(out.id, id);
     strcpy(out.url, url);
     strcpy(out.sha256, sha);
+    out.size = size;
+    out.encoding = format;
     out.present = true;
     return true;
 }

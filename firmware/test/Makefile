@@ -195,7 +195,7 @@ build/test_lcd43b_touch: test_lcd43b_touch.cpp ../lcd43b/touch.h ../lcd43b/gt911
 # overflow tripwire: a read that ever passed the frame end would abort.
 build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp $(LDFLAGS) -fsanitize=address -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp $(LDFLAGS) -fsanitize=address -lz -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
 build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
@@ -231,3 +231,7 @@ build/test_lcd43b_power_session: test_lcd43b_power_session.cpp ../lcd43b/power_s
 build/test_lcd43b_owner: test_lcd43b_owner.cpp ../lcd43b/owner.h ../ventanal/owner.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes test_lcd43b_owner.cpp $(LDFLAGS) -o $@
+
+build/test_lcd43b_sync: ../lcd43b/inflate.h ../lcd43b/deferred_save.h
+build/test_lcd43b_persist: ../lcd43b/deferred_save.h
+build/test_lcd43b_owner: ../lcd43b/frame.h ../lcd43b/sha256.h

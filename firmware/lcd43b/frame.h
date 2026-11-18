@@ -22,6 +22,16 @@ constexpr uint16_t HEIGHT = 480;
 constexpr size_t HEADER_BYTES = 16;
 constexpr size_t PIXEL_BYTES = size_t(WIDTH) * HEIGHT * 2;
 constexpr size_t FRAME_BYTES = HEADER_BYTES + PIXEL_BYTES;
+// zlib compressBound for one complete VNR1 frame.
+constexpr size_t FRAME_WIRE_MAX = FRAME_BYTES + (FRAME_BYTES >> 12)
+    + (FRAME_BYTES >> 14) + (FRAME_BYTES >> 25) + 13;
+
+enum class FrameEncoding { Raw, Zlib };
+
+inline bool validWireSize(FrameEncoding encoding, size_t size) {
+    return encoding == FrameEncoding::Raw ? size == FRAME_BYTES
+        : size >= 8 && size <= FRAME_WIRE_MAX;
+}
 
 // True when the 16 bytes are a VNR1 header for this panel.
 inline bool headerValid(const uint8_t* header) {
@@ -34,34 +44,35 @@ inline bool headerValid(const uint8_t* header) {
     return true;
 }
 
-// True when a complete frame matches the expected length, header and hash.
-inline bool frameVerified(const uint8_t* data, size_t length, const char* sha256Hex) {
-    if (length != FRAME_BYTES || !headerValid(data)) return false;
-    if (!sha256Hex) return false;
+inline bool lowerHex(const char* text, size_t length) {
+    for (size_t i = 0; i < length; ++i) {
+        const char c = text[i];
+        if (!((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f'))) return false;
+    }
+    return true;
+}
+
+// Check the digest of the exact bytes served, or its 16-character cache id.
+inline bool frameHashMatches(const uint8_t* data, size_t length,
+                             const char* hex, size_t digits) {
     Sha256 hash;
     hash.update(data, length);
     const uint8_t* digest = hash.digest();
-    static const char DIGITS[] = "0123456789abcdef";
-    for (int i = 0; i < 32; ++i) {
-        if (sha256Hex[2 * i] != DIGITS[digest[i] >> 4]) return false;
-        if (sha256Hex[2 * i + 1] != DIGITS[digest[i] & 0x0F]) return false;
+    static const char digitsLower[] = "0123456789abcdef";
+    for (size_t i = 0; i < digits; ++i) {
+        const uint8_t byte = digest[i / 2];
+        if (hex[i] != digitsLower[i % 2 ? byte & 0x0F : byte >> 4]) return false;
     }
-    return sha256Hex[64] == '\0';
+    return hex[digits] == '\0';
 }
 
-// LCD frame ids are the first eight bytes of the content hash. Checking
-// them at boot also catches a reset between the rename and the NVS update.
+inline bool frameVerified(const uint8_t* data, size_t length, const char* sha256Hex) {
+    return length == FRAME_BYTES && headerValid(data) && sha256Hex
+        && frameHashMatches(data, length, sha256Hex, 64);
+}
+
 inline bool cachedFrameValid(const uint8_t* data, const char* id) {
-    if (!headerValid(data)) return false;
-    Sha256 hash;
-    hash.update(data, FRAME_BYTES);
-    const uint8_t* digest = hash.digest();
-    static const char DIGITS[] = "0123456789abcdef";
-    for (int i = 0; i < 8; ++i) {
-        if (id[2 * i] != DIGITS[digest[i] >> 4] ||
-            id[2 * i + 1] != DIGITS[digest[i] & 0x0F]) return false;
-    }
-    return id[16] == '\0';
+    return headerValid(data) && frameHashMatches(data, FRAME_BYTES, id, 16);
 }
 
 }  // namespace lcd

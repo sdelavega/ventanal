@@ -17,6 +17,7 @@ inline std::map<std::string,std::string> lastHeaders;
 inline unsigned readDelay=0, streamTimeout=15000;
 inline size_t largestRead = 0;
 inline size_t readBytesCalls = 0;
+inline size_t frameReadCalls = 0;
 // lcd43b sync test additions (defaults keep the e-paper tests unchanged):
 inline std::map<std::string,std::vector<uint8_t>> urlResponses; // per-URL body
 inline bool sizeFromResponse = false;  // getSize() reports the body size
@@ -45,7 +46,7 @@ public:
         return std::min(size_t(1460), remaining);
     }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
-    int read(uint8_t* b, size_t n) { fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
+    int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
     bool connected() { if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {

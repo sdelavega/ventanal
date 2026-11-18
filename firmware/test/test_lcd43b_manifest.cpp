@@ -59,6 +59,19 @@ int main() {
         assert(!strcmp(parsed.spares[0].sha256, SPARE_SHA));
         assert(parsed.quietValid() && parsed.quietStart == 1380 && parsed.quietEnd == 360);
     }
+    {   // Wire size belongs to the encoding, not the decoded frame.
+        lcd::DeviceManifest parsed;
+        std::string body = VALID;
+        const std::string entry = "\"encoding\": \"zlib\", \"size\": ";
+        body.replace(body.find("\"size\""), strlen("\"size\": 768016"), entry + "34541");
+        assert(lcd::parseDeviceManifest(body.c_str(), parsed));
+        assert(parsed.screens[0].encoding == lcd::FrameEncoding::Zlib);
+        assert(parsed.screens[0].size == 34541);
+        body.replace(body.find("34541"), 5, std::to_string(lcd::FRAME_WIRE_MAX + 1));
+        assert(!lcd::parseDeviceManifest(body.c_str(), parsed));
+        body.replace(body.find("zlib"), 4, "rle");
+        assert(!lcd::parseDeviceManifest(body.c_str(), parsed));
+    }
     {   // Minimal manifest: no solar, spares or quiet block.
         const char minimal[] = R"({"version": 1, "screens": {
             "art": {"id": "aaaaaaaaaaaaaaaa", "url": "/devices/lcd43b/frames/a.vnr", "size": 768016, "sha256": "1111111111111111111111111111111111111111111111111111111111111111"},

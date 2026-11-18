@@ -31,11 +31,17 @@ A manual refresh immediately shows **REFRESHING...**. If nothing changed,
 When content changes successfully, the new content replaces the refresh label.
 Touch remains responsive during network activity.
 
-While the display is on, the board checks the manifest every 10 minutes and
-downloads changed frames with SHA-256 verification. Cached screens and the
-selection survive restarts and work offline; a failed refresh adds an OFFLINE
-mark. The available screen list follows the server's publication, including
-solar availability and spares.
+While the display is on, the board checks the manifest every 10 minutes. It
+verifies the SHA-256 of each changed frame's zlib payload and decodes it into
+PSRAM for immediate display. It saves the original payload and its cache ID
+while the backlight is off. If the screen stays lit for six hours, it blanks
+briefly to save. Saves wait for Settings to close.
+
+On restart or power loss, the board loads the most recently saved frame in
+each slot. Recently downloaded pictures may revert to an earlier frame until
+the next refresh. The board can also load raw frames saved by older firmware.
+The available screens follow the server's publication, including solar
+availability and spares. A failed host refresh adds an OFFLINE mark.
 
 ## Settings
 

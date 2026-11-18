@@ -91,8 +91,8 @@ public:
     // regress into (pinned by test_lcd43b_panel).
     // For an RGB panel this is a synchronous memcpy into PSRAM.
     bool blit(const uint16_t* pixels) {
-        return panel_ && esp_lcd_panel_draw_bitmap(panel_, 0, 0, WIDTH, HEIGHT,
-                                                   pixels) == ESP_OK;
+        return panel_ && pixels && (pixels == framebuffer() ||
+            esp_lcd_panel_draw_bitmap(panel_, 0, 0, WIDTH, HEIGHT, pixels) == ESP_OK);
     }
 
     // The caller owns PSRAM staging. Sources (cache/composited readout) remain

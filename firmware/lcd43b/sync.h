@@ -6,9 +6,8 @@
 // pass runs on a short-lived FreeRTOS worker task so loop() keeps polling
 // touch and servicing the backlight while Wi-Fi waits, NTP waits and up to
 // six 60 s frame transfers run (Important fix: refresh used to block the
-// loop for the whole pass). The worker performs only network I/O and the
-// .tmp/rename frame staging; every state change below is applied by the
-// main loop through applyRefresh, so UI state has a single writer.
+// loop for the whole pass). The worker receives and decodes frames into
+// scratch; the main loop owns the live slots and all cache writes.
 
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -18,6 +17,7 @@
 #include <cstring>
 
 #include "frame.h"
+#include "deferred_save.h"
 #include "log.h"
 #include "manifest.h"
 #include "persist.h"
@@ -30,19 +30,12 @@ namespace lcd {
 inline const char* const SLOT_NAMES[SCREEN_SLOTS] = {
     "art", "weather", "solar", "spare0", "spare1", "spare2"};
 
-using FlashDone = void (*)(const char* operation);
-
-// Optional hardware hand-off. publish runs after the atomic disk commit
-// and must finish consuming the buffer before the next GET reuses it.
 struct ResidentCache {
-    uint8_t* staging = nullptr;
+    uint8_t* staging = nullptr; // decoded scratch, reused after each hand-off
     bool allocated[SCREEN_SLOTS] = {};
-    // Before replacing a spare, ask the UI whether it is the selected
-    // override and needs an independent durable copy.
-    const uint8_t* (*protectSpare)(int slot) = nullptr;
-    // A null frame with an empty id means drop; a null id means failure.
-    void (*publish)(int slot, const char* id, const uint8_t* frame) = nullptr;
-    FlashDone flashDone = nullptr;
+    // The synchronous hand-off ends before staging may be reused. An empty
+    // info pointer means drop; otherwise body contains the verified wire bytes.
+    void (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
 };
 
@@ -78,11 +71,11 @@ struct RefreshResult {
     bool timeOk = false;
     bool manifestOk = false;
     DeviceManifest manifest{};
-    // Per cache slot: a verified frame was committed (with its new id), or
+    // Per cache slot: a verified frame was published (with its new id), or
     // the screen vanished from the manifest (drop the cached frame). A
     // failed download stages neither — the previous cache entry stays —
-    // but a slot whose required download failed (timeout, verification,
-    // commit or no staging buffer) sets frameFailed, so a manifest-only
+    // but a slot whose required download failed (timeout, verification
+    // or no staging buffer) sets frameFailed, so a manifest-only
     // success can never report as a fully current pass (the sketch shows
     // DOWNLOAD FAILED instead of UP TO DATE over stale artwork).
     bool frameOk[SCREEN_SLOTS] = {};
@@ -129,22 +122,14 @@ inline bool redrawNeeded(bool requested, bool newContent, bool drawn,
 // lit through the night (pinned by test_lcd43b_sync).
 void configureTimezone();
 
-// Download one frame into buffer (FRAME_BYTES; PSRAM on the board) with
-// every read bounded by the frame bytes still missing, then hash-verify
-// it and stage-commit it to /<slotName>.vnr via .tmp+rename. The body is
-// framed by the connection close: the frame is only committed after the
-// server hangs up with exactly the advertised bytes, waiting a bounded
-// grace for that hang-up. Bytes past the frame reject the download
-// whenever they arrive — a hash-matching frame followed by a trailing
-// packet is malformed, not verified — and a connection that neither
-// delivers nor closes within the grace window is treated as incomplete
-// (fail closed; the previous cache entry stays).
-bool downloadFrame(const char* hostUrl, const FrameInfo& info,
-                   const char* slotName, uint8_t* buffer, Watchdog& watchdog,
-                   FlashDone flashDone = nullptr);
+// Receive and verify exactly the advertised wire bytes. The caller owns a
+// buffer at least info.size bytes long. Check connection close so even a
+// delayed packet beyond the advertised size rejects the response.
+bool receiveFrame(const char* hostUrl, const FrameInfo& info,
+                  const char* slotName, uint8_t* buffer, Watchdog& watchdog);
 
-bool writeCachedFrame(const char* path, const uint8_t* buffer,
-                      FlashDone flashDone);
+bool writeCachedFrame(const char* path, const FrameBody& body);
+bool copyCachedFrame(const char* path, const char* source);
 
 // One full refresh pass: Wi-Fi, NTP, the device manifest, then every
 // changed frame (unchanged slots stage their current id; absent screens
@@ -152,14 +137,12 @@ bool writeCachedFrame(const char* path, const uint8_t* buffer,
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
-                const DeviceSettings& settings = DeviceSettings{},
-                const char* skips = "", const ResidentCache* cache = nullptr);
+                const DeviceSettings& settings, const char* skips, const ResidentCache& cache);
 
 // Apply a finished pass to the live state (single writer: the main loop).
 // Persists the validated quiet window and publish shape, normalises the
-// selection to the (possibly shrunk) screen list, commits staged cache
-// ids, removes dropped slots' cache files, and returns whether the screen
-// must be re-blitted.
+// selection to the (possibly shrunk) screen list, and returns whether the
+// screen must be re-blitted. Individual frames were already published.
 inline bool applyRefresh(RefreshState& state, int& screenIndex,
                         int& spareCursor, Preferences& prefs,
                         const RefreshResult& result, bool requested,
@@ -174,18 +157,6 @@ inline bool applyRefresh(RefreshState& state, int& screenIndex,
         remapSelection(screenIndex, spareCursor, previousSlot, state.manifest.screens[2].present,
                           state.manifest.spareCount,settings);
         saveSelection(prefs, screenIndex, spareCursor);   // survive reboot
-    }
-    for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
-        if (result.frameOk[slot]) {
-            strlcpy(state.cachedIds[slot], result.frameIds[slot],
-                    sizeof state.cachedIds[slot]);
-            saveCacheId(prefs, slot, state.cachedIds[slot]);
-        } else if (result.dropSlot[slot]) {
-            // The worker already erased the cache file (flash erases never
-            // run in loop()); here only the bookkeeping follows.
-            state.cachedIds[slot][0] = 0;
-            saveCacheId(prefs, slot, "");
-        }
     }
     state.offline = !result.manifestOk;
     return redrawNeeded(requested, result.manifestOk, state.drawn,
