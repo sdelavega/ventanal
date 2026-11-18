@@ -4,6 +4,33 @@
 set -eu
 [ "$(id -u)" -eq 0 ] || { echo 'Run with sudo' >&2; exit 1; }
 SOURCE=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CONFIG=/etc/ventanal/ventanal.toml
+if [ -e "$CONFIG" ] || [ -L "$CONFIG" ]; then
+    # Use the incoming validator and the live file before changing the installed package.
+    python3 -I -B - "$SOURCE/src" "$CONFIG" <<'PY'
+import os
+import stat
+import sys
+import tomllib
+
+sys.path.insert(0, sys.argv[1])
+from ventanal.config import ConfigError, validate_config
+
+path = sys.argv[2]
+try:
+    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(fd, 'rb') as source:
+        metadata = os.fstat(source.fileno())
+        if not stat.S_ISREG(metadata.st_mode) or metadata.st_nlink != 1:
+            raise ConfigError('expected a regular config file with one hard link')
+        try:
+            validate_config(tomllib.load(source))
+        except (UnicodeError, tomllib.TOMLDecodeError):
+            raise ConfigError('config.file: unable to read valid TOML') from None
+except (ConfigError, OSError) as exc:
+    raise SystemExit(f'Install stopped before pip install. Fix the live config at {path} and rerun install.sh. {exc}')
+PY
+fi
 if ! python3 -m venv --help >/dev/null 2>&1 || ! dpkg-query -W -f='${Status}' python3-venv 2>/dev/null | grep -q 'install ok installed'; then
     apt-get update
     apt-get install -y python3-venv

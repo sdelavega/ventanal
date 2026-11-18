@@ -117,6 +117,11 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     assert rotated.state['previous'] == {
         'certificate': security.certificate, 'private_key': security.state['private_key'],
     }
+    held = rotated.path.read_bytes()
+    with pytest.raises(SystemExit):
+        main([*command, '--confirm'])
+    assert '--discard-previous' in capsys.readouterr().err
+    assert rotated.path.read_bytes() == held
     assert rotated.path.stat().st_mode & 0o777 == 0o600
     assert rotated.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 9))
     restore = ['restore-certificate', '--config', str(config)]
@@ -137,6 +142,58 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     with pytest.raises(SystemExit):
         main([*restore, '--confirm'])
     assert 'No previous certificate is available' in capsys.readouterr().err
+    main([*command, '--confirm'])
+    next_identity = Security(state)
+    main([*command, '--confirm', '--force'])
+    forced = Security(state)
+    assert forced.certificate != next_identity.certificate
+    assert forced.state['previous']['certificate'] == next_identity.certificate
+
+
+@pytest.mark.parametrize('command', [
+    'setup-token', 'regenerate-certificate', 'restore-certificate',
+    'serve', 'tick', 'skipped', 'render-art', 'render-weather',
+])
+def test_cli_cache_writers_refuse_owner_mismatch(tmp_path, capsys, monkeypatch, command):
+    from ventanal import cache_access, cli
+
+    cache = tmp_path / 'cache'
+    cache.mkdir()
+    config = tmp_path / 'settings.toml'
+    example = Path(__file__).parents[1] / 'ventanal.example.toml'
+    config.write_text(example.read_text().replace('/var/cache/ventanal', str(cache)))
+    monkeypatch.setattr(cache_access.os, 'geteuid', lambda: cache.stat().st_uid + 1)
+    args = [command, '--config', str(config)]
+    if command in cli.CERTIFICATE_COMMANDS:
+        args += ['--confirm']
+    if command.startswith('render-'):
+        args += ['--out', str(tmp_path / 'output.png')]
+    with pytest.raises(SystemExit) as error:
+        cli.main(args)
+    assert error.value.code == 2
+    assert f'run as: sudo -u ventanal ventanal {command}' in capsys.readouterr().err
+    assert not list(cache.iterdir())
+    assert not (tmp_path / 'output.png').exists()
+
+
+def test_cache_workers_refuse_owner_mismatch(tmp_path, capsys, monkeypatch):
+    from types import SimpleNamespace
+    from ventanal import cache_access, settings_worker
+    from ventanal.art import screen_fit
+    from ventanal.solar import worker as fcc_worker
+
+    cfg = SimpleNamespace(cache_dir=tmp_path, timezone='UTC')
+    monkeypatch.setattr(cache_access.os, 'geteuid', lambda: tmp_path.stat().st_uid + 1)
+    monkeypatch.setattr(settings_worker.sys, 'argv', ['worker', 'unused.toml'])
+    monkeypatch.setattr(settings_worker, 'load_config', lambda _: cfg)
+    monkeypatch.setattr(fcc_worker, 'load_config', lambda _: cfg)
+    with pytest.raises(SystemExit, match='sudo -u ventanal.*settings_worker'):
+        settings_worker.main()
+    with pytest.raises(SystemExit, match='sudo -u ventanal.*screen_fit'):
+        screen_fit._worker(str(tmp_path), [], [])
+    assert fcc_worker.main() == 1
+    assert 'sudo -u ventanal python -m ventanal.solar.worker' in capsys.readouterr().err
+    assert not list(tmp_path.iterdir())
 
 
 def test_certificate_commands_refuse_while_serve_holds_state_lock(tmp_path, monkeypatch):

@@ -13,18 +13,21 @@ from zoneinfo import ZoneInfo
 import httpx
 from PIL import Image
 
-from ventanal.config import load_config
+from ventanal.cache_access import cache_owner_error
+from ventanal.config import ConfigError, load_config
 from ventanal.art.sources import USER_AGENT
 from ventanal import jobs, calibrate
 from ventanal.art.render import ART_READOUT
 from ventanal.frame import encode_frame
 from ventanal.manifest import publish
 from ventanal.quantize import quantize, simulate
-from ventanal.security import Security, SecurityStateBusy, security_state_lock
+from ventanal.security import PreviousCertificateHeld, Security, SecurityStateBusy, security_state_lock
 from ventanal.serve import make_server
 
 
 CERTIFICATE_COMMANDS = ('regenerate-certificate', 'restore-certificate')
+CACHE_WRITERS = ('tick', 'serve', 'render-art', 'render-weather', 'skipped',
+                 'setup-token', *CERTIFICATE_COMMANDS)
 
 
 def main(argv=None):
@@ -40,6 +43,9 @@ def main(argv=None):
         if name in CERTIFICATE_COMMANDS:
             command.add_argument('--confirm', action='store_true', required=True,
                                  help='Confirm the change to the certificate presented to the board')
+        if name == 'regenerate-certificate':
+            command.add_argument('--discard-previous', '--force', action='store_true',
+                                 help='Discard the saved rollback certificate before rotating again')
         if name == 'tick':
             command.add_argument('--force-art', action='store_true',
                                  help='Republish the current artwork without advancing rotation')
@@ -57,7 +63,13 @@ def main(argv=None):
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     logging.getLogger('httpx').setLevel(logging.WARNING)
-    cfg = load_config(args.config)
+    try:
+        cfg = load_config(args.config)
+    except ConfigError as exc:
+        parser.error(str(exc))
+    if args.command in CACHE_WRITERS:
+        if error := cache_owner_error(cfg.cache_dir, f'ventanal {args.command} …'):
+            parser.error(error)
     if args.command == 'setup-token':
         from ventanal.auth import Auth
         print(Auth(cfg.cache_dir).issue_setup_token() or 'Setup is already complete.')
@@ -81,8 +93,10 @@ def main(argv=None):
                 else:
                     if not security.ready:
                         parser.error('Enable security before regenerating its certificate.')
-                    security.regenerate()
+                    security.regenerate(discard_previous=args.discard_previous)
                     print(f'New certificate SHA-256: {security.fingerprint}')
+        except PreviousCertificateHeld as exc:
+            parser.error(f'{exc} Use --discard-previous (or --force) to regenerate anyway.')
         except SecurityStateBusy as exc:
             parser.error(str(exc))
         return
@@ -116,7 +130,6 @@ def main(argv=None):
                 {'title': 'Calibration chart', 'artist': 'Ventanal', 'date': '', 'museum': ''},
                 simulate(indices, cfg.panel_rgb), now)
         return
-    cfg.cache_dir.mkdir(parents=True, exist_ok=True)
     with httpx.Client(timeout=60, follow_redirects=True, headers={'User-Agent': USER_AGENT}) as client:
         if args.command == 'tick':
             print(json.dumps(jobs.tick(cfg, now, client, force_art=args.force_art, force_spares=args.force_spares, force_weather=args.force_weather)))

@@ -69,11 +69,14 @@ and Extras licences live separately in private state; they are not TOML settings
 Season ranges must cover the full year, including February 29. Before
 upgrading an installation based on the old example, change winter's end date
 from `02-28` to `02-29` if no other season covers that day. The installer
+validates the live config before updating the installed package and
 sets the configuration file's owner to the `ventanal` service account so the
 web UI can replace it atomically. Use a regular file at the configured path.
 The installer and writes from Settings and Calibration reject symlinked
 configuration files. If the file cannot be parsed, the service
-loads the newest usable settings backup from `/etc/ventanal/backups`.
+loads the newest usable settings backup from `/etc/ventanal/backups` and shows
+it on Status. A Settings or Calibration save preserves the broken file as a
+timestamped `unparseable-*.toml` copy in the backup directory before replacing it.
 
 Open the host's HTTP address on port 8765. On first visit, enter the one-time
 setup token printed by the installer and choose a password of at least 10
@@ -87,8 +90,9 @@ sudo -u ventanal /opt/ventanal/venv/bin/ventanal setup-token
 Keep the token private. Both the password and the token travel over HTTP during
 initial setup, so complete that step over a trusted connection. To run without
 a password, enter the token and confirm the network-access warning.
-The token is consumed as soon as it is accepted. If you need to retry after
-that, issue a new token with the command above. Password setup starts HTTPS.
+For password setup, the token is consumed after the password and confirmation
+pass validation. If enabling HTTPS fails after the token is consumed, issue a
+new token with the command above.
 Follow the Security pairing procedure below before using the board.
 Use **Settings** to adjust location, schedules and sources; fields save directly.
 
@@ -187,8 +191,9 @@ rights checks and provider terms.
 ## Security and pairing
 
 The server accepts requests addressed to IP literals, `localhost`, its machine
-hostname, and that hostname with `.local` appended. For a custom DNS name, list
-it in `server.allowed_hosts` in the TOML file and restart the service. List names
+hostname, that hostname with `.local` appended, and the DNS names used for its
+certificate, including the FQDN. For a custom DNS name, list it in
+`server.allowed_hosts` in the TOML file and restart the service. List names
 without schemes or ports.
 
 With a password and security enabled, the browser/board use HTTPS, the board pins
@@ -239,7 +244,14 @@ certificate. Each regeneration saves the certificate and private key it replaces
 On a systemd installation, use the same stop/start sequence above with
 `restore-certificate --confirm` in place of `regenerate-certificate --confirm`.
 Both certificate commands refuse to run against a cache directory used by a
-running Ventanal server.
+running Ventanal server. While a rollback certificate is saved, regeneration
+requires **Discard the saved rollback certificate** in Settings → Security or
+`--discard-previous` (alias `--force`) on the CLI. This replaces the saved
+rollback identity with the certificate that is currently active.
+
+On a system installation, run cache-writing CLI commands as
+`sudo -u ventanal /opt/ventanal/venv/bin/ventanal …`. They require the effective
+user to own the configured cache directory.
 
 The installer gives the `ventanal` account write access to
 `/etc/ventanal/ventanal.toml` and its containing directory so the service can

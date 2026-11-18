@@ -3,6 +3,7 @@
 """Comment-preserving settings edits using the loader's validation."""
 from contextlib import contextmanager
 from datetime import datetime, timezone
+import errno
 import fcntl
 import os
 from pathlib import Path
@@ -13,6 +14,7 @@ import hashlib
 import json
 import stat
 import tempfile
+import tomllib
 import tomlkit
 from ventanal.auth import private_write
 from ventanal.config import read_config_document, validate_config
@@ -65,18 +67,42 @@ def read_document(path):
     return read_config_document(path)[0]
 
 
+class ConfigWriteError(ValueError):
+    """A config replacement needs an explicit repair by the operator."""
+
+
 @contextmanager
-def settings_lock(backup_dir):
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    with (backup_dir / '.settings.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        yield
+def settings_lock(path, backup_dir):
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        with (backup_dir / '.settings.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            yield
+    except OSError as exc:
+        if exc.errno not in (errno.EACCES, errno.EPERM, errno.EROFS):
+            raise
+        raise ConfigWriteError(
+            f'config.file: permission denied writing {path} or its backups. '
+            f'Run server/deploy/install.sh with sudo to restore service ownership, '
+            f'write access to {path.parent} and {backup_dir}, and the systemd ReadWritePaths setting.'
+        ) from exc
 
 
-def replace_config(path: Path, data: bytes):
+def replace_config(path: Path, data: bytes, backup_dir: Path):
     original = path.lstat()
     if not stat.S_ISREG(original.st_mode):
         raise OSError('Expected a regular config file')
+    if original.st_uid != os.geteuid():
+        raise ConfigWriteError(f'config.file: {path} must be owned by the service user. '
+                               f'Run sudo chown ventanal:ventanal "{path}" and retry.')
+    # Preserve the exact live bytes before replacing a malformed document with
+    # the edited fallback. These copies are excluded from fallback and pruning.
+    live = path.read_bytes()
+    try:
+        tomllib.loads(live.decode('utf-8'))
+    except (UnicodeError, tomllib.TOMLDecodeError):
+        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+        private_write(backup_dir / f'unparseable-{stamp}.toml', live, replace=False, durable=True)
     with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f'.{path.name}.', delete=False) as output:
         temporary = Path(output.name)
         try:
@@ -176,8 +202,8 @@ def edit_document(doc, values):
 def save_settings(path: Path, values, backup_dir=None, *, mutate=None, browser_session=None, now=None):
     backup_dir = backup_dir or path.parent / 'backups'
     # All browser saves serialize; tick consumes each file atomically.
-    with settings_lock(backup_dir):
-        original, _ = read_config_document(path, backup_dir)
+    with settings_lock(path, backup_dir):
+        original, _, _ = read_config_document(path, backup_dir)
         doc = edit_document(tomlkit.parse(original), values)
         if mutate is not None:
             mutate(doc)
@@ -190,7 +216,7 @@ def save_settings(path: Path, values, backup_dir=None, *, mutate=None, browser_s
         take_backup = ident is None or ident not in sessions or clock - sessions[ident] >= 3600
         if take_backup:
             backup_config(backup_dir, original)
-        replace_config(path, tomlkit.dumps(doc).encode())
+        replace_config(path, tomlkit.dumps(doc).encode(), backup_dir)
         if take_backup and ident:
             sessions = {k:v for k,v in sessions.items() if clock-v < 30*86400}
             sessions[ident] = clock

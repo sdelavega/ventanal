@@ -150,11 +150,8 @@ def test_password_routes_and_change(web):
     assert r('/setup', {**setup, 'setup_token': 'wrong'})[0] == 403
     setup['setup_token'] = srv.ui.auth.issue_setup_token()
     assert r('/setup', {**setup, 'confirm': 'different'})[0] == 400
-    assert r('/setup', setup)[0] == 403
-    setup['setup_token'] = srv.ui.auth.issue_setup_token()
     assert r('/setup', {**setup, 'password': 'ninechars', 'confirm': 'ninechars'})[0] == 400
     assert srv.ui.auth.mode == 'unset' and srv.tls_server is None
-    setup['setup_token'] = srv.ui.auth.issue_setup_token()
     assert r('/setup', setup)[0] == 303
     assert Auth(root/'cache').issue_setup_token() is None
     _, _, token = r('/login')
@@ -208,7 +205,7 @@ def test_auth_rejects_incomplete_session_secret(tmp_path):
         Auth(tmp_path)
 
 
-def test_host_allowlist_in_open_mode_and_on_tls(web):
+def test_host_allowlist_in_open_mode_and_on_tls(web, monkeypatch):
     import socket
     _, srv, _ = web
 
@@ -240,11 +237,24 @@ def test_host_allowlist_in_open_mode_and_on_tls(web):
     assert http('OPTIONS', '/', 'unknown.example.test') == 400
 
     srv.ui.auth.set_password('test password', 'test password')
+    resolve = socket.getaddrinfo
+
+    def resolve_fqdn(host, port, *args, **kwargs):
+        if host == 'frame.example.test':
+            return [(socket.AF_INET, socket.SOCK_STREAM, 0, 'canonical.example.test', ('127.0.0.1', 0))]
+        return resolve(host, port, *args, **kwargs)
+
+    getfqdn = socket.getfqdn
+    monkeypatch.setattr(socket, 'getfqdn', lambda host='': getfqdn(host) if host else 'frame.example.test')
+    monkeypatch.setattr(socket, 'getaddrinfo', resolve_fqdn)
     srv.ui.enable_security()
+    assert {'frame.example.test', 'canonical.example.test'} <= srv.ui.security.dns_names
     assert http('GET', '/', 'unknown.example.test') == 400
     assert http('GET', '/', 'localhost') == 308
     context = ssl.create_default_context(cadata=srv.ui.security.certificate)
     for path, host, status in (('/login', 'living_room.example.test', 200),
+                               ('/login', 'FRAME.example.test.', 200),
+                               ('/login', 'canonical.example.test', 200),
                                ('/manifest.json', 'unknown.example.test', 400)):
         connection = HTTPSConnection('127.0.0.1', srv.tls_server.server_address[1], timeout=2, context=context)
         assert request(connection, 'GET', path, (host,)) == status
@@ -280,7 +290,7 @@ def test_silent_tls_connection_does_not_block_other_clients(web, monkeypatch):
             conn.close()
 
 
-def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch):
+def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch, caplog):
     import socket
     from threading import Event
 
@@ -293,20 +303,30 @@ def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch):
     context = ssl.create_default_context(cadata=srv.ui.security.certificate)
     freed = Event()
     process = tls.process_request_thread
+    timeouts = []
+    settimeout = ssl.SSLSocket.settimeout
+
+    def observe_timeout(conn, timeout):
+        if conn.server_side:
+            timeouts.append(timeout)
+        return settimeout(conn, timeout)
 
     def observe(conn, addr):
         process(conn, addr)
         freed.set()
 
     monkeypatch.setattr(tls, 'process_request_thread', observe)
+    monkeypatch.setattr(ssl.SSLSocket, 'settimeout', observe_timeout)
     held = HTTPSConnection(*address, timeout=2, context=context)
     try:
         held.request('GET', '/login')
         response = held.getresponse()
         assert response.status == 200 and not response.will_close
         response.read()
+        assert timeouts[-1] == 10 and all(timeout <= 10 for timeout in timeouts)
         with socket.create_connection(address, timeout=2) as excess:
             assert excess.recv(1) == b''
+        assert 'Dropping TLS connection: all 1 slots are busy' in caplog.text
     finally:
         held.close()
     assert freed.wait(2)
@@ -573,7 +593,11 @@ def test_security_panel_auth_csrf_reveal_and_rotation(web):
     assert r('/security',{'csrf':token,'action':'regenerate','confirm':'yes'})[0]==200
     assert srv.ui.security.certificate!=cert
     status, body, token = r('/security')
-    assert status == 200 and 'Restore previous certificate' in body
+    assert status == 200 and 'Restore previous certificate' in body and 'name="discard_previous"' in body
+    held = srv.ui.security.path.read_bytes()
+    status, body, _ = r('/security',{'csrf':token,'action':'regenerate','confirm':'yes'})
+    assert status == 400 and 'still saved for rollback' in body
+    assert srv.ui.security.path.read_bytes() == held
     transition_pins = ssl.create_default_context(cadata=cert + srv.ui.security.certificate)
     with closing(HTTPSConnection(*address, context=old_pin)) as conn:
         with pytest.raises(ssl.SSLCertVerificationError):
@@ -595,6 +619,12 @@ def test_security_panel_auth_csrf_reveal_and_rotation(web):
     for pin in (old_pin, transition_pins):
         with closing(HTTPSConnection(*address, context=pin)) as conn:
             conn.connect()
+    rotate = {'csrf':token,'action':'regenerate','confirm':'yes'}
+    assert r('/security', rotate)[0] == 200
+    current = srv.ui.security.certificate
+    assert r('/security', {**rotate,'discard_previous':'yes'})[0] == 200
+    assert srv.ui.security.certificate != current
+    assert srv.ui.security.state['previous']['certificate'] == current
 
 
 def test_existing_config_displays_https_default(web):

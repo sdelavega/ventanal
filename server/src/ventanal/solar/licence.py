@@ -16,7 +16,7 @@ import re
 import sqlite3
 import tempfile
 from zipfile import ZipFile
-from ventanal.weather.data import USER_AGENT
+from ventanal import USER_AGENT
 
 class RefreshRunning(Exception):
     """Another process owns the FCC import lock."""

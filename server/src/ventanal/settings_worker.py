@@ -8,6 +8,7 @@ from pathlib import Path
 import sys
 from zoneinfo import ZoneInfo
 import httpx
+from ventanal.cache_access import cache_owner_error
 from ventanal.config import load_config
 from ventanal.art.pool import ArtPool, refresh_pool
 from ventanal.jobs import _tick_locked
@@ -16,6 +17,9 @@ from ventanal.manifest import read_manifest, write_manifest
 
 def main():
     cfg = load_config(Path(sys.argv[1]))
+    command = 'python -m ventanal.settings_worker …'
+    if error := cache_owner_error(cfg.cache_dir, command):
+        raise SystemExit(error)
     flags = {'--refresh-pool':'pool', **{'--force-'+effect:effect for effect in ('art','weather','spares','schedule','solar')}}
     effects = {flags[arg] for arg in sys.argv[2:]}
     now = datetime.now(ZoneInfo(cfg.timezone))
@@ -23,6 +27,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX)
         # A running tick may have held the lock while more settings arrived.
         cfg = load_config(Path(sys.argv[1]))
+        if error := cache_owner_error(cfg.cache_dir, command):
+            raise SystemExit(error)
         now = datetime.now(ZoneInfo(cfg.timezone))
         if 'schedule' in effects:
             manifest = read_manifest(cfg.output_dir)

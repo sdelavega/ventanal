@@ -3,7 +3,7 @@
 
 """Load and validate Ventanal's TOML configuration without side effects."""
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import date, time, timedelta
 from pathlib import Path
 import logging
@@ -72,6 +72,7 @@ class Config:
     include_monotone: bool = False
     screen_fit_only: bool = False
     credentials: dict[str, dict[str, str]] = field(default_factory=dict, repr=False)
+    config_backup: Path | None = None
 
 
 class ConfigError(ValueError):
@@ -123,14 +124,15 @@ def _clock(value, key):
     return value
 
 
-def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[str, dict]:
+def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[str, dict, Path | None]:
     def read(source):
         # Keep original newlines for comment-preserving settings/CLI edits.
         text = source.read_bytes().decode("utf-8")
         return text, tomllib.loads(text)
 
     try:
-        return read(path)
+        text, data = read(path)
+        return text, data, None
     except (FileNotFoundError, UnicodeError, tomllib.TOMLDecodeError):
         backups = backup_dir if backup_dir is not None else path.parent / "backups"
         for backup in sorted(backups.glob("ventanal-*.toml"), reverse=True):
@@ -140,7 +142,7 @@ def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[st
             except (OSError, ValueError):
                 continue
             logging.getLogger(__name__).warning("Config unreadable; using backup %s", backup.name)
-            return text, data
+            return text, data, backup
     except OSError:
         pass
     raise ConfigError("config.file: unable to read valid TOML") from None
@@ -152,8 +154,9 @@ def load_config(path: Path) -> Config:
     Location may use a US ZIP (preserving ZIP+4) or a latitude/longitude pair.
     Other settings are explicit, as shown in ventanal.example.toml.
     """
-    _, data = read_config_document(path)
-    return validate_config(data)
+    _, data, backup = read_config_document(path)
+    config = validate_config(data)
+    return replace(config, config_backup=backup) if backup is not None else config
 
 
 def validate_config(data: dict) -> Config:
