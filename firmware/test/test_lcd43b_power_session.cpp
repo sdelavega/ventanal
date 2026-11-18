@@ -6,6 +6,16 @@
 #include <vector>
 using namespace lcd;
 int main() {
+    {
+        lcd::PowerSession failed;
+        failed.chargeFailed(7); // also exercises unsigned millis wrap
+        assert(failed.step(lcd::PowerAction::ChargeMe,8,false)==lcd::PowerStep::Sleep);
+        failed.sleep();
+        // Sleep returns only on touch; the next attempt is then explicitly requested.
+        failed.wakeTouch(100);
+        assert(failed.step(lcd::PowerAction::ChargeMe,100,false)==lcd::PowerStep::ShowCharge);
+    }
+
     PowerSession s;
     s.activity(0); s.sleep(); s.wakeTimer();
     // Overdue timer wakes must start background work, never re-sleep first.

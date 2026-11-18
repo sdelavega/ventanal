@@ -65,9 +65,21 @@ struct SettingsSession {
 };
 inline void settingsBox(uint16_t* px,ReadoutRect r,uint16_t colour,int radius=0) {
     for(int y=0;y<r.h;++y) for(int x=0;x<r.w;++x) {
-        const int dx=x<radius?radius-1-x:(x>=r.w-radius?x-(r.w-radius):0);
-        const int dy=y<radius?radius-1-y:(y>=r.h-radius?y-(r.h-radius):0);
-        if(dx*dx+dy*dy<=radius*radius) setPixel(px,WIDTH,HEIGHT,r.x+x,r.y+y,colour);
+        unsigned coverage=16;
+        if(radius) {
+            coverage=0;
+            for(int sy=0;sy<4;++sy) for(int sx=0;sx<4;++sx) {
+                const int fx=x*8+sx*2+1,fy=y*8+sy*2+1;
+                const int dx=fx<radius*8?radius*8-fx:(fx>(r.w-radius)*8?fx-(r.w-radius)*8:0);
+                const int dy=fy<radius*8?radius*8-fy:(fy>(r.h-radius)*8?fy-(r.h-radius)*8:0);
+                if(dx*dx+dy*dy<=radius*radius*64) ++coverage;
+            }
+        }
+        const int dx=r.x+x,dy=r.y+y;
+        if(coverage && dx>=0 && dx<WIDTH && dy>=0 && dy<HEIGHT) {
+            auto& pixel=px[dy*WIDTH+dx];
+            pixel=blendAA(pixel,colour,(coverage*15+8)/16);
+        }
     }
 }
 // Fonts are ASCII. Render the footer's UTF-8 middle dots explicitly.
@@ -85,28 +97,20 @@ inline void settingsFooter(uint16_t* px,const char* text,int x,int baseline,uint
 // Shape-only entry point allows a whole-frame comparison against the server.
 inline void drawSettingsChrome(uint16_t* px,bool labels=true) {
     memset(px,0,size_t(WIDTH)*HEIGHT*2);
-    const auto orange=rgb565(255,119,0);
-    for(const auto& span:LCARS_ELBOWS)
-        for(int x=span.left;x<=span.right;++x) px[span.y*WIDTH+x]=orange;
-    settingsBox(px,{534,0,14,26},rgb565(255,170,0));
-    struct Section { int y,h; uint16_t colour; const char* label; };
-    const Section sections[] = {
-        {60,120,rgb565(221,187,255),"DISPLAY"},
-        {184,100,rgb565(170,170,255),"POWER"},
-        {288,138,rgb565(255,170,0),"SCREENS"}
-    };
-    for(const auto& section:sections) {
-        settingsBox(px,{0,section.y,100,section.h},section.colour);
-        if(labels) drawText(px,WIDTH,HEIGHT,SidebarLabel,section.label,
-                           92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
-    }
+    for(const auto& span:LCARS_CHROME)
+        for(int x=span.left;x<=span.right;++x) px[span.y*WIDTH+x]=span.colour;
+    struct Section { int y,h; const char* label; };
+    const Section sections[]={{60,120,"DISPLAY"},{184,100,"POWER"},{288,138,"SCREENS"}};
+    if(labels) for(const auto& section:sections)
+        drawText(px,WIDTH,HEIGHT,SidebarLabel,section.label,
+                 92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
 }
 inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarListed,
                              bool batteryButton,const char* footer) {
     const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0);
     const auto sky=rgb565(170,170,255), light=rgb565(153,150,186);
     drawSettingsChrome(px);
-    drawText(px,WIDTH,HEIGHT,Antonio_Regular18pt7b,"SETTINGS",150,63,gold);
+    drawText(px,WIDTH,HEIGHT,StatusFont,"SETTINGS",150,63,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"BRIGHTNESS",150,115,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"SCREEN OFF AFTER",150,219,gold);
     drawText(px,WIDTH,HEIGHT,ClockTime,"SHOW",150,323,gold);

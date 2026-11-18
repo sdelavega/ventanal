@@ -3,8 +3,9 @@
 
 """Native LCD sidebar chrome, with a black gap for the board's live clock."""
 
-from PIL import Image, ImageDraw
+from PIL import Image
 
+from ventanal.devices.lcd_draw import LCDDraw
 from ventanal.text import fit, font
 from ventanal.weather.lcars import elbow
 
@@ -22,7 +23,7 @@ def draw_lcd_frame(canvas: Image.Image,
     """Draw A2's elbows, labelled sidebar and bars on an 800×480 canvas."""
     if canvas.size != (800, 480) or canvas.mode != 'RGB':
         raise ValueError('LCD frame must be RGB 800x480')
-    d = ImageDraw.Draw(canvas)
+    d = LCDDraw(canvas)
     orange = LCD_COLOURS['orange']
     elbow(d, 0, 0, 530, 56, TOPBAR_H, 100, 44, 30, orange, False)
     d.rectangle((534, 0, 547, 25), fill=LCD_COLOURS['gold'])

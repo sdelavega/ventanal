@@ -26,6 +26,25 @@ int countColour(uint16_t colour) {
 }  // namespace
 
 int main() {
+    { // Synthetic nibble coverage pins RGB565 blending, clipping and glyph bounds.
+        const uint8_t bits[]={0x08,0xf0};
+        const lcd::AAGlyph glyphs[]={{0,3,1,3,0,-1}};
+        const lcd::AAFont font{bits,glyphs,65,65,2};
+        uint16_t px[10]; std::fill(px,px+10,0x001f);
+        lcd::drawTextAA(px,5,2,1,1,"A",font,0xf800);
+        assert(px[0]==0x001f && px[1]==0x001f && px[2]==0x880e && px[3]==0xf800);
+        for(int i=4;i<10;++i) assert(px[i]==0x001f);
+        lcd::drawTextAA(px,5,2,-2,1,"A",font,0xffff);
+        assert(px[0]==0xffff);
+    }
+
+    {
+        uint16_t glyph[64*32]={};
+        lcd::drawTextAA(glyph,64,32,4,24,"2:32",ClockTime,0xffff);
+        bool edge=false,solid=false;
+        for(auto c:glyph) { edge|=c!=0 && c!=0xffff; solid|=c==0xffff; }
+        assert(edge && solid); // generated font really contains partial coverage
+    }
     assert(lcd::rgb565(255, 0, 0) == 0xF800);
     assert(lcd::rgb565(0, 255, 0) == 0x07E0);
     assert(lcd::rgb565(0, 0, 255) == 0x001F);
@@ -50,9 +69,9 @@ int main() {
     }
     {   // Text clips instead of writing out of bounds at either edge.
         memset(screen, 0, sizeof screen);
-        lcd::drawText(screen, lcd::WIDTH, lcd::HEIGHT, Inter_Medium12cap7b,
+        lcd::drawText(screen, lcd::WIDTH, lcd::HEIGHT, WaitingBody,
                       "EDGE", lcd::WIDTH - 8, 240, lcd::RGB565_WHITE);
-        lcd::drawText(screen, lcd::WIDTH, lcd::HEIGHT, Inter_Medium12cap7b,
+        lcd::drawText(screen, lcd::WIDTH, lcd::HEIGHT, WaitingBody,
                       "EDGE", -50, -40, lcd::RGB565_WHITE);
         assert(countColour(lcd::RGB565_WHITE) > 0);   // partial glyphs drew
         // No writes escaped the buffer: row 240 stays black past the text.
@@ -133,7 +152,7 @@ int main() {
         // Every label text fits the panel width at the overlay size.
         for (const char* text : {"REFRESHING...", "UP TO DATE", "OFFLINE",
                                  "DOWNLOAD FAILED"})
-            assert(lcd::textWidth(Antonio_Regular18pt7b, text) < lcd::WIDTH - 32);
+            assert(lcd::textWidth(StatusFont, text) < lcd::WIDTH - 32);
     }
     for (bool lcars : {false,true}) {
         std::fill(screen,screen+PIXELS,0xffff);

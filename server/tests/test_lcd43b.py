@@ -158,6 +158,7 @@ def test_lcd_solar_data_pipeline(tmp_path, monkeypatch, located):
 def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
     from PIL import ImageDraw
     from ventanal.devices.lcd_solar import render_lcd_solar
+    from ventanal.devices.lcd_draw import LCDDraw
     from test_solar import sample as solar_data_sample
     data = solar_data_sample()
     if storm:
@@ -178,7 +179,9 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
         return original(draw, xy, text, *args, **kwargs)
 
     def capture_shape(method):
-        original_shape = getattr(ImageDraw.ImageDraw, method)
+        # Measure destination coordinates, not the internal 4x coverage mask.
+        surface = LCDDraw if method == 'rounded_rectangle' else ImageDraw.ImageDraw
+        original_shape = getattr(surface, method)
 
         def capture(draw, xy, *args, **kwargs):
             shapes.append((method, xy))
@@ -195,7 +198,8 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
 
     monkeypatch.setattr(ImageDraw.ImageDraw, 'text', capture)
     for method in ('rounded_rectangle', 'line'):
-        monkeypatch.setattr(ImageDraw.ImageDraw, method, capture_shape(method))
+        surface = LCDDraw if method == 'rounded_rectangle' else ImageDraw.ImageDraw
+        monkeypatch.setattr(surface, method, capture_shape(method))
     monkeypatch.setattr(Image.Image, 'paste', capture_paste)
     config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
     image = render_lcd_solar(data, config, NOW)
@@ -786,9 +790,9 @@ def test_lcd_weather_location_label(sample, monkeypatch, label):
     calls = []
     original = lcd_weather.location_marker
 
-    def marker(canvas, centre, colours, here_label):
+    def marker(canvas, centre, here_label):
         calls.append(here_label)
-        return original(canvas, centre, colours, here_label)
+        return original(canvas, centre, here_label)
 
     monkeypatch.setattr(lcd_weather, 'location_marker', marker)
     lcd_sample(sample, here_label=label)
@@ -824,3 +828,19 @@ def test_lcd_weather_data_pipeline(sample, monkeypatch, caplog, missing):
     assert image.tobytes() == expected.tobytes()
     if missing:
         assert f'LCD weather {missing} unavailable: unavailable' in caplog.text
+
+
+def test_lcd_chrome_has_aa_edges_without_clock_bleed():
+    from ventanal.devices.lcd_lcars import draw_lcd_frame
+    image = Image.new('RGB', (800, 480))
+    draw_lcd_frame(image, [])
+    pixels = np.asarray(image)
+    edge = pixels[:44, :44, 0]
+    assert ((edge > 0) & (edge < 255)).any()
+    assert not pixels[:26, 548:752].any()
+
+
+def test_lcd_text_edges_have_intermediate_colours(sample, tmp_path):
+    for image in (lcd_sample(sample), solar_sample(tmp_path)):
+        colours = np.asarray(image)[30:58, 150:500].reshape(-1, 3)
+        assert any(0 < int(r) < 255 for r, g, b in colours)

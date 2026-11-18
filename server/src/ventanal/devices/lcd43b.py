@@ -22,6 +22,7 @@ import struct
 from pathlib import Path
 
 import numpy as np
+from ventanal.devices.lcd_draw import LCDDraw, rounded_mask
 from PIL import Image, ImageDraw, ImageFilter
 
 from ventanal.art.compose import compose
@@ -97,7 +98,7 @@ def render_art(image: Image.Image, credit) -> Image.Image:
                                            15, fill=150)
     backdrop.paste(Image.new('RGB', backdrop.size), (0, 0),
                    mask.filter(ImageFilter.GaussianBlur(7)))
-    draw = ImageDraw.Draw(backdrop)
+    draw = LCDDraw(backdrop)
     draw.text((14, 474), title, font=title_font, fill='white', anchor='ls')
     draw.text((14 + title_font.getlength(title), 474), secondary,
               font=secondary_font, fill='white', anchor='ls')

@@ -6,14 +6,14 @@
 import logging
 
 import numpy as np
-from PIL import Image, ImageDraw, ImageFilter
+from ventanal.devices.lcd_draw import LCDDraw, rounded_mask
+from PIL import Image, ImageFilter
 
 from ventanal.devices.lcd_lcars import LCD_COLOURS, draw_lcd_frame
 from ventanal.quantize import Canvas, Method
 from ventanal.text import fit, font, renderable
 from ventanal.weather.data import WMO_LONG, WMO_SHORT
 from ventanal.weather.radar import clean_echoes
-from ventanal.weather.render import location_marker
 
 log = logging.getLogger(__name__)
 MAP_SOURCE_SIZE = (782, 462)
@@ -75,9 +75,9 @@ def _radar_image(radar, lines, cfg, now):
                'blue': (60, 91, 208), 'green': (45, 107, 58),
                'yellow': (232, 207, 58), 'red': (184, 31, 31)}
     inner = Canvas(MAP_SOURCE_SIZE, fill=colours['white'], method=Method.SOLID)
-    d = inner.region(Method.SOLID)
+    d = LCDDraw(inner.rgb)
     if radar is None:
-        _text(ImageDraw.Draw(inner.rgb), 'RADAR UNAVAILABLE', (391, 244), 32,
+        _text(LCDDraw(inner.rgb), 'RADAR UNAVAILABLE', (391, 244), 32,
               'red', anchor='ms', width=750)
     else:
         if radar.levels.shape != (462, 782):
@@ -94,7 +94,7 @@ def _radar_image(radar, lines, cfg, now):
                         (0, 0), Method.SOLID, mask.filter(ImageFilter.MaxFilter(5)))
             inner.paste(Image.new('RGB', MAP_SOURCE_SIZE, colours[name]),
                         (0, 0), Method.SOLID, mask)
-        location_marker(inner, (396, 236), colours, cfg.here_label)
+        location_marker(inner.rgb, (396, 236), cfg.here_label)
         valid = radar.valid.astimezone(now.tzinfo)
         caption = (f'NEXRAD COMPOSITE · {_clock(valid, cfg)} · '
                    f'{cfg.radar_radius_miles:g} MI')
@@ -102,8 +102,32 @@ def _radar_image(radar, lines, cfg, now):
         caption = fit(caption, face, 726)
         d.rounded_rectangle((8, 420, 32 + face.getlength(caption), 457),
                             radius=12, fill=colours['black'])
-        _text(ImageDraw.Draw(inner.rgb), caption, (20, 449), 24)
+        _text(LCDDraw(inner.rgb), caption, (20, 449), 24)
     return inner.rgb
+
+
+def location_marker(image, centre, here_label):
+    """LCD marker uses AA text and curves without touching the e-paper helper."""
+    cx, cy = centre
+    d = LCDDraw(image)
+    if here_label != 'off':
+        label = 'YOU ARE HERE' if here_label == 'en' else 'ESTÁS AQUÍ'
+        face = font('antonio-bold', 26)
+        left, top, right, bottom = face.getbbox(label, anchor='ls')
+        width, height = right-left+12, bottom-top+12
+        x = max(0, min(round(cx-width/2), image.width-width))
+        y = cy-18-(bottom-top)-6
+        below = y < 0
+        if below:
+            y = cy+18
+        y = min(y, image.height-height)
+        d.rounded_rectangle((x, y, x+width-1, y+height-1),
+                            radius=height/2, fill='black')
+        d.line(((x+width//2, y if below else y+height-1),
+                (cx, cy+8 if below else cy-8)), fill='black', width=2)
+        _text(d, label, (x+6-left, y+6-top), 26, bold=True)
+    d.ellipse((cx-8, cy-8, cx+8, cy+8), fill='white')
+    d.ellipse((cx-7, cy-7, cx+7, cy+7), fill='black')
 
 
 def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
@@ -111,7 +135,7 @@ def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
     """Render native LCD content, leaving the clock entirely to the board."""
     image = Image.new('RGB', (800, 480))
     draw_lcd_frame(image, SECTIONS)
-    d = ImageDraw.Draw(image)
+    d = LCDDraw(image)
     _text(d, 'ATMOSPHERIC CONDITIONS', (150, 56), 30, 'gold', bold=True)
     location = place or cfg.place_name or ''
     coords = coords or (cfg.latitude, cfg.longitude)
@@ -136,9 +160,7 @@ def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
     x0, y0, x1, y1 = RADAR_BOX
     map_image = _radar_image(radar, lines or {}, cfg, now).resize(
         (x1-x0-4, y1-y0-4), Image.Resampling.LANCZOS)
-    clip = Image.new('L', map_image.size)
-    ImageDraw.Draw(clip).rounded_rectangle((0, 0, map_image.width-1, map_image.height-1),
-                                          radius=12, fill=255)
+    clip = rounded_mask(map_image.size, 12)
     d.rounded_rectangle((x0, y0, x1-1, y1-1), radius=14, fill='white')
     image.paste(map_image, (x0+2, y0+2), clip)
     d.line((150, 331, 785, 331), fill=LCD_COLOURS['gray'])

@@ -743,11 +743,16 @@ bool probeTouchAfterWake() {
     return ok;
 }
 void showChargeMe() {
-    if(!panel.begin(setLcdResetLine)) { lcd::log("power error=panel-resume\n"); return; }
+    if(!panel.begin(setLcdResetLine)) {
+        lcd::log("power error=panel-resume\n");
+        powerSession.chargeFailed(millis());
+        setBacklight(false);
+        return;
+    }
     auto* pixels=static_cast<uint16_t*>(ps_malloc(size_t(lcd::WIDTH)*lcd::HEIGHT*2));
     if(pixels) {
         lcd::drawSettingsChrome(pixels,false);
-        lcd::drawText(pixels,lcd::WIDTH,lcd::HEIGHT,Antonio_Regular18pt7b,
+        lcd::drawText(pixels,lcd::WIDTH,lcd::HEIGHT,StatusFont,
                       "CHARGE ME",280,240,lcd::rgb565(221,68,68));
         panel.blitDimmed(pixels,pixels,settings.brightness);
         free(pixels);

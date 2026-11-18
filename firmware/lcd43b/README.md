@@ -316,3 +316,20 @@ round 1 hardware capture on macOS. It is enabled only by
 `VENTANAL_LCD_DIAG_POWER` or explicit `VENTANAL_LCD_USB_SLEEP_REENUM`; normal
 firmware leaves it disabled. Replug USB to restore serial after manual sleep.
 The normal default timeout is Never, so an unconfigured normal build stays awake.
+
+### LCD anti-aliasing
+
+LCD drawing uses undimmed RGB565 buffers; panel blits still apply brightness.
+`tools/aa_fonts.py` (from the repository root) generates 4-bit glyph coverage
+from the bundled SIL OFL TTFs. Used pixel sizes: Antonio Bold 13 (sidebar),
+19 (clock/controls), 28 (status/title); Antonio Regular 13 (date); Inter Bold
+20 (art clock); Inter Medium 11 (notes/footer), 17/21 (waiting body/title).
+The eight ASCII tables contain 49,615 bitmap bytes. `aafont.h` clips glyphs
+and blends coverage against existing RGB565 pixels with nearest rounding.
+The older `tools/readout_fonts.py` entry point delegates to this generator.
+
+`tools/lcars_geometry.py` bakes the server's AA Settings chrome as coloured
+RGB565 spans, including partial edge coverage. Its independently rendered
+fixture is compared against all 384,000 firmware pixels, including the black
+clock gap. Host tests check both generators for stale output. Server curves
+use LCD-only 4x masks with LANCZOS reduction; e-paper rendering is unchanged.

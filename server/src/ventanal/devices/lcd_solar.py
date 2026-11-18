@@ -5,7 +5,8 @@
 
 from datetime import datetime, timezone
 
-from PIL import Image, ImageDraw
+from ventanal.devices.lcd_draw import LCDDraw, rounded_mask
+from PIL import Image
 
 from ventanal.devices.lcd_lcars import LCD_COLOURS, draw_lcd_frame
 from ventanal.solar.conditions import conditions, grid_square
@@ -43,7 +44,7 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
     """
     image = Image.new('RGB', (800, 480))
     draw_lcd_frame(image, SECTIONS)
-    d = ImageDraw.Draw(image)
+    d = LCDDraw(image)
     _text(d, 'SOLAR CONDITIONS', (150, 56), 30, 'gold', bold=True)
     grid = grid_square(cfg.latitude, cfg.longitude)
     _text(d, f'{cfg.ham_call_sign} · {grid} · '
@@ -78,8 +79,7 @@ def render_lcd_solar(data, cfg, now) -> Image.Image:
           (150, 322), 12, 'gold', width=400)
 
     sun = crop_sun(data.sun).resize((186, 186), Image.Resampling.LANCZOS)
-    mask = Image.new('L', sun.size)
-    ImageDraw.Draw(mask).ellipse((0, 0, 185, 185), fill=255)
+    mask = rounded_mask(sun.size, 93)
     image.paste(sun, (582, 84), mask)
     _text(d, 'SUN TODAY · NASA SDO 171 Å', (675, 286), 13, 'violet',
           anchor='ms', width=218)

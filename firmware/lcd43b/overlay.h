@@ -3,22 +3,20 @@
 #pragma once
 
 // LCD status overlays: the small OFFLINE mark and the boot waiting screen,
-// drawn directly into an 800x480 RGB565 staging buffer. Text reuses the
-// generated Antonio/Inter glyph tables shipped with the e-paper firmware.
+// drawn directly into an 800x480 RGB565 staging buffer. Text uses the
+// generated LCD-only 4-bit Antonio/Inter coverage tables.
 
 #include <cstdint>
 #include <cstring>
 #include <initializer_list>
 
 #include "frame.h"
-#include "gfxfont.h"
+#include "aafont.h"
 #include "battery_lcd.h"
 #include "readout_fonts.h"
 #include <cstdio>
 #include <cmath>
 #include <cctype>
-#include "../ventanal/fonts/Antonio-Regular.h"
-#include "../ventanal/fonts/Inter-Medium.h"
 
 namespace lcd {
 
@@ -35,38 +33,6 @@ inline void setPixel(uint16_t* pixels, int width, int height, int x, int y,
                      uint16_t colour) {
     if (x >= 0 && y >= 0 && x < width && y < height)
         pixels[size_t(y) * width + x] = colour;
-}
-
-inline int advance(const GFXfont& f, unsigned char c) {
-    return c >= f.first && c <= f.last ? f.glyph[c - f.first].xAdvance : 0;
-}
-
-inline int textWidth(const GFXfont& f, const char* s) {
-    int total = 0;
-    for (; *s; ++s) total += advance(f, static_cast<unsigned char>(*s));
-    return total;
-}
-
-// Draw one line at its natural size; never rescale font pixels.
-inline void drawText(uint16_t* pixels, int width, int height, const GFXfont& f,
-                     const char* s, int left, int baseline, uint16_t colour) {
-    int pen = 0;
-    for (; *s; ++s) {
-        const auto c = static_cast<unsigned char>(*s);
-        if (c >= f.first && c <= f.last) {
-            const GFXglyph& g = f.glyph[c - f.first];
-            for (int y = 0; y < g.height; ++y) {
-                for (int x = 0; x < g.width; ++x) {
-                    const int bit = y * g.width + x;
-                    if (f.bitmap[g.bitmapOffset + bit / 8] & (0x80 >> (bit % 8)))
-                        setPixel(pixels, width, height,
-                                 left + pen + g.xOffset + x, baseline + g.yOffset + y,
-                                 colour);
-                }
-            }
-        }
-        pen += advance(f, c);
-    }
 }
 
 // Shared with native server geometry. Region buffers are packed, never
@@ -140,11 +106,11 @@ inline void drawOfflineMark(uint16_t* pixels, int width, int height) {
     int top = 8;
     const int line = 30;
     for (const char* text : {"OFFLINE", "NO HOST"}) {
-        const int extent = textWidth(Antonio_Regular18pt7b, text);
+        const int extent = textWidth(StatusFont, text);
         for (int y = top - 4; y < top + 24; ++y)
             for (int x = left - 6; x < left + extent + 6; ++x)
                 setPixel(pixels, width, height, x, y, RGB565_BLACK);
-        drawText(pixels, width, height, Antonio_Regular18pt7b, text, left, top + 20,
+        drawText(pixels, width, height, StatusFont, text, left, top + 20,
                  RGB565_RED);
         top += line;
     }
@@ -183,13 +149,13 @@ inline const char* refreshLabelText(RefreshLabel label) {
 // top-left; the live clock owns the top-right).
 inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
                              const char* text, uint16_t colour) {
-    const int extent = textWidth(Antonio_Regular18pt7b, text);
+    const int extent = textWidth(StatusFont, text);
     const int left = 8;
     const int baseline = height - 14;   // corner margin + descender room
     for (int y = baseline - 32; y <= baseline + 5; ++y)
         for (int x = left - 6; x < left + extent + 6; ++x)
             setPixel(pixels, width, height, x, y, RGB565_BLACK);
-    drawText(pixels, width, height, Antonio_Regular18pt7b, text, left, baseline,
+    drawText(pixels, width, height, StatusFont, text, left, baseline,
              colour);
 }
 
@@ -235,9 +201,9 @@ private:
 // Boot waiting screen: black panel with the host URL, like the e-paper's.
 inline void drawWaiting(uint16_t* pixels, int width, int height, const char* url) {
     memset(pixels, 0, size_t(width) * height * 2);
-    drawText(pixels, width, height, Inter_Medium15cap7b, "Waiting for host", 12, 60,
+    drawText(pixels, width, height, WaitingTitle, "Waiting for host", 12, 60,
              RGB565_WHITE);
-    const auto& f = Inter_Medium12cap7b;
+    const auto& f = WaitingBody;
     int y = 100;
     while (*url && y < height - 4) {
         char line[96];

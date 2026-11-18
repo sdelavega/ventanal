@@ -23,6 +23,8 @@ struct PowerSession {
     }
     void refreshStarted(bool success) { if(success) timerRefreshPending=false; }
     void showCharge(uint32_t now) { screenOn=true; chargeShowing=true; chargeSince=now; }
+    // A failed critical-screen resume converges to touch-only sleep next tick.
+    void chargeFailed(uint32_t now) { showCharge(now); chargeSince=now-10000; }
     PowerStep step(PowerAction action,uint32_t now,bool busy) {
         if(action!=PowerAction::ChargeMe && chargeShowing) {
             chargeShowing=false; return PowerStep::Restore;
