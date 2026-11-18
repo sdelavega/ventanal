@@ -2,10 +2,13 @@
 # Copyright (C) 2026 Stephen de la Vega
 CXX = c++
 ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJson/src
+SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
+SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean
-test: build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
+test: build/test_release build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
+	./build/test_release
 	./build/test_budget
 	./build/test_extras
 	./build/test_longpress
@@ -29,6 +32,10 @@ test: build/test_budget build/test_extras build/test_longpress build/test_solar 
 	./build/test_net
 	./build/test_overlay
 	./build/test_wake
+
+build/test_release: test_release.cpp ../common/release.h ../common/release_key.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG $(SODIUM_CFLAGS) -I"$(ARDUINOJSON)" test_release.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
