@@ -23,6 +23,23 @@ PIO_PLATFORM = "https://github.com/pioarduino/platform-espressif32/releases/down
 SLOT_SIZE = 4 * 1024 * 1024
 
 
+PERMANENT_SECURITY_OPTIONS = (
+    "CONFIG_SECURE_BOOT", "CONFIG_SECURE_FLASH_ENC", "CONFIG_NVS_ENCRYPTION",
+    "CONFIG_SECURE_ENABLE_SECURE_ROM_DL_MODE", "CONFIG_SECURE_DISABLE_ROM_DL_MODE",
+    "VENTANAL_I_ACCEPT_PERMANENT_EFUSE_CHANGES",
+)
+
+
+def ensure_no_hardening(text, project):
+    """Public releases must never carry eFuse-burning options (see docs/security-hardening.md)."""
+    for number, line in enumerate(text.splitlines(), 1):
+        active = line.split(";", 1)[0].split("#", 1)[0]
+        if any(option in active for option in PERMANENT_SECURITY_OPTIONS):
+            raise ValueError(
+                f"{project}/platformio.ini:{number} enables a permanent security option; "
+                "public releases never enable Secure Boot, flash or NVS encryption")
+
+
 def stage_sources(work, projects):
     paths = ["firmware/common", *map(str, projects)]
     tracked = subprocess.check_output(["git", "ls-files", "-z", "--", *paths], cwd=ROOT)
@@ -40,6 +57,7 @@ def stage_sources(work, projects):
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copyfile(source, destination)
     for project in projects:
+        ensure_no_hardening((work / project / "platformio.ini").read_text(encoding="utf-8"), project)
         config = ConfigParser(interpolation=None)
         config.read(work / project / "platformio.ini")
         if config.get("env", "platform", fallback=None) != PIO_PLATFORM:

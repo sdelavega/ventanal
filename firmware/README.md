@@ -10,6 +10,8 @@ without starting Wi-Fi.
 See [wireless firmware updates](../docs/updates.md) for update approval,
 rollback and release signing.
 
+Secure Boot and flash encryption are never enabled; see [security hardening](../docs/security-hardening.md) for why and for the disabled scaffolding.
+
 ## Toolchain
 
 From the repository root, create a CPython 3.13 virtual environment for

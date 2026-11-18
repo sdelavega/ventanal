@@ -42,3 +42,19 @@ def test_release_assets_reject_home_paths(tmp_path, suffix):
     with pytest.raises(ValueError, match="home directory"):
         build.write_assets(image, tmp_path, "inkplate13spectra", "2.0.0", "1.0.0", "")
     assert list(tmp_path.iterdir()) == [image]
+
+
+def test_release_rejects_active_hardening_options():
+    commented = "; CONFIG_SECURE_BOOT=y\n;     CONFIG_SECURE_FLASH_ENC_ENABLED=y\n"
+    build.ensure_no_hardening(commented, "firmware/x")
+    for line in ("    CONFIG_SECURE_BOOT=y", "CONFIG_NVS_ENCRYPTION=y",
+                 "    -DVENTANAL_I_ACCEPT_PERMANENT_EFUSE_CHANGES=1"):
+        with pytest.raises(ValueError, match="permanent security option"):
+            build.ensure_no_hardening(f"[env]\n{line}\n", "firmware/x")
+
+
+def test_checked_in_projects_carry_no_active_hardening():
+    for project in ("firmware/ventanal", "firmware/lcd43b"):
+        ini = build.ROOT / project / "platformio.ini"
+        if ini.is_file():
+            build.ensure_no_hardening(ini.read_text(encoding="utf-8"), project)

@@ -3,6 +3,7 @@
 #pragma once
 
 #include <stdint.h>
+#include "hardening.h"
 
 // Active key. Install together with the server release public key.
 constexpr uint8_t VENTANAL_RELEASE_PUBLIC_KEY[32] = {

@@ -129,6 +129,8 @@ obtains the manifest, caches frames and displays its selection.
 See [wireless firmware updates](docs/updates.md) for the wired OTA migration,
 update approval, rollback and release signing.
 
+Secure Boot and flash encryption are never enabled; see [security hardening](docs/security-hardening.md) for why and for the disabled scaffolding.
+
 ## Using Ventanal
 
 - **Single WAKE press:** cycle cached art, weather, optional solar and enabled
