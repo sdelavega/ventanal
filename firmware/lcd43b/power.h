@@ -25,13 +25,4 @@ inline uint32_t pollIntervalMs(bool screenOn,BatteryLevel level) {
 inline uint32_t pollWaitMs(uint32_t elapsed,uint32_t interval) {
     return !interval?0:elapsed>=interval?1:interval-elapsed;
 }
-struct PowerSession {
-    bool screenOn=true;
-    uint32_t lastActivity=0;
-    void activity(uint32_t now) { lastActivity=now; }
-    uint32_t idle(uint32_t now) const { return now-lastActivity; }
-    void sleep() { screenOn=false; }
-    void wakeTouch(uint32_t now) { screenOn=true; activity(now); }
-    void wakeTimer() {} // background work must leave the screen dark
-};
 } // namespace lcd

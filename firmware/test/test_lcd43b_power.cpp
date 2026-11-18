@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
-#include "../lcd43b/power.h"
+#include "../lcd43b/power_session.h"
 #include "../lcd43b/overlay.h"
 #include <cassert>
 #include <cstdio>

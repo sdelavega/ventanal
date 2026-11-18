@@ -52,7 +52,7 @@
 #include "manifest.h"
 #include "overlay.h"
 #include "panel.h"
-#include "power.h"
+#include "power_session.h"
 #include "persist.h"
 #include "screens.h"
 #include "settings_page.h"
@@ -124,11 +124,6 @@ int spareCursor = 0;       // next spare shown by a double tap
 lcd::RefreshLabelState refreshLabel;
 
 lcd::PowerSession powerSession;
-bool touchReady=true;
-bool timerRefreshPending=false;
-bool chargeShowing=false;
-uint32_t chargeSince=0;
-uint32_t touchProbeMs=0;
 // There is no voltage or VBUS signal on this board. No invented reading.
 lcd::BatteryLevel powerLevel() {
     const int mv=settingsBatteryMv();
@@ -319,7 +314,7 @@ bool renderClock() {
     return valid;
 }
 void tickClock() {
-    if(!powerSession.screenOn || chargeShowing || clockSlot<0 || (!settingsPage.active && !state.drawn) || time(nullptr)/60==drawnMinute) return;
+    if(!powerSession.screenOn || powerSession.chargeShowing || clockSlot<0 || (!settingsPage.active && !state.drawn) || time(nullptr)/60==drawnMinute) return;
     const bool valid=renderClock(); const auto r=lcd::readoutRect(clockSlot);
     const bool ok=panel.blitRegionDimmed(r.x,r.y,r.w,r.h,clockPixels,clockDimmed,settings.brightness);
     lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
@@ -370,7 +365,7 @@ bool showSettings() {
 
 // Blit a cached frame (plus overlays) to the panel through a PSRAM buffer.
 bool show(int index) {
-    if(!powerSession.screenOn || chargeShowing) return false;
+    if(!powerSession.screenOn || powerSession.chargeShowing) return false;
     if(settingsPage.active) return showSettings();
     const int slot = screenSlot(index);
     if (slot < 0) {   // persisted index outside the current screen list
@@ -454,7 +449,7 @@ void logRefreshLabel() {
 // clock is trustworthy: before the first NTP sync the backlight stays on.
 void backlightRefresh() {
     if(!powerSession.screenOn) { setBacklight(false); return; }
-    if(chargeShowing) { setBacklight(true); return; }
+    if(powerSession.chargeShowing) { setBacklight(true); return; }
     tm local{};
     const time_t now = time(nullptr);
     localtime_r(&now, &local);
@@ -678,7 +673,7 @@ void handleGesture(Gesture gesture, int x, int y) {
 
 void restoreTouchWake();
 void pollTouch(uint32_t now) {
-    if(!touchReady) return;
+    if(!powerSession.touchReady) return;
     if (now - lastTouchPollMs < TOUCH_POLL_MS) return;
     lastTouchPollMs = now;
     Gesture gesture = Gesture::None;
@@ -733,7 +728,7 @@ void pollTouch(uint32_t now) {
     if(touched && settingsPage.active) settingsPage.touch(now);
     if (touched && !lastTouched) touchUntilMs = now + TOUCH_WAKE_MS;
     lastTouched = touched;
-    if (gesture != Gesture::None && !chargeShowing) handleGesture(gesture, touchPoller.pressX(), touchPoller.pressY());
+    if (gesture != Gesture::None && !powerSession.chargeShowing) handleGesture(gesture, touchPoller.pressX(), touchPoller.pressY());
 }
 
 // Never call touch.begin() here: that would drive INT and select an address.
@@ -758,8 +753,7 @@ void showChargeMe() {
         free(pixels);
     } else lcd::log("power error=charge-allocation\n");
     clockSlot=-1;
-    chargeShowing=true;
-    chargeSince=millis();
+    powerSession.showCharge(millis());
     setBacklight(true);
     lcd::log("power charge-me seconds=10\n");
 }
@@ -795,51 +789,47 @@ void sleepPower() {
     lcd::log("power sleep timer_ms=%lu critical=%d int=%d\n",
              static_cast<unsigned long>(wait),powerLevel()==lcd::BatteryLevel::Critical,digitalRead(4));
     Serial.flush();
-    const esp_err_t result=armed==ESP_OK?esp_light_sleep_start():armed;
-    const auto reason=esp_sleep_get_wakeup_cause();
+    const int result=lcd::sleepWithUsb(int(armed),[] { return int(esp_light_sleep_start()); },
+        [](bool enabled) {
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
-    // Light sleep gates USB clocks without dropping D+. Force a clean
-    // detach/re-enumeration so the host can recover its CDC connection.
-    usb_serial_jtag_ll_phy_enable_pad(false);
-    delay(20);
-    usb_serial_jtag_ll_phy_enable_pad(true);
+            usb_serial_jtag_ll_phy_enable_pad(enabled);
+            if(!enabled) delay(20); // let the host observe detach before clocks stop
+#else
+            (void)enabled;
 #endif
+        });
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
     gpio_wakeup_disable(GPIO_NUM_4);
-    touchReady=probeTouchAfterWake();
-    touchProbeMs=millis();
     if(result!=ESP_OK) {
         lcd::log("power error=sleep code=%d\n",int(result));
         // Bounded retry while dark; do not claim a successful wake.
         delay(1000);
         return;
     }
+    // A rejected/failed sleep has no new wake cause or post-wake probe.
+    const auto reason=esp_sleep_get_wakeup_cause();
+    if(powerSession.touchReady || powerSession.probeDue(millis()))
+        powerSession.probed(probeTouchAfterWake(),millis());
     if(reason==ESP_SLEEP_WAKEUP_GPIO) {
         lcd::log("power wake reason=touch\n");
         restoreTouchWake();
     } else if(reason==ESP_SLEEP_WAKEUP_TIMER) {
         lcd::log("power wake reason=timer\n");
         powerSession.wakeTimer();
-        timerRefreshPending=true;
     } else lcd::log("power wake reason=other code=%d\n",int(reason));
 }
 void tickPower() {
-    if(!touchReady && millis()-touchProbeMs>=1000) {
-        touchReady=probeTouchAfterWake(); touchProbeMs=millis();
-    }
+    if(powerSession.probeDue(millis()))
+        powerSession.probed(probeTouchAfterWake(),millis());
+    // Quiet hours are driven by backlightRefresh(), including touch override.
     const auto action=lcd::decidePower({false,false,powerLevel(),powerSession.idle(millis()),
                                        settings.timeoutMin,false});
-    if(chargeShowing && action!=lcd::PowerAction::ChargeMe) {
-        chargeShowing=false; show(screenIndex); backlightRefresh();
+    switch(powerSession.step(action,millis(),refreshBusy)) {
+    case lcd::PowerStep::ShowCharge: showChargeMe(); break;
+    case lcd::PowerStep::Restore: show(screenIndex); backlightRefresh(); break;
+    case lcd::PowerStep::Sleep: sleepPower(); break;
+    case lcd::PowerStep::None: break;
     }
-    if(powerLevel()==lcd::BatteryLevel::Critical) timerRefreshPending=false;
-    if(refreshBusy || timerRefreshPending) return;
-    if(action==lcd::PowerAction::ChargeMe) {
-        if(!chargeShowing && powerSession.screenOn) showChargeMe();
-        if(chargeShowing && millis()-chargeSince<10000) return;
-        chargeShowing=false;
-        sleepPower();
-    } else if(!powerSession.screenOn || action==lcd::PowerAction::Sleep) sleepPower();
 }
 
 }  // namespace
@@ -883,6 +873,9 @@ void setup() {
 #ifdef VENTANAL_LCD_DIAG_POWER
     settings.timeoutMin=1; settings.brightness=25; // RAM only; normal build restores NVS
     lcd::log("diag power timeout_min=1 brightness=25 sleep_timer_ms=20000 RAM-only\n");
+#endif
+#ifdef VENTANAL_LCD_DIAG_PANEL
+    settings.timeoutMin=0; // RAM-only: keep VSYNC stress observation alive
 #endif
     lcd::log("settings brightness=%u timeout=%u art=%d weather=%d solar=%d\n",
              settings.brightness,settings.timeoutMin,settings.showArt,settings.showWeather,settings.showSolar);
@@ -975,9 +968,10 @@ void loop() {
     if (refreshBusy && xSemaphoreTake(refreshStaged, 0) == pdTRUE)
         applyFinishedRefresh();
     const uint32_t interval=powerPollMs();
-    if (!refreshBusy && powerLevel()!=lcd::BatteryLevel::Critical
-        && (timerRefreshPending || settingsRefreshPending || (interval && now-lastFetchMs>=interval))) {
-        if(startRefresh(false)) { settingsRefreshPending=false; timerRefreshPending=false; }
+    if(powerSession.refreshDue(now,lastFetchMs,interval,powerLevel(),refreshBusy,settingsRefreshPending)) {
+        const bool started=startRefresh(false);
+        powerSession.refreshStarted(started);
+        if(started) settingsRefreshPending=false;
     }
     tickPower();
     delay(2);

@@ -280,7 +280,7 @@ frame/bounce buffers. Touch wake recreates the panel at the verified 16 MHz,
 WIDTH*20 bounce configuration, then redraws the selected cached frame and clock
 at the saved brightness before starting any due network refresh. The GT911 is
 probed at 0x5D without reset or address selection; failed probes suspend polling
-and retry once a second. The wake contact is consumed through its release.
+and retry with exponential backoff capped at 60 seconds across sleep cycles. The wake contact is consumed through its release.
 
 Manual `esp_light_sleep_start` requires Wi-Fi to be stopped. This build uses
 `WiFi.mode(WIFI_OFF)` before sleep; its existing watchdog-supervised worker
@@ -298,7 +298,15 @@ network identifiers. Sources: [ESP-IDF sleep modes](https://docs.espressif.com/p
 and [RGB driver implementation](https://github.com/espressif/esp-idf/blob/v5.5.5/components/esp_lcd/rgb/esp_lcd_panel_rgb.c).
 
 Native USB Serial/JTAG loses its clocks during light sleep and some hosts do
-not recover while D+ stays asserted. After manual sleep, this firmware briefly
-disables/re-enables its USB PHY pads to request re-enumeration; serial monitors
+not recover while D+ stays asserted. After successful wake-source arming, this
+firmware drops its USB PHY pads before manual sleep and restores them on return
+(including rollback if sleep is rejected). Wake causes are processed only after
+a successful sleep. Serial monitors
 must reopen the device after that disconnect. This never resets GT911 or the
 ESP32. See [USB sleep limitations](https://docs.espressif.com/projects/esp-idf/en/v5.5.1/esp32s3/api-guides/usb-serial-jtag-console.html).
+
+The host-tested `power_session.h` owns timer refresh pending state, worker sleep
+deferral, touch wake, critical countdown and touch-probe backoff. A critical
+transition from a dark screen resumes the panel and shows the full warning.
+`VENTANAL_LCD_DIAG_PANEL` disables idle timeout in RAM to keep its VSYNC stress
+observer running; persisted settings remain unchanged.
