@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
+from contextlib import closing
 from datetime import datetime, timezone
 from pathlib import Path
 from http.client import HTTPConnection, HTTPSConnection
@@ -564,9 +565,36 @@ def test_security_panel_auth_csrf_reveal_and_rotation(web):
     assert srv.ui.security.key.hex()==key
     assert r('/security',{'csrf':token,'action':'repair','confirm':'yes'})[0]==200
     assert srv.ui.security.key.hex()!=key
+    assert 'Restore previous certificate' not in r('/security')[1]
+    assert r('/security',{'csrf':token,'action':'restore','confirm':'yes'})[0]==400
+    old_fingerprint = srv.ui.security.fingerprint
+    old_pin = ssl.create_default_context(cadata=cert)
+    address = ('127.0.0.1', srv.tls_server.server_address[1])
     assert r('/security',{'csrf':token,'action':'regenerate','confirm':'yes'})[0]==200
     assert srv.ui.security.certificate!=cert
-    assert r('/security')[0]==200  # New certificate serves successfully, session retained.
+    status, body, token = r('/security')
+    assert status == 200 and 'Restore previous certificate' in body
+    transition_pins = ssl.create_default_context(cadata=cert + srv.ui.security.certificate)
+    with closing(HTTPSConnection(*address, context=old_pin)) as conn:
+        with pytest.raises(ssl.SSLCertVerificationError):
+            conn.connect()
+    with closing(HTTPSConnection(*address, context=transition_pins)) as conn:
+        conn.connect()
+
+    assert r('/security',{'csrf':'bad','action':'restore','confirm':'yes'})[0]==403
+    assert r('/security',{'csrf':token,'action':'restore'})[0]==400
+    assert r('/logout',{'csrf':token})[0]==303
+    _, _, token = r('/login')
+    assert r('/security',{'csrf':token,'action':'restore','confirm':'yes'})[0]==303
+    assert srv.ui.security.fingerprint != old_fingerprint
+
+    assert r('/login',{'csrf':token,'password':'test secret'})[0]==303
+    _, _, token = r('/security')
+    status, body, _ = r('/security',{'csrf':token,'action':'restore','confirm':'yes'})
+    assert status == 200 and old_fingerprint in body and 'Restore previous certificate' not in body
+    for pin in (old_pin, transition_pins):
+        with closing(HTTPSConnection(*address, context=pin)) as conn:
+            conn.connect()
 
 
 def test_existing_config_displays_https_default(web):

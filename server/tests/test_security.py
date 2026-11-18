@@ -2,9 +2,12 @@
 # Copyright (C) 2026 Stephen de la Vega
 import hashlib
 import hmac
+from contextlib import nullcontext
 from ipaddress import ip_address
 import json
 import ssl
+import subprocess
+import sys
 from http.client import HTTPConnection, HTTPSConnection
 from threading import Thread
 from pathlib import Path
@@ -110,6 +113,84 @@ def test_legacy_certificate_preserved_until_cli_regeneration(tmp_path, capsys, m
     assert rotated.fingerprint in capsys.readouterr().out
     new_cert = x509.load_pem_x509_certificate(rotated.certificate.encode())
     assert not new_cert.extensions.get_extension_for_class(x509.BasicConstraints).value.ca
+
+    assert rotated.state['previous'] == {
+        'certificate': security.certificate, 'private_key': security.state['private_key'],
+    }
+    assert rotated.path.stat().st_mode & 0o777 == 0o600
+    assert rotated.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 9))
+    restore = ['restore-certificate', '--config', str(config)]
+    before_restore = rotated.path.read_bytes()
+    with pytest.raises(SystemExit):
+        main(restore)
+    assert rotated.path.read_bytes() == before_restore
+
+    main([*restore, '--confirm'])
+    restored = Security(state)
+    assert restored.fingerprint == security.fingerprint
+    assert restored.state['private_key'] == security.state['private_key']
+    assert restored.fingerprint in capsys.readouterr().out
+    assert restored.key == security.key and restored.state['counter'] == 9
+    assert not restored.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 9))
+    assert restored.accept('GET', '/manifest.json', proof(security.key, '/manifest.json', 10))
+    assert not restored.can_restore and restored.path.stat().st_mode & 0o777 == 0o600
+    with pytest.raises(SystemExit):
+        main([*restore, '--confirm'])
+    assert 'No previous certificate is available' in capsys.readouterr().err
+
+
+def test_certificate_commands_refuse_while_serve_holds_state_lock(tmp_path, monkeypatch):
+    from ventanal import cli
+
+    state = tmp_path / 'state'
+    config = tmp_path / 'settings.toml'
+    example = Path(__file__).parents[1] / 'ventanal.example.toml'
+    config.write_text(example.read_text().replace('/var/cache/ventanal', str(state)))
+    security = Security(state)
+    security.enable(['127.0.0.1'])
+    security.regenerate(['127.0.0.1'])
+    path = '/manifest.json'
+
+    def serve_forever():
+        assert security.accept('GET', path, proof(security.key, path, 12))
+        original = security.path.read_bytes()
+        for command in ('regenerate-certificate', 'restore-certificate'):
+            result = subprocess.run(
+                [sys.executable, '-m', 'ventanal.cli', command, '--config', str(config), '--confirm'],
+                capture_output=True, text=True, timeout=10,
+            )
+            assert result.returncode == 2
+            assert 'Stop ventanal-serve.service' in result.stderr
+            assert security.path.read_bytes() == original
+
+    monkeypatch.setattr(cli, 'make_server', lambda *args, **kwargs: nullcontext(
+        SimpleNamespace(serve_forever=serve_forever)))
+    cli.main(['serve', '--config', str(config)])
+    cli.main(['restore-certificate', '--config', str(config), '--confirm'])
+    assert Security(state).state['counter'] == 12
+
+
+def test_failed_certificate_restore_keeps_active_identity_and_backup(tmp_path, monkeypatch):
+    security = Security(tmp_path)
+    security.enable(['127.0.0.1'])
+    security.regenerate(['127.0.0.1'])
+    before = security.path.read_bytes()
+    context = security.context
+    state = security.state
+    from ventanal import auth
+    replace = auth.os.replace
+
+    def fail_state_write(source, destination):
+        if destination == security.path:
+            raise OSError('injected replace failure')
+        replace(source, destination)
+
+    monkeypatch.setattr(auth.os, 'replace', fail_state_write)
+    with pytest.raises(OSError, match='injected replace failure'):
+        security.restore()
+    assert security.path.read_bytes() == before
+    assert security.context is context and security.state is state
+    assert security.can_restore
 
 
 def test_canonical_signed_frames(tmp_path):

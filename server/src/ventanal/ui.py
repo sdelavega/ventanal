@@ -443,14 +443,16 @@ class UI:
                 action=values.get('action')
                 if action in ('regenerate','repair') and not self.security.ready:
                     send(400,'Security','Enable security before rotating its certificate or key.'); return
-                if action in ('enable','regenerate','repair') and values.get('confirm')!='yes':
-                    send(400,'Security','Confirm that the board configuration must be updated.'); return
+                if action in ('enable','regenerate','restore','repair') and values.get('confirm')!='yes':
+                    send(400,'Security','Confirm the security change before continuing.'); return
                 try:
                     if action=='enable':
                         self.enable_security()
                         self.auth.invalidate()
                         cookie=None; redirect('/login'); return
                     elif action=='regenerate': self.security.regenerate()
+                    elif action=='restore':
+                        if not self.security.restore(): error=self.security.NO_PREVIOUS_CERTIFICATE
                     elif action=='repair': self.security.repair()
                     elif action=='reveal': reveal=True
                     else: self.respond(h,400); return
@@ -465,6 +467,8 @@ class UI:
                     body+=f'<p>Copy the PEM as a C++ raw string into VENTANAL_HOST_CERT_PEM. Set VENTANAL_HOST_URL to the HTTPS URL.</p><pre>{e(self.security.certificate)}</pre><label>VENTANAL_DEVICE_KEY<input readonly value="{e(self.security.key.hex())}"></label>'
                 for action,label in [('regenerate','Regenerate certificate'),('repair','Re-pair board (new device key)')]:
                     body+=form('/security',token,f'<input type="hidden" name="action" value="{action}"><label><input type="checkbox" name="confirm" value="yes" required>I understand the board must be updated afterwards.</label>',label)
+                if self.security.can_restore:
+                    body+=form('/security',token,'<input type="hidden" name="action" value="restore"><label><input type="checkbox" name="confirm" value="yes" required>Present the previous certificate to the board again.</label>','Restore previous certificate')
             else:
                 body+=form('/security',token,'<input type="hidden" name="action" value="enable"><label><input type="checkbox" name="confirm" value="yes" required>Enable HTTPS; the board must be updated afterwards.</label>','Enable security')
             send(400 if error else 200,'Security',body+e(error)+'</div>'); return

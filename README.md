@@ -207,7 +207,8 @@ configure and flash the board as described under Firmware above.
 Coordinate regeneration with the board flash. The current pin stops working
 for new TLS connections as soon as the server starts presenting the new certificate.
 
-1. In **Settings → Security**, confirm and select **Regenerate certificate**.
+1. Save the current public PEM from **Settings → Security → Reveal board
+   values** for the rollback test. Then confirm and select **Regenerate certificate**.
    On a systemd installation you can also rotate from the host as follows.
 
    ```sh
@@ -219,12 +220,26 @@ for new TLS connections as soon as the server starts presenting the new certific
 2. Open **Settings → Security → Reveal board values** and copy the complete
    new PEM into `VENTANAL_HOST_CERT_PEM` in your private `config.h`. Set
    `VENTANAL_HOST_URL` to an HTTPS URL whose hostname or IP is in the certificate.
+   For a flash where rollback must work without another upload, put both complete
+   PEM blocks, separated by a newline, in the same C++ raw string. This lets
+   the board connect when the server presents either certificate. Remove the
+   previous PEM at the next firmware update after verifying the new certificate.
    Regeneration preserves the device key and replay counter. For a fresh
    pairing, NVS loss, or device-key rotation, confirm **Re-pair board (new
    device key)** and copy the new `VENTANAL_DEVICE_KEY` as well.
 3. Rebuild and upload with the firmware instructions above. Verify a successful
    board check-in and frame refresh over HTTPS. Keep the pairing values private.
    See the [transport details](firmware/README.md#password-protected-transport).
+
+If the board rejects the new certificate and still trusts the previous PEM,
+confirm **Restore previous certificate** on the Security page. The server
+presents the previous certificate on new connections immediately and preserves
+the current device key and replay counter. The restore uses up the saved
+certificate. Each regeneration saves the certificate and private key it replaces.
+On a systemd installation, use the same stop/start sequence above with
+`restore-certificate --confirm` in place of `regenerate-certificate --confirm`.
+Both certificate commands refuse to run against a cache directory used by a
+running Ventanal server.
 
 The installer gives the `ventanal` account write access to
 `/etc/ventanal/ventanal.toml` and its containing directory so the service can

@@ -20,7 +20,11 @@ from ventanal.art.render import ART_READOUT
 from ventanal.frame import encode_frame
 from ventanal.manifest import publish
 from ventanal.quantize import quantize, simulate
+from ventanal.security import Security, SecurityStateBusy, security_state_lock
 from ventanal.serve import make_server
+
+
+CERTIFICATE_COMMANDS = ('regenerate-certificate', 'restore-certificate')
 
 
 def main(argv=None):
@@ -28,14 +32,14 @@ def main(argv=None):
     parser.add_argument('--config', type=Path, default=Path('/etc/ventanal/ventanal.toml'))
     commands = parser.add_subparsers(dest='command', required=True)
     for name in ('tick', 'serve', 'render-art', 'render-weather', 'chart', 'calibrate', 'skipped',
-                 'setup-token', 'regenerate-certificate'):
+                 'setup-token', *CERTIFICATE_COMMANDS):
         command = commands.add_parser(name)
         command.add_argument('--config', type=Path, default=argparse.SUPPRESS)
         if name == 'skipped':
             command.add_argument('--limit', type=int, default=50)
-        if name == 'regenerate-certificate':
+        if name in CERTIFICATE_COMMANDS:
             command.add_argument('--confirm', action='store_true', required=True,
-                                 help='Confirm the server is stopped and the board pin will be updated')
+                                 help='Confirm the change to the certificate presented to the board')
         if name == 'tick':
             command.add_argument('--force-art', action='store_true',
                                  help='Republish the current artwork without advancing rotation')
@@ -58,22 +62,31 @@ def main(argv=None):
         from ventanal.auth import Auth
         print(Auth(cfg.cache_dir).issue_setup_token() or 'Setup is already complete.')
         return
-    if args.command == 'regenerate-certificate':
-        from ventanal.security import Security
-        security = Security(cfg.cache_dir)
-        if not security.ready:
-            parser.error('Enable security before regenerating its certificate.')
-        security.regenerate()
-        print(f'New certificate SHA-256: {security.fingerprint}')
+    if args.command in ('serve', *CERTIFICATE_COMMANDS):
+        try:
+            with security_state_lock(cfg.cache_dir):
+                if args.command == 'serve':
+                    with make_server(cfg.output_dir, cfg.listen_host, cfg.listen_port,
+                                     cache_dir=cfg.cache_dir, config_path=args.config) as server:
+                        try:
+                            server.serve_forever()
+                        except KeyboardInterrupt:
+                            pass
+                    return
+                security = Security(cfg.cache_dir)
+                if args.command == 'restore-certificate':
+                    if not security.restore():
+                        parser.error(Security.NO_PREVIOUS_CERTIFICATE)
+                    print(f'Restored certificate SHA-256: {security.fingerprint}')
+                else:
+                    if not security.ready:
+                        parser.error('Enable security before regenerating its certificate.')
+                    security.regenerate()
+                    print(f'New certificate SHA-256: {security.fingerprint}')
+        except SecurityStateBusy as exc:
+            parser.error(str(exc))
         return
     now = datetime.now(ZoneInfo(cfg.timezone))
-    if args.command == 'serve':
-        with make_server(cfg.output_dir, cfg.listen_host, cfg.listen_port, cache_dir=cfg.cache_dir, config_path=args.config) as server:
-            try:
-                server.serve_forever()
-            except KeyboardInterrupt:
-                pass
-        return
     if args.command == 'skipped':
         from ventanal.owner import OwnerStore
         if args.limit < 1:
