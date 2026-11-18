@@ -237,10 +237,16 @@ Settings → Security before trusting it. Use **Reveal board values** to copy
 `VENTANAL_DEVICE_KEY` (64 lowercase hex characters) into private `config.h`.
 Change `VENTANAL_HOST_URL` to the displayed HTTPS URL and build/upload normally.
 Keep these values out of logs and version control. Regeneration requires updating
-the certificate on the board; re-pairing requires updating its device key.
+the certificate on the board. The device key stays valid until you explicitly
+choose **Re-pair board** and copy the new key. See the
+[regeneration and pairing steps](../README.md#security-and-pairing).
 
 The self-signed ECDSA P-256 certificate is the firmware's sole trust anchor via
-`WiFiClientSecure::setCACert`: mbedTLS checks its signature, hostname and validity.
+`WiFiClientSecure::setCACert`. For a locally trusted self-signed leaf, mbedTLS
+requires an exact certificate match and checks the hostname or IP. The TLS
+handshake verifies proof of possession of the leaf's private key. Certificate
+date checks depend on the core's mbedTLS build; the documented Inkplate core
+ships with those checks disabled.
 There is no insecure TLS mode or HTTP downgrade when any security value is set.
 The task stack is 16 KiB to leave room for certificate rejection paths too.
 HTTPS uses HTTP/1.1 and one verified connection across the wake, including

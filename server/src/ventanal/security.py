@@ -20,7 +20,7 @@ from threading import RLock
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
-from cryptography.x509.oid import NameOID
+from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from ventanal.auth import private_write
 from ventanal.manifest import reject_manifest_floats
 
@@ -109,7 +109,12 @@ class Security:
                   .public_key(key.public_key()).serial_number(x509.random_serial_number())
                   .not_valid_before(now-timedelta(minutes=5)).not_valid_after(now+timedelta(days=3653))
                   .add_extension(x509.SubjectAlternativeName(sans),critical=False)
-                  .add_extension(x509.BasicConstraints(ca=True,path_length=0),critical=True)
+                  .add_extension(x509.BasicConstraints(ca=False, path_length=None), critical=True)
+                  .add_extension(x509.KeyUsage(
+                      digital_signature=True, content_commitment=False, key_encipherment=True,
+                      data_encipherment=False, key_agreement=False, key_cert_sign=False,
+                      crl_sign=False, encipher_only=False, decipher_only=False), critical=True)
+                  .add_extension(x509.ExtendedKeyUsage([ExtendedKeyUsageOID.SERVER_AUTH]), critical=False)
                   .sign(key,hashes.SHA256()))
             previous, context = self.state, self.context
             self.state={**self.state,'certificate':cert.public_bytes(serialization.Encoding.PEM).decode(),

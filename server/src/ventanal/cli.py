@@ -27,11 +27,15 @@ def main(argv=None):
     parser = argparse.ArgumentParser(prog='ventanal')
     parser.add_argument('--config', type=Path, default=Path('/etc/ventanal/ventanal.toml'))
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('tick', 'serve', 'render-art', 'render-weather', 'chart', 'calibrate', 'skipped', 'setup-token'):
+    for name in ('tick', 'serve', 'render-art', 'render-weather', 'chart', 'calibrate', 'skipped',
+                 'setup-token', 'regenerate-certificate'):
         command = commands.add_parser(name)
         command.add_argument('--config', type=Path, default=argparse.SUPPRESS)
         if name == 'skipped':
             command.add_argument('--limit', type=int, default=50)
+        if name == 'regenerate-certificate':
+            command.add_argument('--confirm', action='store_true', required=True,
+                                 help='Confirm the server is stopped and the board pin will be updated')
         if name == 'tick':
             command.add_argument('--force-art', action='store_true',
                                  help='Republish the current artwork without advancing rotation')
@@ -53,6 +57,14 @@ def main(argv=None):
     if args.command == 'setup-token':
         from ventanal.auth import Auth
         print(Auth(cfg.cache_dir).issue_setup_token() or 'Setup is already complete.')
+        return
+    if args.command == 'regenerate-certificate':
+        from ventanal.security import Security
+        security = Security(cfg.cache_dir)
+        if not security.ready:
+            parser.error('Enable security before regenerating its certificate.')
+        security.regenerate()
+        print(f'New certificate SHA-256: {security.fingerprint}')
         return
     now = datetime.now(ZoneInfo(cfg.timezone))
     if args.command == 'serve':

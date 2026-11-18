@@ -14,6 +14,7 @@ import json
 import stat
 import tempfile
 import tomlkit
+from ventanal.auth import private_write
 from ventanal.config import read_config_document, validate_config
 from ventanal.art.sources import registry
 
@@ -97,6 +98,16 @@ def replace_config(path: Path, data: bytes):
             temporary.unlink(missing_ok=True)
 
 
+def backup_config(backup_dir: Path, original: str):
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    private_write(backup_dir / f'ventanal-{stamp}.toml', original.encode(), durable=True)
+
+
+def prune_config_backups(backup_dir: Path):
+    for old in sorted(backup_dir.glob('ventanal-*.toml'))[:-10]:
+        old.unlink()
+
+
 def edit_document(doc, values):
     values = dict(values)
     for key in list(values):
@@ -171,8 +182,6 @@ def save_settings(path: Path, values, backup_dir=None, *, mutate=None, browser_s
         if mutate is not None:
             mutate(doc)
             validate_config(doc.unwrap())
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
-        from ventanal.auth import private_write
         clock = time.time() if now is None else now
         metadata = backup_dir / '.browser-backups.json'
         try: sessions = json.loads(metadata.read_text())
@@ -180,13 +189,13 @@ def save_settings(path: Path, values, backup_dir=None, *, mutate=None, browser_s
         ident = hashlib.sha256(browser_session.encode()).hexdigest() if browser_session else None
         take_backup = ident is None or ident not in sessions or clock - sessions[ident] >= 3600
         if take_backup:
-            private_write(backup_dir / f'ventanal-{stamp}.toml', original.encode(), durable=True)
+            backup_config(backup_dir, original)
         replace_config(path, tomlkit.dumps(doc).encode())
         if take_backup and ident:
             sessions = {k:v for k,v in sessions.items() if clock-v < 30*86400}
             sessions[ident] = clock
             private_write(metadata, json.dumps(sessions).encode())
-        for old in sorted(backup_dir.glob('ventanal-*.toml'))[:-10]: old.unlink()
+        prune_config_backups(backup_dir)
     return validate_config(doc.unwrap())
 
 

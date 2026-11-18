@@ -102,12 +102,15 @@ def write_panel(path: Path, colours: list[tuple[int, int, int]]) -> None:
     The existing file must contain a [panel] table with all six colour keys.
     Parsing both versions before writing prevents partial or invalid updates.
     """
-    from ventanal.settings import read_document, replace_config, settings_lock
+    from ventanal.settings import backup_config, prune_config_backups, read_document, replace_config, settings_lock
 
-    with settings_lock(path.parent / 'backups'):
+    backup_dir = path.parent / 'backups'
+    with settings_lock(backup_dir):
         original = read_document(path)
         updated = _replace_panel(original, colours)
+        backup_config(backup_dir, original)
         replace_config(path, updated.encode('utf-8'))
+        prune_config_backups(backup_dir)
 
 
 def _replace_panel(original, colours):

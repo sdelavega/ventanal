@@ -10,7 +10,7 @@ import json
 import sqlite3
 import ssl
 import socket
-from threading import Thread, RLock
+from threading import BoundedSemaphore, Thread, RLock
 from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit, parse_qs
@@ -18,6 +18,9 @@ from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
 from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
 from ventanal.owner import SkipQueue, parse_skips
+
+
+MAX_TLS_CONNECTIONS = 32
 
 
 def allowed_host(headers, names):
@@ -214,6 +217,27 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             pass  # Error text may contain the raw request target.
 
     class TLSServer(ThreadingHTTPServer):
+        def __init__(self, *args):
+            self.connection_slots = BoundedSemaphore(MAX_TLS_CONNECTIONS)
+            super().__init__(*args)
+
+        def process_request(self, conn, addr):
+            # Reserve capacity before starting a worker, including keep-alive time.
+            if not self.connection_slots.acquire(blocking=False):
+                self.shutdown_request(conn)
+                return
+            try:
+                super().process_request(conn, addr)
+            except BaseException:
+                self.connection_slots.release()
+                raise
+
+        def process_request_thread(self, conn, addr):
+            try:
+                super().process_request_thread(conn, addr)
+            finally:
+                self.connection_slots.release()
+
         def finish_request(self, conn, addr):
             # ThreadingHTTPServer calls finish_request in the request worker.
             conn.settimeout(5)

@@ -31,6 +31,10 @@ class SkipQueue:
 
     def __init__(self, cache_dir):
         self.path = cache_dir / 'skip-queue.sqlite3'
+        with closing(self.connect()) as db, db:
+            db.execute('''CREATE TABLE IF NOT EXISTS pending_skips (
+                skipped TEXT NOT NULL, shown TEXT NOT NULL, time TEXT NOT NULL,
+                PRIMARY KEY (skipped, shown))''')
 
     def connect(self):
         return sqlite3.connect(self.path, timeout=1)
@@ -40,20 +44,12 @@ class SkipQueue:
             return
         timestamp = now.astimezone(timezone.utc).isoformat()
         with closing(self.connect()) as db, db:
-            db.execute('''CREATE TABLE IF NOT EXISTS pending_skips (
-                skipped TEXT NOT NULL, shown TEXT NOT NULL, time TEXT NOT NULL,
-                PRIMARY KEY (skipped, shown))''')
             db.executemany('INSERT OR IGNORE INTO pending_skips VALUES (?,?,?)',
                            ((skipped, shown, timestamp) for skipped, shown in pairs))
 
     def drain(self, owner):
         """Called with the tick lock held. Remove reports only after recording."""
-        if not self.path.exists():
-            return
         with closing(self.connect()) as db:
-            # The first enqueuer may still be initializing an empty database.
-            if not db.execute("SELECT 1 FROM sqlite_master WHERE name='pending_skips'").fetchone():
-                return
             rows = db.execute('SELECT skipped, shown, time FROM pending_skips ORDER BY time, rowid').fetchall()
             for skipped, shown, at in rows:
                 owner.record(skipped, shown, datetime.fromisoformat(at))

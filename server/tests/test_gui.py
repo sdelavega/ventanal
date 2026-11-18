@@ -278,6 +278,47 @@ def test_silent_tls_connection_does_not_block_other_clients(web, monkeypatch):
         finally:
             conn.close()
 
+
+def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch):
+    import socket
+    from threading import Event
+
+    monkeypatch.setattr('ventanal.serve.MAX_TLS_CONNECTIONS', 1)
+    _, srv, _ = web
+    srv.ui.auth.set_password('test secret', 'test secret')
+    srv.ui.enable_security()
+    tls = srv.tls_server
+    address = ('127.0.0.1', tls.server_address[1])
+    context = ssl.create_default_context(cadata=srv.ui.security.certificate)
+    freed = Event()
+    process = tls.process_request_thread
+
+    def observe(conn, addr):
+        process(conn, addr)
+        freed.set()
+
+    monkeypatch.setattr(tls, 'process_request_thread', observe)
+    held = HTTPSConnection(*address, timeout=2, context=context)
+    try:
+        held.request('GET', '/login')
+        response = held.getresponse()
+        assert response.status == 200 and not response.will_close
+        response.read()
+        with socket.create_connection(address, timeout=2) as excess:
+            assert excess.recv(1) == b''
+    finally:
+        held.close()
+    assert freed.wait(2)
+    conn = HTTPSConnection(*address, timeout=2, context=context)
+    try:
+        conn.request('GET', '/login')
+        response = conn.getresponse()
+        assert response.status == 200
+        response.read()
+    finally:
+        conn.close()
+
+
 def test_settings_errors_and_escape(web):
     r, srv, root = web
     _, _, token = r()

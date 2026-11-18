@@ -116,6 +116,7 @@ def test_http_skip_get_only_and_idempotent(tmp_path):
     server=make_server(out,'127.0.0.1',0,cache_dir=cache)
     thread=Thread(target=server.serve_forever); thread.start()
     try:
+        assert (cache / 'skip-queue.sqlite3').is_file()
         queue = SkipQueue(cache)
         with (cache/'tick.lock').open('a') as lock, closing(store.connect()) as db:
             fcntl.flock(lock, fcntl.LOCK_EX)
@@ -128,7 +129,9 @@ def test_http_skip_get_only_and_idempotent(tmp_path):
                     assert response.status==(200 if method=='GET' else 501)
                 finally:
                     conn.close()
-                assert queue.path.exists() == (method == 'GET')
+                with closing(queue.connect()) as pending:
+                    count, = pending.execute('SELECT count(*) FROM pending_skips').fetchone()
+                    assert count == (1 if method == 'GET' else 0)
             assert not store.skipped()
             db.rollback()
             queue.drain(store)
