@@ -515,7 +515,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
     profile = root / "devices" / LCD
     profile.mkdir(parents=True)
     (profile / "manifest.json").write_text('{"version":1,"screens":{}}')
-    manifest = f"/devices/{LCD}/manifest.json?board={LCD}&fw=1.0.0"
+    manifest = f"/devices/{LCD}/manifest.json?board={LCD}&fw=1.0.0&test_release_key=1"
     image = f"/firmware/{LCD}-2.0.0.bin"
     keys = {}
     if password_mode:
@@ -534,7 +534,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
             headers = {**proof(keys[name], path, counter), "X-Ventanal-Device": name}
         return request(path, headers=headers, tls=password_mode)
 
-    assert get(manifest + "&test_release_key=1", "desk", 1)[0] == 200
+    assert get(manifest, "desk", 1)[0] == 200
     assert get(manifest, "hall", 1)[0] == 200
     server.ui.firmware.cache(verified_metadata(*signed(board=LCD)), IMAGE)
     _, page, cookie = request("/login" if password_mode else "/", tls=password_mode)
