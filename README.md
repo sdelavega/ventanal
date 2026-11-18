@@ -111,7 +111,8 @@ hardware details. Copy `firmware/ventanal/config.example.h` to the git-ignored
 - For password-protected operation, copy the certificate and device key from
   **Settings → Security → Reveal board values**. Keep them private.
 
-With the documented core/libraries installed, build and upload from the repo root:
+Install the [owner release public key](docs/updates.md#owner-signing-key).
+With the documented core and libraries installed, build and upload from the repo root:
 
 ```sh
 FQBN='soldered-inkplate-boards:esp32:Inkplate13SPECTRA:FlashSize=32M,FlashMode=opi,PSRAM=opi,PartitionScheme=custom,DebugLevel=none'

@@ -26,16 +26,18 @@ jobs:
           version: '1.6.0'
       - name: Install pinned Inkplate core and libraries
         run: |
-          board_index=https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/refs/heads/main/package_Inkplate_Boards_index.json
+          board_index=https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/17588104356a3a76ce1c9592f2b5a496690d72f8/package_Inkplate_Boards_index.json
           arduino-cli config add board_manager.additional_urls "$board_index"
           arduino-cli core update-index
           arduino-cli core install soldered-inkplate-boards:esp32@4.0.0
           arduino-cli lib install --no-deps 'InkplateLibrary@11.2.1' 'ArduinoJson@7.4.3'
-      - name: Install release metadata dependency
-        run: python -m pip install 'cryptography==50.0.2'
-      - name: Install PlatformIO for LCD
-        if: ${{ hashFiles('firmware/lcd43b/platformio.ini') != '' }}
-        run: python -m pip install 'pioarduino==6.2.0'
+      - name: Install hash-pinned release tooling
+        run: |
+          requirements=tools/release/requirements.txt
+          if [ -f firmware/lcd43b/platformio.ini ]; then
+            requirements=tools/release/requirements-lcd.txt
+          fi
+          python -m pip install --require-hashes --only-binary=:all: -r "$requirements"
       - name: Build unsigned OTA assets
         env:
           PYTHONPATH: server/src
