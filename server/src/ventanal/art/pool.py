@@ -16,6 +16,13 @@ from ventanal.art.sources import Candidate, search_all, configured_sources
 from ventanal.config import Config, Season
 
 
+def aspect_allowed(width: int | None, height: int | None) -> bool:
+    """Allow up to 3:1 in either orientation, deferring unknown dimensions."""
+    if not width or not height:
+        return True
+    return max(width, height) <= 3 * min(width, height)
+
+
 def season_for(d: date, seasons: Sequence[Season]) -> Season:
     """Return the first matching inclusive month/day range, including wraps."""
     day = (d.month, d.day)
@@ -173,8 +180,8 @@ class ArtPool:
     ) -> Candidate | None:
         """Prefer suitable seasonal images, then other seasons, then oldest shown.
 
-        The final fallback includes small images so a nonempty pool always yields
-        artwork. Never-shown images precede shown images in that fallback.
+        The final fallback includes small eligible images. Never-shown images
+        precede shown images in that fallback.
         Picking alone does not mark an artwork as shown.
         """
         cutoff = _aware(now).astimezone(timezone.utc) - timedelta(days=no_repeat_days)
@@ -202,6 +209,8 @@ class ArtPool:
         seasonal = []
         for row in rows:
             c = Candidate(*row[:9], kind=row[11])
+            if not aspect_allowed(c.width, c.height):
+                continue
             if (
                 not include_monotone
                 and c.kind not in ("painting", "manuscript/illumination")

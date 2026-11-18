@@ -127,7 +127,7 @@ def _art_image(cfg, client, credit):
     candidate = pool.get(source, object_id)
     if candidate is None:
         raise ValueError(f'artwork {source}:{object_id} absent from the pool')
-    return jobs.fetch_candidate(candidate, client, cfg)
+    return jobs.fetch_artwork(candidate, client, cfg)
 
 
 def _render_screen(cfg, name, now, client) -> Image.Image:

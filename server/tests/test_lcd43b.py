@@ -334,9 +334,11 @@ def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=(), 
     art_image = Image.new('RGB', (160, 120), (10, 20, 30))
 
     from ventanal import jobs
+    from ventanal.art.sources import Candidate
     monkeypatch.setattr(jobs, 'ArtPool', lambda path: type('Pool', (), {
         'get': staticmethod(lambda source, object_id: (
-            {'source': source, 'object_id': object_id} if source else None)),
+            Candidate(source, object_id, '', '', '', '', '', None, None)
+            if source else None)),
     })())
     monkeypatch.setattr(jobs, 'fetch_candidate',
                         lambda candidate, client, c: art_image)

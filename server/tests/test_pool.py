@@ -7,6 +7,7 @@ from pathlib import Path
 import random
 
 import httpx
+from PIL import Image
 import pytest
 
 from ventanal.art.pool import ArtPool, refresh_pool, season_for
@@ -83,6 +84,43 @@ def test_small_images_skipped(pool):
     pool.add([small, large], 'winter')
     for seed in range(30):
         assert pick(pool, rng=random.Random(seed)) == large
+
+
+@pytest.mark.parametrize(('width', 'height', 'allowed'), [
+    (3010, 1000, False),
+    (1000, 3010, False),
+    (3000, 1000, True),
+    (1000, 3000, True),
+])
+def test_art_aspect_limit_applies_to_all_pool_fallbacks(pool, width, height, allowed):
+    art = candidate('aspect', width, height)
+    pool.add([art], 'winter')
+    expected = art if allowed else None
+    assert pick(pool) == expected
+    pool.mark_shown(art, NOW)
+    assert pick(pool) == expected
+
+
+def test_art_selection_retries_after_decoding_unknown_dimensions(pool, monkeypatch):
+    from ventanal import jobs
+
+    cfg = load_config(EXAMPLE)
+    season = season_for(NOW.date(), cfg.seasons).name
+    unknown = replace(candidate('unknown', None, None), kind='painting')
+    fallback = replace(candidate('fallback', 3000, 1000), kind='painting')
+    pool.add([unknown], season)
+    pool.add([fallback], 'spring')
+    fetched = []
+
+    def fetch(c, client, cfg):
+        fetched.append(c.object_id)
+        return Image.new('RGB', (100, 301) if c == unknown else (300, 100))
+
+    monkeypatch.setattr(jobs, 'fetch_candidate', fetch)
+    picked, image = jobs.select_artwork(cfg, NOW, None, pool)
+    assert fetched == ['unknown', 'fallback']
+    assert picked == fallback
+    assert image.size == (300, 100)
 
 
 def test_quality_in_any_season_fallback_and_nonempty_last_resort(pool):
