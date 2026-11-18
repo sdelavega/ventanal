@@ -137,6 +137,7 @@ uint8_t* residentFrames[lcd::SCREEN_SLOTS]{};
 uint8_t* overrideFrame = nullptr;
 bool ownOverrideFrame = false;
 lcd::ResidentCache refreshCache;
+volatile bool refreshBusy = false;
 bool mounted = false;
 lcd::CacheLocation persistedFrames[lcd::SCREEN_SLOTS];
 lcd::DeferredSave deferredFrames[lcd::SCREEN_SLOTS];
@@ -361,6 +362,7 @@ struct StatusPixels {
 StatusPixels* statusPixels[2]{};
 uint16_t* clockPixels[2]{};
 uint16_t* canvas = nullptr;
+bool canvasUsesStaging = false;
 int clockSlot = -1;
 
 bool clockBuffersReady() { return clockPixels[0] && clockPixels[1]; }
@@ -387,7 +389,7 @@ void retirePixels(const uint16_t* pixels) {
     }
 }
 
-uint16_t* localCanvas() {
+uint16_t* localCanvas(bool allowStaging = false) {
     if (!canvas) {
         canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
         if (!canvas) {
@@ -395,8 +397,22 @@ uint16_t* localCanvas() {
             canvas = static_cast<uint16_t*>(ps_malloc(Panel::Bytes));
         }
     }
+    // Settings and Updating can borrow the idle decode buffer when there is
+    // no full-sized block left, without evicting cached frames.
+    if (!canvas && allowStaging && !refreshBusy && refreshCache.staging) {
+        canvas = reinterpret_cast<uint16_t*>(refreshCache.staging);
+        canvasUsesStaging = true;
+        lcd::log("settings canvas=idle-staging\n");
+    }
     retirePixels(canvas);
     return canvas;
+}
+
+void returnStagingCanvas() {
+    if (!canvasUsesStaging) return;
+    retirePixels(canvas);
+    canvas = nullptr;
+    canvasUsesStaging = false;
 }
 
 bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
@@ -582,7 +598,7 @@ bool presentScreen(const uint16_t* source, bool localSettings = false, bool* clo
 }
 
 bool showSettings() {
-    auto* pixels = localCanvas();
+    auto* pixels = localCanvas(true);
     if (!pixels) { lcd::log("settings error=allocation\n"); closeSettings("error"); return false; }
     char footer[192];
     snprintf(footer, sizeof footer, "VENTANAL · %s · WI-FI %s · v%s",
@@ -753,7 +769,6 @@ private:
 TaskWatchdog refreshWatchdog;
 SemaphoreHandle_t refreshStaged;   // worker -> loop: result ready to copy
 SemaphoreHandle_t refreshCopied;   // loop -> worker: result applied
-volatile bool refreshBusy = false;
 bool refreshRequested = false;
 lcd::DeviceSettings refreshSettings; // copied before worker starts; immutable until it finishes
 lcd::RefreshResult refreshStaging;   // worker writes, loop copies while parked
@@ -797,7 +812,7 @@ uint8_t* clearOverrideSave() {
 void applyResidentFrame() {
     const auto frame = pendingFrame;
     if (frame.slot < 0) {
-        if (!panel.references(canvas)) {
+        if (!canvasUsesStaging && !panel.references(canvas)) {
             free(canvas);
             canvas = nullptr;
         }
@@ -948,7 +963,7 @@ void refreshWorker(void*) {
 // Kick a refresh on the worker task; loop() keeps servicing touch and the
 // backlight while it runs. At most one worker may be in flight.
 bool startRefresh(bool redraw, bool check = false) {
-    if (refreshBusy) return false;
+    if (refreshBusy || (!check && canvasUsesStaging)) return false;
     refreshCheckingUpdates = check;
     if (!check) {
         formatOtaReport(refreshOtaReport, updateBoot.journal.record);
@@ -1080,7 +1095,7 @@ bool showUpdating() {
     // The settings page and update notice share the same PSRAM canvas.
     // Keep the panel dark while retiring and redrawing that canvas.
     setBacklight(false);
-    auto* pixels = localCanvas();
+    auto* pixels = localCanvas(true);
     if (!pixels) {
         backlightRefresh();
         return false;
@@ -1129,7 +1144,10 @@ void runQueuedUpdate() {
             powerSession.activity(millis());
         }
         if (settingsPage.active) showSettings();
-        else show(screenIndex);
+        else {
+            returnStagingCanvas();
+            show(screenIndex);
+        }
         backlightRefresh();
     } else if (checkQueued) {
         checkQueued = false;
@@ -1166,6 +1184,7 @@ void closeSettings(const char* reason) {
     touchPoller.controlsMode(false);
     lcd::remapSelection(screenIndex,spareCursor,settingsReturnSlot,solarPublished(),spareCount(),settings);
     lcd::log("settings close=%s return=%s\n",reason,lcd::SLOT_NAMES[screenSlot(screenIndex)]);
+    returnStagingCanvas();
     show(screenIndex);
 }
 void settingsTap(int x,int y) {
