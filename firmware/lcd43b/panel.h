@@ -17,13 +17,12 @@ public:
     static constexpr int WIDTH = 800;
     static constexpr int HEIGHT = 480;
     static constexpr size_t Bytes = size_t(WIDTH) * HEIGHT * sizeof(uint16_t);
-    static constexpr int BounceRows = 20;
-    static constexpr unsigned Pclk = 13000000;
+    // Waveshare 4.3B ESP-IDF 800 x 480 demo RGB timings and bounce height.
+    static constexpr int BounceRows = 10;
+    static constexpr unsigned Pclk = 16000000;
     static constexpr unsigned VSyncPulse = 4;
     static constexpr unsigned VBackPorch = 8;
-    // Leave the last EOF refill more time to finish before the core's
-    // automatic VSYNC restart. 12 lines is the ST7262's maximum front porch.
-    static constexpr unsigned VFrontPorch = 12;
+    static constexpr unsigned VFrontPorch = 8;
     static constexpr unsigned LineClocks = WIDTH + 4 + 8 + 8;
     static constexpr unsigned DrainUs = BounceRows * LineClocks * 1000000ull / Pclk;
     static constexpr unsigned VBlankUs =

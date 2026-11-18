@@ -167,8 +167,9 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     lcd::finishScanRows(static_cast<uint16_t*>(buffer), scene, WIDTH, pos, bytes);
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
     // Warm the first cache lines of the next section while DMA drains this
-    // one, leaving cache space for the overlay and other work.
-    constexpr unsigned PreloadBytes = 24 * 1024;
+    // one, leaving cache space for other work and staying inside the frame.
+    constexpr unsigned BounceBytes = WIDTH * BounceRows * sizeof(uint16_t);
+    constexpr unsigned PreloadBytes = BounceBytes < 24 * 1024 ? BounceBytes : 24 * 1024;
     const int next = pos + bytes / sizeof(uint16_t);
     const auto* pixels = next < WIDTH * HEIGHT ? scene.pixels :
         self.scenes_[self.armed_.load(std::memory_order_relaxed)].pixels;
