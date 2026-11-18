@@ -7,8 +7,8 @@ SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
-.PHONY: test clean
-test: build/test_settings build/test_ota build/test_release build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
+.PHONY: test clean check-arduinojson
+test: check-arduinojson build/test_settings build/test_ota build/test_release build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake
 	./build/test_settings
 	./build/test_ota
 	./build/test_release
@@ -35,6 +35,16 @@ test: build/test_settings build/test_ota build/test_release build/test_budget bu
 	./build/test_net
 	./build/test_overlay
 	./build/test_wake
+
+build/test_release build/test_net build/test_security build/test_secure_transport: | check-arduinojson
+
+check-arduinojson:
+	@test -f "$(ARDUINOJSON)/ArduinoJson.h" || { \
+		echo "ArduinoJson headers not found. From the repo root, run:" >&2; \
+		echo "  firmware/.venv/bin/pio pkg install -d firmware/ventanal -e bench" >&2; \
+		echo "Or pass ARDUINOJSON=/path/to/ArduinoJson/src to make." >&2; \
+		exit 1; \
+	}
 
 build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build

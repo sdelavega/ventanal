@@ -27,7 +27,9 @@ toolchain and the checksum-verified Soldered Inkplate_S3 pin header. Set
 `UV_CONSTRAINT` for PlatformIO commands so the platform's inner Python
 environment uses the same CLI version as the outer venv. The custom
 board uses 32 MB octal flash at 80 MHz, octal PSRAM, and UART0 serial with USB CDC
-disabled on boot.
+disabled on boot. Its board manifest explicitly supplies
+`ARDUINO_INKPLATE13SPECTRA`, which appears once per compiler command in the
+pinned hybrid build.
 
 Install the [owner release public key](../docs/updates.md#owner-signing-key)
 before building firmware for a deployed board. For a new installation, copy
@@ -39,8 +41,11 @@ Create the ignored `firmware/ventanal/platformio.local.ini` with:
 private_flags = -DVENTANAL_INSTALLATION_CONFIG=config.h
 ```
 
-With no local config selected, the build uses the public example and needs
-installation settings already provisioned in NVS. See
+PlatformIO prints the installation header path it selected. If `config.h`
+exists, `normal` and `diag` require an explicit installation header selection.
+With no local header present or selected, builds use `config.example.h` and
+need installation settings already provisioned in NVS. The release builder
+always selects `config.example.h`. See
 [wireless firmware updates](../docs/updates.md#one-time-wired-setup) for provisioning.
 
 From the repository root, build and upload with the board's serial port:

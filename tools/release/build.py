@@ -121,9 +121,12 @@ def build(args):
         pio_core = work / "pio-core"
         for board, project in projects.items():
             pio_build = work / board
+            build_flags = f"{prefix_maps(work)} -Wl,--strip-debug"
+            if project == INKPLATE:
+                build_flags += " -DVENTANAL_GENERIC_RELEASE=1"
             command = [
                 *env, f"PLATFORMIO_CORE_DIR={pio_core}", f"PLATFORMIO_BUILD_DIR={pio_build}",
-                f"PLATFORMIO_BUILD_FLAGS={prefix_maps(work)} -Wl,--strip-debug",
+                f"PLATFORMIO_BUILD_FLAGS={build_flags}",
                 f'PLATFORMIO_BUILD_SRC_FLAGS=-include "{defines}"',
                 "pio", "run", "--project-dir", str(work / project), "--environment", "normal",
             ]

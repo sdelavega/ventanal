@@ -25,6 +25,16 @@ def test_output_directory_is_relative_to_checkout(tmp_path, monkeypatch):
         build.build(SimpleNamespace(version="2.0.0", min_from_version="1.0.0", output=Path("occupied")))
 
 
+def test_inkplate_release_selects_generic_config(tmp_path, capsys):
+    build.build(SimpleNamespace(version="2.0.0", min_from_version="1.0.0",
+                                output=tmp_path / "assets", dry_run=True))
+
+    commands = [line for line in capsys.readouterr().out.splitlines() if " pio run " in line]
+    inkplate = next(line for line in commands if str(build.INKPLATE) in line)
+    assert "-DVENTANAL_GENERIC_RELEASE=1" in inkplate
+    assert "VENTANAL_INSTALLATION_CONFIG" not in inkplate
+
+
 @pytest.mark.parametrize("suffix", [b"/Users/builder/sketch.cpp", b"/home/runner/src", b"C:\\Users\\builder\\src"])
 def test_release_assets_reject_home_paths(tmp_path, suffix):
     image = tmp_path / "app.bin"
