@@ -16,7 +16,7 @@ import httpx
 
 from ventanal.config import Config
 from ventanal.owner import OwnerStore, SPARES
-from ventanal.art.pool import ArtPool, refresh_pool, season_for
+from ventanal.art.pool import ArtPool, aspect_allowed, refresh_pool, season_for
 from ventanal.art.sources import fetch_image
 from ventanal.art.render import ART_READOUT, render_art
 from ventanal.weather.data import geocode, fetch_weather, fetch_alerts
@@ -64,8 +64,22 @@ def fetch_candidate(candidate, client, cfg):
     return source.fetch_image(candidate, client)
 
 
+class ArtworkAspectError(ValueError):
+    """A catalogue entry or its decoded artwork exceeds the aspect limit."""
+
+
+def fetch_artwork(candidate, client, cfg):
+    """Check both catalogue metadata and the actual image before composing."""
+    if not aspect_allowed(candidate.width, candidate.height):
+        raise ArtworkAspectError("artwork metadata exceeds 3:1")
+    image = fetch_candidate(candidate, client, cfg)
+    if not aspect_allowed(*image.size):
+        raise ArtworkAspectError("decoded artwork exceeds 3:1")
+    return image
+
+
 def select_artwork(cfg, now, client, pool, *, excluded=(), strict=False):
-    """Try candidates until decoded colour passes; old pool rows stay intact."""
+    """Try candidates until decoded dimensions and colour pass."""
     excluded = set(excluded)
     while True:
         candidate = pool.pick_next(
@@ -82,8 +96,12 @@ def select_artwork(cfg, now, client, pool, *, excluded=(), strict=False):
         )
         if candidate is None:
             raise ValueError("no eligible artwork")
+        key = f"{candidate.source}:{candidate.object_id}"
         try:
-            image = fetch_candidate(candidate, client, cfg)
+            image = fetch_artwork(candidate, client, cfg)
+        except ArtworkAspectError:
+            excluded.add(key)
+            continue
         except Exception as exc:
             from ventanal.art.sources import failure_info
 
@@ -92,18 +110,19 @@ def select_artwork(cfg, now, client, pool, *, excluded=(), strict=False):
                 candidate.source,
                 exc_info=failure_info(exc),
             )
-            excluded.add(f"{candidate.source}:{candidate.object_id}")
+            excluded.add(key)
             continue
         colourful = pool.assess(candidate, image)
         if cfg.include_monotone or colourful:
             return candidate, image
-        excluded.add(f"{candidate.source}:{candidate.object_id}")
+        excluded.add(key)
 
 
 def keep_fallback(cfg, pool, current, replacement):
     """Do not churn a valid reserved fallback for a worse-scoring candidate."""
     if (
         current is None
+        or not aspect_allowed(current.width, current.height)
         or current.source not in cfg.museums
         or f"{current.source}:{current.object_id}" in cfg.ignored
     ):
@@ -279,18 +298,25 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
             candidate = pool.get(credit["source"], credit["object_id"])
             if candidate is None:
                 raise ValueError("published artwork is absent from the pool")
-            image = fetch_candidate(candidate, client, cfg)
-            if not cfg.include_monotone and not pool.assess(candidate, image):
+            try:
+                image = fetch_artwork(candidate, client, cfg)
+            except ArtworkAspectError:
+                image = None
+            if (
+                image is not None
+                and not cfg.include_monotone
+                and not pool.assess(candidate, image)
+            ):
                 raise ValueError(
                     "artwork is monotone under the current selection policy"
                 )
             from ventanal.art.screen_fit import THRESHOLD
 
             score = pool.fit_score(candidate, cfg.panel_rgb)
-            if cfg.screen_fit_only and (
-                score is None
-                or score < THRESHOLD
-                or f"{candidate.source}:{candidate.object_id}" in cfg.ignored
+            if image is None or (
+                cfg.screen_fit_only
+                and (score is None or score < THRESHOLD
+                     or f"{candidate.source}:{candidate.object_id}" in cfg.ignored)
             ):
                 canvas, credit, candidate = art_canvas(cfg, now, client, pool)
             else:
@@ -344,18 +370,25 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
                 candidate = pool.get(source, object_id)
                 if candidate is None:
                     raise ValueError("reserved artwork is absent from the pool")
-                image = fetch_candidate(candidate, client, cfg)
-                if not cfg.include_monotone and not pool.assess(candidate, image):
+                try:
+                    image = fetch_artwork(candidate, client, cfg)
+                except ArtworkAspectError:
+                    image = None
+                if (
+                    image is not None
+                    and not cfg.include_monotone
+                    and not pool.assess(candidate, image)
+                ):
                     raise ValueError(
                         "spare is monotone under the current selection policy"
                     )
                 from ventanal.art.screen_fit import THRESHOLD
 
                 score = pool.fit_score(candidate, cfg.panel_rgb)
-                if cfg.screen_fit_only and (
-                    score is None
-                    or score < THRESHOLD
-                    or f"{candidate.source}:{candidate.object_id}" in cfg.ignored
+                if image is None or (
+                    cfg.screen_fit_only
+                    and (score is None or score < THRESHOLD
+                         or f"{candidate.source}:{candidate.object_id}" in cfg.ignored)
                 ):
                     excluded = set(cfg.ignored) | {
                         f"{s}:{o}" for _, _, s, o, _ in owner.spares()
@@ -371,7 +404,7 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
                     replacement, replacement_image = select_artwork(
                         cfg, now, client, pool, excluded=excluded, strict=True
                     )
-                    if not keep_fallback(cfg, pool, candidate, replacement):
+                    if image is None or not keep_fallback(cfg, pool, candidate, replacement):
                         candidate, image = replacement, replacement_image
                 canvas, credit = render_art(image, candidate)
                 entry = _publish(cfg, f"spare{index}", canvas, credit, now, store)
@@ -381,16 +414,17 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
                 log.error("forced spare slot=%d publish failed: %s", index, exc)
                 store.event("tick error", TICK_ERROR)
             continue
+        reserved = None
         if index in existing and not existing[index][4]:
-            if cfg.include_monotone and not cfg.screen_fit_only:
-                continue
             reserved = pool.get(existing[index][2], existing[index][3])
-            if reserved is not None:
+            if reserved is not None and aspect_allowed(reserved.width, reserved.height):
+                if cfg.include_monotone and not cfg.screen_fit_only:
+                    continue
                 try:
                     colourful = pool.colour_status(reserved)
                     if colourful is None:
                         colourful = pool.assess(
-                            reserved, fetch_candidate(reserved, client, cfg)
+                            reserved, fetch_artwork(reserved, client, cfg)
                         )
                     from ventanal.art.screen_fit import THRESHOLD
 
@@ -400,6 +434,8 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
                         or (score is not None and score >= THRESHOLD)
                     ):
                         continue
+                except ArtworkAspectError:
+                    reserved = None
                 except Exception as exc:
                     from ventanal.art.sources import failure_info
 
@@ -419,10 +455,8 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
             candidate, image = select_artwork(
                 cfg, now, client, pool, excluded=excluded, strict=True
             )
-            if cfg.screen_fit_only and index in existing and not existing[index][4]:
-                reserved = pool.get(existing[index][2], existing[index][3])
-                if keep_fallback(cfg, pool, reserved, candidate):
-                    continue
+            if cfg.screen_fit_only and keep_fallback(cfg, pool, reserved, candidate):
+                continue
             canvas, credit = render_art(image, candidate)
             entry = _publish(cfg, f"spare{index}", canvas, credit, now, store)
             owner.put_spare(index, entry, candidate)
