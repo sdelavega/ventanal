@@ -32,6 +32,13 @@ def parse_board(query):
             except ValueError:
                 continue
         result[key] = int(values[0]) if key in ('bat', 'bat_mv') else values[0]
+    if result.get('board') == 'lcd43b':
+        report = query.get('lcd_diag', [])
+        if (len(report) == 1 and len(report[0]) <= 43
+                and re.fullmatch(r'(?:[0-9]{1,10},){3}[0-9]{1,10}', report[0])):
+            counters = tuple(map(int, report[0].split(',')))
+            if all(value <= 0xffffffff for value in counters):
+                result['lcd_diag'] = counters
     return result
 
 
@@ -72,6 +79,13 @@ class BoardStore(OwnerStore):
                        (datetime.now(timezone.utc).isoformat(), device, ip, json.dumps(values)))
             db.execute('DELETE FROM lcd_checkins WHERE rowid NOT IN '
                        '(SELECT rowid FROM lcd_checkins ORDER BY rowid DESC LIMIT 500)')
+
+    def lcd_scanouts(self):
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT time, device, data FROM lcd_checkins WHERE rowid IN '
+                              '(SELECT MAX(rowid) FROM lcd_checkins GROUP BY device) ORDER BY device')
+            return [(seen, device, report) for seen, device, data in rows
+                    if 'lcd_diag' in (report := json.loads(data))]
 
     def lcd_reports_test_key(self):
         with closing(self.connect()) as db:

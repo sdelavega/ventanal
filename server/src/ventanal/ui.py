@@ -357,6 +357,17 @@ class UI:
             picture = f'<img src="/ui-preview/{screen}/{entry["id"]}.png" alt="{e(screen)} panel preview">' if entry else '<div class="empty">No frame published</div>'
             body += f'<div class="pv"><div class="lbl{" w" if screen=="weather" else ""}"><span>{e(title)}</span><span>{e(label)}</span></div>{picture}</div>'
         body += '</div>'
+        scanouts = self.store.lcd_scanouts()
+        if scanouts:
+            body += '<h2>LCD scanout</h2><ul>'
+            for seen, device, report in scanouts:
+                late, short, fill, gap = report['lcd_diag']
+                checked = datetime.fromisoformat(seen).astimezone(ZoneInfo(cfg.timezone))
+                body += (f'<li>{e(device)} · firmware {e(report.get("fw", "Unknown"))} · '
+                         f'{e(checked.strftime("%Y-%m-%d %H:%M"))} · '
+                         f'{late} late restarts · {short} EOF shortfalls · '
+                         f'{fill} µs max fill · {gap} µs max VSYNC gap</li>')
+            body += '</ul>'
         if TEST_RELEASE_KEY_ACTIVE:
             state = "Bench mode enabled" if firmware_updates_enabled() else "Firmware updates disabled"
             body += f'<p class="error" role="status">{TEST_RELEASE_KEY_WARNING} · {state}</p>'

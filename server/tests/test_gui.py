@@ -679,3 +679,13 @@ def test_status_release_versions(web):
     assert version('ventanal') == '1.0.0'
     assert 'Server 1.0.0' in body
     assert 'Firmware 1.0.0' in body
+
+
+def test_lcd_scanout_report_validation():
+    query = {'board': ['lcd43b'], 'lcd_diag': ['0,12,456,25625']}
+    assert parse_board(query)['lcd_diag'] == (0, 12, 456, 25625)
+    for counters in (['0,1,2'], ['0,1,2,-3'], ['0,1,2,4294967296'],
+                     ['0,1,2,12345678901'], ['0,1,2,3', '0,1,2,3'],
+                     ['0,1,2,<p>']):
+        assert 'lcd_diag' not in parse_board({**query, 'lcd_diag': counters})
+    assert 'lcd_diag' not in parse_board({**query, 'board': ['inkplate13spectra']})

@@ -515,7 +515,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
     profile = root / "devices" / LCD
     profile.mkdir(parents=True)
     (profile / "manifest.json").write_text('{"version":1,"screens":{}}')
-    manifest = f"/devices/{LCD}/manifest.json?board={LCD}&fw=1.0.0&test_release_key=1"
+    manifest = f"/devices/{LCD}/manifest.json?board={LCD}&fw=1.0.0&test_release_key=1&lcd_diag=1,2,155,25625"
     image = f"/firmware/{LCD}-2.0.0.bin"
     keys = {}
     if password_mode:
@@ -549,6 +549,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
         assert b"Waveshare 4.3B LCD (desk)" in page and b"Waveshare 4.3B LCD (hall)" in page
         csrf = re.search(rb'name="csrf" value="([^"]+)"', page)[1].decode()
     assert b"Board reports TEST RELEASE KEY" in page
+    assert b"LCD scanout" in page and b"1 late restarts" in page and b"2 EOF shortfalls" in page
     fields = {"csrf": csrf, "board": LCD, "version": "2.0.0"}
     if password_mode:
         fields["pairing"] = server.ui.firmware_devices()["desk"]
