@@ -255,3 +255,16 @@ def test_blocked_museum_warns_once_per_refresh(tmp_path, caplog):
     assert len(caplog.records) == 1
     assert caplog.records[0].levelname == 'WARNING'
     assert caplog.records[0].exc_info is not None
+
+
+def test_aic_never_requests_wider_than_the_original():
+    small = fixture('aic_search.json')
+    obj = dict(small['data'][0])
+    obj['thumbnail'] = {**(obj.get('thumbnail') or {}), 'width': 574, 'height': 768}
+    small = {**small, 'data': [obj]}
+    def respond(request):
+        return httpx.Response(200, json=small)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        candidate = AICSource().search('winter', 1, client)[0]
+    assert candidate.width == 574
+    assert '/full/574,/' in candidate.image_url
