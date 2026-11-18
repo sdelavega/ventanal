@@ -34,7 +34,7 @@ int main() {
     assert(fetchManifest(a,w));
     assert(lastUrl.find("bat=0&screen=weather&fw=1.0.0")!=std::string::npos);
     assert(lastUrl.find("frame=")==std::string::npos);
-    assert(lastUserAgent == "Ventanal/1.0.0 (+https://github.com/sdelavega)");
+    assert(lastUserAgent == "Ventanal/1.0.0");
     assert(!a.readout.lcars && w.readout.lcars && w.readout.x==1236);
     assert(a.readout.x==1020 && a.readout.y==0 && a.readout.w==580 && a.readout.h==104);
     assert(std::string(w.id)=="0123456789abcdef");

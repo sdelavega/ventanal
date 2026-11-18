@@ -125,7 +125,7 @@ def test_data_schema_and_cache(tmp_path):
     image=BytesIO(); Image.new('RGB',(16,16),'yellow').save(image,format='JPEG')
     def respond(request):
         count.append(str(request.url))
-        assert request.headers['User-Agent'] == 'Ventanal/1.0.0 (+https://github.com/sdelavega)'
+        assert request.headers['User-Agent'] == 'Ventanal/1.0.0'
         assert 'W1AW' not in str(request.url)
         path=request.url.path
         if path.endswith('.jpg'): return httpx.Response(200,content=image.getvalue())
@@ -194,7 +194,7 @@ def test_fcc_weekly_refresh_and_failure_cleanup(tmp_path):
     requests=[]; fail=False
     def respond(request):
         requests.append(str(request.url))
-        assert request.headers['User-Agent'] == 'Ventanal/1.0.0 (+https://github.com/sdelavega)'
+        assert request.headers['User-Agent'] == 'Ventanal/1.0.0'
         return httpx.Response(503) if fail else httpx.Response(200,content=fixture_zip().getvalue())
     with httpx.Client(transport=httpx.MockTransport(respond),headers={'User-Agent':'wrong-client-default'}) as client:
         assert refresh(tmp_path,client,NOW)

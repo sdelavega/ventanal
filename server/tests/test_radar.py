@@ -14,7 +14,7 @@ import shapefile
 from ventanal.weather.radar import bbox_around, dbz_to_level, fetch_iem
 from ventanal.weather.basemap import basemap
 
-USER_AGENT = 'Ventanal/1.0.0 (+https://github.com/sdelavega)'
+USER_AGENT = 'Ventanal/1.0.0'
 BBOX = (-0.5, -0.5, 3.5, 3.5)
 INDICES = np.array([[0, 104, 105, 134], [135, 164, 165, 255],
                     [105, 135, 165, 0], [104, 134, 164, 165]], dtype=np.uint8)
