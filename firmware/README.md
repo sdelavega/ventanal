@@ -12,53 +12,52 @@ rollback and release signing.
 
 ## Toolchain
 
-Install Arduino CLI and the pinned Soldered board index:
+From the repository root, create a CPython 3.13 virtual environment for
+PlatformIO and the upload helper:
 
 ```sh
-brew install arduino-cli
-arduino-cli config add board_manager.additional_urls https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/17588104356a3a76ce1c9592f2b5a496690d72f8/package_Inkplate_Boards_index.json
-# Dedicated sketchbook avoids scanning unrelated legacy hardware/libraries.
-arduino-cli config set directories.user "$HOME/Library/Arduino15/ventanal-sketchbook"
-arduino-cli core update-index
-arduino-cli core install soldered-inkplate-boards:esp32@4.0.0
-arduino-cli lib install 'InkplateLibrary@11.2.1' 'ArduinoJson@7.4.3'
-server/.venv/bin/pip install pyserial esptool
-arduino-cli board listall | grep -i 13SPECTRA
+python3.13 -m venv firmware/.venv
+firmware/.venv/bin/python -m pip install --require-hashes --only-binary=:all: -r tools/release/requirements-platformio.txt
+firmware/.venv/bin/python -m pip install "esptool>=5,<6"
 ```
+
+The project pins pioarduino `55.03.312-1` (Arduino-ESP32 3.3.12, ESP-IDF 5.5.5),
+InkplateLibrary 11.2.1 and ArduinoJson 7.4.3. The first build downloads the
+toolchain and the checksum-verified Soldered Inkplate_S3 pin header. Set
+`UV_CONSTRAINT` for PlatformIO commands so the platform's inner Python
+environment uses the same CLI version as the outer venv. The custom
+board uses 32 MB octal flash at 80 MHz, octal PSRAM, and UART0 serial with USB CDC
+disabled on boot.
 
 Install the [owner release public key](../docs/updates.md#owner-signing-key)
-before building firmware for a deployed board.
+before building firmware for a deployed board. For a new installation, copy
+`ventanal/config.example.h` to the ignored `ventanal/config.h` and edit it privately.
+Create the ignored `firmware/ventanal/platformio.local.ini` with:
 
-For a new installation, copy `ventanal/config.example.h` to `ventanal/config.h`
-and edit it privately. Compile against your private configuration; never print it
-or log credentials. The example uses
-`http://192.168.0.10:8765`; the secure example is `https://192.168.0.10:8766`.
-
-Base FQBN: `soldered-inkplate-boards:esp32:Inkplate13SPECTRA`.
-Use the explicit hardware options:
-
-```sh
-FQBN='soldered-inkplate-boards:esp32:Inkplate13SPECTRA:FlashSize=32M,FlashMode=opi,PSRAM=opi,PartitionScheme=custom,DebugLevel=none'
+```ini
+[inkplate]
+private_flags = -DVENTANAL_INSTALLATION_CONFIG=config.h
 ```
 
-**Upload with `firmware/tools/upload.py`, using Python with esptool installed.**
-This core hardcodes app `0x10000` and OTA metadata `0xe000` in its standard
-Arduino uploader, merged image and flash_args. Our mandatory table instead has
-app `0x20000` and otadata `0xf000`. The helper validates the generated binary
-partition table and image sizes, then writes bootloader at 0, table at 0x8000,
-OTA metadata at 0xf000 and app at 0x20000. It never erases the filesystem.
-Do not use the stock uploader, merged image or generated flash_args for this
-layout. Optional compile properties
-`--build-property recipe.hooks.objcopy.postobjcopy.3.pattern=/usr/bin/true`
-and `--build-property recipe.hooks.objcopy.postobjcopy.4.pattern=/usr/bin/true`
-skip those unused artifacts.
+With no local config selected, the build uses the public example and needs
+installation settings already provisioned in NVS. See
+[wireless firmware updates](../docs/updates.md#one-time-wired-setup) for provisioning.
 
-32 MB flash, OPI flash at 80 MHz, OPI PSRAM (16 MB fitted), UART0 serial,
-CDC on boot disabled. `PartitionScheme=custom` selects the sketch's CSV;
-the build's application-size limit is overridden to 4194304 below to match its
-4 MiB OTA slots.
+From the repository root, build and upload with the board's serial port:
 
-The local `partitions.csv` overrides the menu partition table. NVS: 0x9000/24K;
+```sh
+export UV_CONSTRAINT="$PWD/tools/release/platformio-constraints.txt"
+firmware/.venv/bin/pio run -d firmware/ventanal -e normal && \
+  firmware/.venv/bin/python firmware/tools/upload.py firmware/ventanal/.pio/build/normal --port /dev/cu.YOUR_BOARD
+```
+
+Use the project upload helper for wired installs. It checks the generated
+partition table and image sizes before writing the bootloader at `0x0`, the
+partition table at `0x8000`, the OTA selector at `0xf000` and the app at
+`0x20000`. It preserves NVS and LittleFS. Add `--dry-run` to validate the
+images and see the command without opening the serial port.
+
+NVS: 0x9000/24K;
 otadata at 0xf000/8K, `ota_0` at 0x20000/4M, `ota_1` at 0x420000/4M,
 LittleFS at 0x820000/0x17d0000, and coredump at 0x1ff0000/64K.
 Moving from the factory layout requires a wired upload to seed `ota_0`.
@@ -74,25 +73,25 @@ retry while the image is still pending.
 
 ## Modes and hardware checks
 
-Use build properties to select a mode without editing private configuration.
-All diagnostic flags default to zero. Build each mode into its own temporary
-build directory; upload the exact build just compiled. Do not commit build output.
+Use `normal` for an owner-key build and `bench` for an isolated build with the
+checked-in test key. `diag` requires the owner key and enables GitHub OTA
+checks. Each environment writes to its own directory under `.pio/build`.
 
-```sh
-# Normal firmware:
-arduino-cli compile --fqbn "$FQBN" --build-property upload.maximum_size=4194304 --build-path /tmp/ventanal-cache firmware/ventanal
-server/.venv/bin/python firmware/tools/upload.py /tmp/ventanal-cache
-# Full wake cycle with 60-second diagnostic sleeps:
-arduino-cli compile --fqbn "$FQBN" --build-property upload.maximum_size=4194304 --build-path /tmp/ventanal-wake --build-property 'compiler.cpp.extra_flags=-DVENTANAL_WAKETEST=1' firmware/ventanal
-# WAKETEST=2 also simulates the application button path on timer wake 2.
-# Serial explicitly identifies the simulation; GPIO18 still needs an owner check.
+For a full wake diagnostic with 60-second sleeps, add this option in the
+`[inkplate]` section of your ignored local INI and build `diag`:
+
+```ini
+diag_flags = -DVENTANAL_WAKETEST=1
 ```
 
-Serial is 115200 baud. Capture with a Python environment containing pyserial:
+`VENTANAL_WAKETEST=2` also simulates the app's button path on timer wake 2.
+Serial identifies the simulation. The physical GPIO18 button needs a separate
+check. Upload the build from the environment you compiled.
+
+Serial is 115200 baud. Capture with the Python environment created above:
 
 ```sh
-server/.venv/bin/pip install pyserial esptool
-server/.venv/bin/python firmware/tools/capture_serial.py --reset --seconds 100
+firmware/.venv/bin/python firmware/tools/capture_serial.py --reset --seconds 100
 ```
 
 Opening the port may reset the board. Keep one capture open across the 60-second
@@ -156,11 +155,9 @@ and commit, plus read/write/check phase timings; the combined sketch download
 timer excludes the separately reported manifest request. Art and weather
 commit independently, so losing one download does not lose the other cache.
 
-To simulate interruption after a good cache exists:
-
-```sh
-arduino-cli compile --fqbn "$FQBN" --build-property upload.maximum_size=4194304 --build-path /tmp/ventanal-abort --build-property 'compiler.cpp.extra_flags=-DVENTANAL_ABORT_AFTER_BYTES=100000' firmware/ventanal
-```
+To simulate interruption after a good cache exists, set
+`diag_flags = -DVENTANAL_ABORT_AFTER_BYTES=100000` in the local INI and build
+the `diag` environment.
 
 Upload that build with a changed/missing frame to exercise its download branch.
 It aborts at exactly 100000 bytes, leaving the partial `.tmp`. A failed transfer
@@ -199,13 +196,15 @@ TZ temporarily set to UTC, then the configured POSIX TZ is restored.
 ## Host checks and cleanup
 
 ```sh
+export UV_CONSTRAINT="$PWD/tools/release/platformio-constraints.txt"
+firmware/.venv/bin/pio pkg install -d firmware/ventanal -e bench
 make -C firmware/test test
 make -C firmware/test clean
-rm -rf /tmp/ventanal-cache /tmp/ventanal-pattern /tmp/ventanal-wake /tmp/ventanal-abort
 ```
 
-The manifest host test also uses the installed ArduinoJson 7 headers; override
-`ARDUINOJSON=/path/to/ArduinoJson/src` in make if installed elsewhere.
+Host tests use the ArduinoJson headers from a project's PlatformIO environment.
+If the headers are installed elsewhere, pass
+`ARDUINOJSON=/path/to/ArduinoJson/src` to make.
 
 Host cache builds reject stack frames over 2048 bytes. The firmware reports
 minimum free loop-task stack before sleeping; buffer sizes leave room for nested
@@ -286,8 +285,9 @@ only the temporary download and keeps the committed cache. The 30-second frame
 cap and 180-second wake watchdog remain in force. Serial logs show request
 handshake/header and total transfer timings without keys or proof contents.
 
-For an isolated diagnostic build only, pass
-`--build-property compiler.cpp.extra_flags=-DVENTANAL_SECURITY_CONFIG=/absolute/path/diagnostic.h`.
+For an isolated diagnostic build, add
+`-DVENTANAL_SECURITY_CONFIG=/absolute/path/diagnostic.h` to `diag_flags` in
+the local INI.
 That private header can `#undef VENTANAL_HOST_URL` and supply disposable TLS/key
 values without editing `config.h`. Use a new force-provision revision if the diagnostic build needs to replace
 stored settings. Omit the diagnostic header for a release build.

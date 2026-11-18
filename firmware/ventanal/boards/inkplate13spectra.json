@@ -1,0 +1,42 @@
+{
+  "name": "INKPLATE13SPECTRA",
+  "vendor": "Soldered Electronics",
+  "url": "https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE",
+  "frameworks": ["arduino"],
+  "build": {
+    "arduino": {
+      "memory_type": "opi_opi"
+    },
+    "boot": "opi",
+    "core": "esp32",
+    "extra_flags": [
+      "-DARDUINO_INKPLATE13SPECTRA",
+      "-DCORE_DEBUG_LEVEL=0",
+      "-DBOARD_HAS_PSRAM",
+      "-DARDUINO_USB_MODE=1",
+      "-DARDUINO_USB_CDC_ON_BOOT=0",
+      "-DARDUINO_USB_MSC_ON_BOOT=0",
+      "-DARDUINO_USB_DFU_ON_BOOT=0",
+      "-DARDUINO_RUNNING_CORE=1",
+      "-DARDUINO_EVENT_RUNNING_CORE=1"
+    ],
+    "f_boot": "80000000L",
+    "f_cpu": "240000000L",
+    "f_flash": "80000000L",
+    "flash_mode": "dout",
+    "mcu": "esp32s3",
+    "variant": "Inkplate_S3",
+    "variants_dir": ".pio/variants"
+  },
+  "upload": {
+    "arduino": {
+      "boot_app0": "0xf000"
+    },
+    "flash_size": "32MB",
+    "maximum_ram_size": 327680,
+    "maximum_size": 4194304,
+    "speed": 921600,
+    "use_1200bps_touch": false,
+    "wait_for_upload_port": false
+  }
+}

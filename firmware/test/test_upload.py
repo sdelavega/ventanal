@@ -20,8 +20,8 @@ def build(tmp_path):
         struct.pack("<HBBII16sI", 0x50AA, *values, name.encode(), 0)
         for name, values in upload.EXPECTED.items()
     )
-    (tmp_path / "ventanal.ino.partitions.bin").write_bytes(table)
-    for name in ("ventanal.ino.bootloader.bin", "boot_app0.bin", "ventanal.ino.bin"):
+    (tmp_path / "partitions.bin").write_bytes(table)
+    for name in ("bootloader.bin", "boot_app0.bin", "firmware.bin"):
         (tmp_path / name).write_bytes(b"test")
     return tmp_path
 
@@ -34,7 +34,7 @@ def test_custom_offsets(build):
 
 
 def test_reject_wrong_table(build):
-    table = build / "ventanal.ino.partitions.bin"
+    table = build / "partitions.bin"
     data = bytearray(table.read_bytes())
     struct.pack_into("<I", data, 2 * 32 + 4, 0x10000)
     table.write_bytes(data)
@@ -43,7 +43,7 @@ def test_reject_wrong_table(build):
 
 
 def test_reject_oversize_app(build):
-    (build / "ventanal.ino.bin").write_bytes(b"x" * (0x400000 + 1))
+    (build / "firmware.bin").write_bytes(b"x" * (0x400000 + 1))
     with pytest.raises(ValueError, match="image size"):
         upload.flash_command(build, "/dev/test")
 

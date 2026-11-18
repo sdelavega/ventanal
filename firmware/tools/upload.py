@@ -19,7 +19,7 @@ EXPECTED = {
 
 
 def flash_command(build: Path, port: str) -> list[str]:
-    table = (build / "ventanal.ino.partitions.bin").read_bytes()
+    table = (build / "partitions.bin").read_bytes()
     entries = {}
     for pos in range(0, len(table) - 31, 32):
         magic, kind, subtype, offset, size, label, _ = struct.unpack_from("<HBBII16sI", table, pos)
@@ -32,10 +32,10 @@ def flash_command(build: Path, port: str) -> list[str]:
     if entries != EXPECTED:
         raise ValueError("build partition table does not match Ventanal's 32 MB layout")
     images = [
-        (0, "ventanal.ino.bootloader.bin", 0x8000),
-        (0x8000, "ventanal.ino.partitions.bin", 0x1000),
+        (0, "bootloader.bin", 0x8000),
+        (0x8000, "partitions.bin", 0x1000),
         (entries["otadata"][2], "boot_app0.bin", entries["otadata"][3]),
-        (entries["ota_0"][2], "ventanal.ino.bin", entries["ota_0"][3]),
+        (entries["ota_0"][2], "firmware.bin", entries["ota_0"][3]),
     ]
     command = [sys.executable, "-m", "esptool", "--chip", "esp32s3", "--port", port,
                "--baud", "921600", "--before", "default-reset", "--after", "hard-reset",
