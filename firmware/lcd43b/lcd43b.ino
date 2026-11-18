@@ -29,6 +29,7 @@
 #include <esp_sleep.h>
 #include <esp_heap_caps.h>
 #include <esp_app_desc.h>
+#include <esp_system.h>
 #include <esp_ota_ops.h>
 #include <sdkconfig.h>
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
@@ -206,6 +207,9 @@ uint32_t vsyncReportFrames = 0;
 uint32_t stressStartMs = 0;
 unsigned stressCycles = 0;
 #ifdef VENTANAL_LCD_DIAG_F3
+#ifdef VENTANAL_LCD_DIAG_DIM
+unsigned dimStep = 0;
+#endif
 unsigned stressSettingsCycles = 0;
 bool stressSettingsOpen = false;
 bool scanOtherCore = false;
@@ -614,6 +618,7 @@ int drawLocalScene(Paint paint, lcd::ReadoutRect damage = {}) {
             stored = page->copyBand(*localPages[displayedLocal], y, CanvasRows);
         } else {
             paint(lcd::SettingsSurface{canvas, y, CanvasRows});
+            lcd::dimScanPixels(canvas, lcd::WIDTH * CanvasRows, settings.brightness / 25);
             stored = page->encodeBand(canvas, y, CanvasRows);
         }
         if (!stored) {
@@ -661,9 +666,12 @@ bool presentScreen(const uint16_t* source, bool localSettings = false,
         if (!localSettings && !lcd::isLcarsSlot(clockSlot)) copyPatch(pixels, source, r);
         const bool valid = renderClock(pixels);
         if (clockValid) *clockValid = valid;
+        if (local >= 0) lcd::dimScanPixels(pixels, r.w * r.h, settings.brightness / 25);
         scene.patches[2] = {r, pixels};
     }
-    panel.present(sceneIndex, scene, settings.brightness);
+    // Local bands and their clock patch are already dimmed. Keep both
+    // raster decompression and pixel-by-pixel scaling out of one ISR pass.
+    panel.present(sceneIndex, scene, local >= 0 ? 100 : settings.brightness);
     displayedLocal = local;
     return true;
 }
@@ -1284,10 +1292,13 @@ bool applyDeviceSettings(const lcd::DeviceSettings& next, lcd::SettingsHit hit) 
     const int previous=screenSlot(screenIndex);
     const bool visibilityChanged=next.showArt!=settings.showArt || next.showWeather!=settings.showWeather
         || next.showSolar!=settings.showSolar;
+#ifndef VENTANAL_LCD_DIAG_DIM
     settingsDirty = installationReady;
+#endif
+    const bool brightnessChanged = settings.brightness != next.brightness;
     settings=next;
     lcd::remapSelection(screenIndex,spareCursor,previous,solarPublished(),spareCount(),settings);
-    showSettings(lcd::settingsDamage(hit));
+    showSettings(brightnessChanged ? lcd::ReadoutRect{} : lcd::settingsDamage(hit));
     if(visibilityChanged) settingsRefreshPending=true;
     return true;
 }
@@ -1660,8 +1671,12 @@ void probeLitWrites(uint32_t now) {
 #if defined(VENTANAL_LCD_DIAG_F3) && defined(VENTANAL_LCD_DIAG_INSTALL_VERSION)
 void probeBusyInstall() {
     static unsigned phase = 0;
-    if (phase >= 2 || stressProfile != 2 || stressCycles != 90 || writeProbeCount != 60
-        || strcmp(hostOffer.version, VENTANAL_LCD_DIAG_INSTALL_VERSION)
+#ifdef VENTANAL_LCD_DIAG_DIM
+    const bool ready = dimStep == 100;
+#else
+    const bool ready = stressProfile == 2 && stressCycles == 90 && writeProbeCount == 60;
+#endif
+    if (phase >= 2 || !ready || strcmp(hostOffer.version, VENTANAL_LCD_DIAG_INSTALL_VERSION)
         || refreshBusy || !backlightState) return;
     if (phase == 0 && !startRefresh(true)) return;
     handleGesture(Gesture::Next, 600, 20);
@@ -1807,7 +1822,20 @@ void setup() {
     show(screenIndex);            // cached frame, or the waiting screen
 #ifdef VENTANAL_LCD_DIAG_PANEL
 #ifdef VENTANAL_LCD_DIAG_F3
-#ifdef VENTANAL_LCD_DIAG_WRITE_ONLY
+#ifdef VENTANAL_LCD_DIAG_DIM
+    stressCycles = 90;
+    stressSettingsCycles = 20;
+    const auto reset = esp_reset_reason();
+    if (reset == ESP_RST_INT_WDT || reset == ESP_RST_PANIC) {
+        dimStep = 101;
+        lcd::log("diag dim=aborted after watchdog or panic\n");
+    } else if (!Panel::verifyDimming()) {
+        dimStep = 101;
+        lcd::log("diag dim=aborted RGB565 reference mismatch\n");
+    } else {
+        lcd::log("diag dim=start RGB565 exhaustive=pass\n");
+    }
+#elif defined(VENTANAL_LCD_DIAG_WRITE_ONLY)
     stressProfile = 2;
     stressCycles = 90;
     stressSettingsCycles = 20;
@@ -1865,6 +1893,36 @@ void loop() {
 #ifdef VENTANAL_LCD_DIAG_PANEL
     panelVsyncReport(now);
     panel.reportBounce(now);
+#ifdef VENTANAL_LCD_DIAG_DIM
+    if (dimStep < 100 && now - stressStartMs >= (dimStep + 1) * 600u) {
+        switch (dimStep % 5) {
+        case 0:
+            if (!refreshBusy) startRefresh(true);
+            handleGesture(Gesture::Next, 600, 20);
+            break;
+        case 1:
+            handleGesture(Gesture::Next, 590, 108); // 75% Settings
+            break;
+        case 2:
+            handleGesture(Gesture::Next, 690, 410); // 75% resident page
+            break;
+        case 3:
+            handleGesture(Gesture::Next, 600, 20);
+            break;
+        case 4:
+            handleGesture(Gesture::Next, 720, 108); // restore 100%
+            handleGesture(Gesture::Next, 690, 410);
+            lcd::log("diag dim cycle=%u\n", dimStep / 5 + 1);
+            break;
+        }
+        if (++dimStep == 100) {
+            const auto health = panel.health();
+            lcd::log("diag dim=done restart=%u short=%u peak_us=%u gap_us=%u\n",
+                     unsigned(health.lateRestarts), unsigned(health.shortFrames),
+                     unsigned(health.maxFillUs), unsigned(health.maxVsyncGapUs));
+        }
+    }
+#endif
 #ifdef VENTANAL_LCD_DIAG_F3
     if (stressSettingsCycles < 20) {
         const uint32_t base = 2000 * (stressSettingsCycles + 1);

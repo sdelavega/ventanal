@@ -29,6 +29,9 @@ public:
         (VSyncPulse + VBackPorch + VFrontPorch) * LineClocks * 1000000ull / Pclk;
     static_assert(HEIGHT % BounceRows == 0);
 
+#ifdef VENTANAL_LCD_DIAG_DIM
+    static bool verifyDimming();
+#endif
     static void setInterruptLevel(int level);
     bool begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observer = nullptr);
     bool stop();

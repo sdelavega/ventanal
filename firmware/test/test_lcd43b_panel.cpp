@@ -44,6 +44,11 @@ esp_err_t esp_lcd_rgb_panel_register_event_callbacks(esp_lcd_panel_handle_t,
 } // extern "C"
 
 int main() {
+    alignas(uint32_t) uint16_t unalignedDim[] = {0x1234, 0xf800, 0x07e0, 0x001f, 0xffff};
+    lcd::dimScanPixels(unalignedDim + 1, 3, 3);
+    assert(unalignedDim[0] == 0x1234 && unalignedDim[1] == 0xb800 && unalignedDim[2] == 0x05e0
+           && unalignedDim[3] == 0x0017 && unalignedDim[4] == 0xffff);
+
     auto panel = std::make_unique<Panel>();
     assert(panel->begin([](bool) { return true; }));
     assert(cfg.flags.no_fb && cfg.num_fbs == 0 && events.on_bounce_empty);

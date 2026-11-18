@@ -28,17 +28,34 @@ struct ScanFrame {
 // Scale two packed RGB565 pixels. Separate the lowest two bits of each
 // channel before multiplying so the 5/6-bit fields cannot carry into
 // their neighbours. The final add restores floor(remainder * n / 4).
-inline uint32_t dimScanPair(uint32_t pair, unsigned n) {
+__attribute__((always_inline)) inline uint32_t dimScanPair(uint32_t pair, unsigned n) {
     constexpr uint32_t lowBits = 0x18631863;
     constexpr uint32_t carryBits = lowBits << 2;
     return (((pair & ~lowBits) >> 2) * n) +
            ((((pair & lowBits) * n) & carryBits) >> 2);
 }
 
+__attribute__((always_inline)) inline void dimScanPixels(uint16_t* out, int count, unsigned quarters) {
+    if (quarters >= 4) return;
+    if (count && (reinterpret_cast<uintptr_t>(out) & 2)) {
+        *out = uint16_t(dimScanPair(*out, quarters));
+        ++out;
+        --count;
+    }
+    // A four-byte memcpy per word can stay out of line on Xtensa.
+    // The alias type permits aligned word access to the RGB565 array.
+    typedef uint32_t ScanWord __attribute__((may_alias));
+    auto* words = reinterpret_cast<ScanWord*>(out);
+    for (int i = 0; i < count / 2; ++i)
+        words[i] = dimScanPair(words[i], quarters);
+    if (count & 1) out[count - 1] = uint16_t(dimScanPair(out[count - 1], quarters));
+}
+
 // IDF supplies a pixel offset. The configured buffer size is an integral
 // number of rows and divides the entire frame.
 __attribute__((always_inline)) inline void finishScanRows(uint16_t* out, const ScanFrame& frame,
-                                                           int width, int offset, int bytes) {
+                                                           int width, int offset, int bytes,
+                                                           bool dim = true) {
     const int count = bytes / int(sizeof(*out));
     const int first = offset / width;
     const int end = first + count / width;
@@ -51,16 +68,7 @@ __attribute__((always_inline)) inline void finishScanRows(uint16_t* out, const S
             memcpy(out + (y - first) * width + r.x,
                    patch.pixels + (y - r.y) * r.w, r.w * sizeof(*out));
     }
-    if (frame.brightnessQuarters < 4) {
-        // The DMA buffer and every 800-pixel row are word-aligned.
-        auto* words = static_cast<uint16_t*>(__builtin_assume_aligned(out, 4));
-        for (int i = 0; i < count; i += 2) {
-            uint32_t pair;
-            memcpy(&pair, words + i, sizeof(pair));
-            pair = dimScanPair(pair, frame.brightnessQuarters);
-            memcpy(words + i, &pair, sizeof(pair));
-        }
-    }
+    if (dim) dimScanPixels(out, count, frame.brightnessQuarters);
 }
 
 }  // namespace lcd

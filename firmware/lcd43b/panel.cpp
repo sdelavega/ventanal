@@ -46,6 +46,51 @@ extern "C" esp_err_t __wrap_esp_intr_alloc_intrstatus(int source, int flags, uin
 void Panel::setInterruptLevel(int level) { rgbLevel = level; }
 #endif
 
+#if defined(CONFIG_IDF_TARGET_ESP32S3)
+extern "C" void lcdDimRgb565Vectors(uint16_t*, int, unsigned, const uint32_t*);
+
+namespace {
+alignas(16) DRAM_ATTR const uint32_t DimMasks[] = {
+    0x7bef7bef, 0x7bef7bef, 0x7bef7bef, 0x7bef7bef,
+    0x39e739e7, 0x39e739e7, 0x39e739e7, 0x39e739e7,
+    0x08210821, 0x08210821, 0x08210821, 0x08210821,
+    0x80008000, 0x80008000, 0x80008000, 0x80008000,
+};
+
+__attribute__((always_inline))
+inline void dimDmaPixels(uint16_t* pixels, int count, unsigned quarters) {
+    if (quarters >= 4) return;
+    while (count && (reinterpret_cast<uintptr_t>(pixels) & 15)) {
+        *pixels = uint16_t(lcd::dimScanPair(*pixels, quarters));
+        ++pixels;
+        --count;
+    }
+    const int vectors = count / 8;
+    if (vectors) lcdDimRgb565Vectors(pixels, vectors, quarters, DimMasks);
+    lcd::dimScanPixels(pixels + vectors * 8, count % 8, quarters);
+}
+} // namespace
+
+#ifdef VENTANAL_LCD_DIAG_DIM
+bool Panel::verifyDimming() {
+    alignas(16) uint16_t test[16];
+    for (unsigned q = 1; q < 4; ++q) {
+        for (unsigned i = 0; i < 65536; i += 16) {
+            for (unsigned j = 0; j < 16; ++j) test[j] = i + j;
+            dimDmaPixels(test, 16, q);
+            for (unsigned j = 0; j < 16; ++j) {
+                const unsigned rgb = i + j;
+                const unsigned expected = ((rgb >> 11) * q / 4 << 11)
+                    | (((rgb >> 5) & 63) * q / 4 << 5) | ((rgb & 31) * q / 4);
+                if (test[j] != expected) return false;
+            }
+        }
+    }
+    return true;
+}
+#endif
+#endif
+
 bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observer) {
     if (panel_) return true;
     setLcdReset(true);
@@ -239,8 +284,10 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
                                          bytes / (WIDTH * sizeof(uint16_t)));
     else if (scene.pixels) memcpy(buffer, scene.pixels + pos, bytes);
     else memset(buffer, 0, bytes);
-    lcd::finishScanRows(static_cast<uint16_t*>(buffer), scene, WIDTH, pos, bytes);
+    auto* pixelsOut = static_cast<uint16_t*>(buffer);
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
+    lcd::finishScanRows(pixelsOut, scene, WIDTH, pos, bytes, false);
+    dimDmaPixels(pixelsOut, bytes / sizeof(*pixelsOut), scene.brightnessQuarters);
     // Warm the first cache lines of the next section while DMA drains this
     // one, leaving cache space for other work and staying inside the frame.
     constexpr unsigned BounceBytes = WIDTH * BounceRows * sizeof(uint16_t);
@@ -251,6 +298,8 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     if (pixels)
         Cache_Start_DCache_Preload(uint32_t(uintptr_t(pixels + next % (WIDTH * HEIGHT))),
                                   PreloadBytes, 0);
+#else
+    lcd::finishScanRows(pixelsOut, scene, WIDTH, pos, bytes);
 #endif
 #ifndef VENTANAL_HOST_TEST
     const uint32_t elapsed = uint32_t(esp_timer_get_time()) - start;
