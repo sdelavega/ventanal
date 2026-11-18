@@ -6,3 +6,6 @@ __pycache__/
 .venv/
 *.egg-info/
 build/
+
+# Design notes live in the private ventanal-notes repository (linked here locally).
+docs/superpowers
