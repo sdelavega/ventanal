@@ -3,4 +3,6 @@
 
 """Ventanal e-paper render service."""
 
-USER_AGENT = "Ventanal/1.0.0 (+https://github.com/sdelavega/ventanal)"
+# api.weather.gov answers 403 to any User-Agent containing the repository
+# path "sdelavega/ventanal" (measured 2026-11-17), so link the profile instead.
+USER_AGENT = "Ventanal/1.0.0 (+https://github.com/sdelavega)"
