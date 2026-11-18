@@ -82,7 +82,7 @@ int main() {
         assert(!boot.screens[2].present && boot.spareCount == 0);
         lcd::loadPublishShape(prefs, boot);
         assert(boot.screens[2].present && boot.spareCount == 3);
-        int slots[6]; assert(lcd::activeSlots(true,3,lcd::DeviceSettings{},slots,6)==6);   // selection can normalise
+        int slots[6]; assert(lcd::activeSlots(true,3,lcd::DeviceSettings{},slots,6)==3);   // selection can normalise
     }
     {   // Offline reboot: only NVS and the RTC time are available, no fetch.
         freshNvs();

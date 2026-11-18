@@ -102,11 +102,16 @@ def test_cli_skipped(setup_job,monkeypatch,capsys):
     assert '[ignored]' in capsys.readouterr().out
 
 
-def test_http_skip_get_only_and_idempotent(tmp_path):
+@pytest.mark.parametrize("route", ["/manifest.json", "/devices/lcd43b/manifest.json", "/devices/lcd43b-1/manifest.json"])
+def test_http_skip_get_only_and_idempotent(tmp_path, route):
     from http.client import HTTPConnection
     from threading import Thread
     from ventanal.serve import make_server
     out=tmp_path/'out'; out.mkdir(); (out/'manifest.json').write_text('{"version":1}')
+    device = out/'devices'/'lcd43b'; device.mkdir(parents=True)
+    (device/'manifest.json').write_text('{"version":1}')
+    alternate = out/'devices'/'lcd43b-1'; alternate.mkdir()
+    (alternate/'manifest.json').write_text('{"version":1}')
     cache=tmp_path/'cache'; store=OwnerStore(cache)
     c=Candidate('met','1','Snow','Artist','1900','Met','url',1800,1200,kind='painting')
     ArtPool(cache/'art.sqlite3').add([c],'winter')
@@ -116,7 +121,7 @@ def test_http_skip_get_only_and_idempotent(tmp_path):
     try:
         for method in ['HEAD','POST','GET','GET']:
             conn=HTTPConnection(*server.server_address)
-            conn.request(method,'/manifest.json?skips='+('a'*16)+'~'+('b'*16)+',bad')
+            conn.request(method,route+'?skips='+('a'*16)+'~'+('b'*16)+',bad')
             response=conn.getresponse(); response.read(); conn.close()
             assert response.status==(200 if method=='GET' else 501)
             assert len(store.skipped())==(1 if method=='GET' else 0)
@@ -188,3 +193,45 @@ def test_cli_force_spares(setup_job, monkeypatch):
     monkeypatch.setattr(jobs, 'tick', tick)
     cli.main(['tick', '--force-art', '--force-spares'])
     assert calls == [{'force_art': True, 'force_spares': True, 'force_weather': False}]
+
+
+def test_lcd_variant_uses_shared_owner_feedback(tmp_path):
+    store = OwnerStore(tmp_path)
+    old = Candidate('met','1','Old','Artist','1900','Met','url',1800,1200,kind='painting')
+    new = replace(old, object_id='2', title='New')
+    ArtPool(tmp_path/'art.sqlite3').add([old,new],'winter')
+    store.register('a'*16, old)
+    store.put_spare(0, {'id':'b'*16}, new)
+    store.register_variant('c'*16,'a'*16)
+    store.register_variant('d'*16,'b'*16)
+    assert store.record('c'*16,'d'*16,NOW)
+    assert not store.record('c'*16,'d'*16,NOW)
+    assert store.skipped()[0]['object_id']=='1'
+    assert store.spares()[0][-1]
+
+
+def test_lcd_publication_registers_frame_ids_for_skip_feedback(tmp_path, monkeypatch):
+    from PIL import Image
+    from ventanal.devices import lcd43b
+    from ventanal.manifest import write_manifest
+    cfg = replace(load_config(Path('ventanal.example.toml')),
+                  cache_dir=tmp_path/'cache', output_dir=tmp_path/'out')
+    store = OwnerStore(cfg.cache_dir)
+    old = Candidate('met','1','Old','Artist','1900','Met','url',1800,1200,kind='painting')
+    new = replace(old, object_id='2', title='New')
+    ArtPool(cfg.cache_dir/'art.sqlite3').add([old,new],'winter')
+    store.register('a'*16,old)
+    store.put_spare(0,{'id':'b'*16},new)
+    write_manifest(cfg.output_dir, {'version':1,'screens':{'art':{'id':'a'*16}},
+                                  'spares':[{'id':'b'*16,'credit':asdict(new)}]})
+    monkeypatch.setattr(lcd43b,'_render_screen',lambda *a: Image.new('RGB',(800,480)))
+    monkeypatch.setattr(lcd43b,'_art_image',lambda *a: Image.new('RGB',(800,480),'white'))
+    monkeypatch.setattr(lcd43b,'_solar_allowed',lambda *a: False)
+    with httpx.Client() as client:
+        manifest=lcd43b.tick(cfg,NOW,client)
+    skipped=manifest['screens']['art']['id']
+    shown=manifest['spares'][0]['id']
+    assert skipped!='a'*16 and shown!='b'*16
+    assert store.record(skipped,shown,NOW)
+    assert store.skipped()[0]['object_id']=='1'
+    assert store.spares()[0][-1]

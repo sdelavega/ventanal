@@ -40,6 +40,8 @@ class OwnerStore:
                     slot INTEGER PRIMARY KEY, entry TEXT NOT NULL,
                     source TEXT NOT NULL, object_id TEXT NOT NULL, replace_due INTEGER NOT NULL DEFAULT 0);
                 CREATE TABLE IF NOT EXISTS ignore_replacements (slot INTEGER PRIMARY KEY);
+                CREATE TABLE IF NOT EXISTS frame_variants (
+                    frame_id TEXT PRIMARY KEY, canonical_id TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS skip_events (
                     skipped TEXT NOT NULL, shown TEXT NOT NULL, time TEXT NOT NULL,
                     metadata TEXT NOT NULL, PRIMARY KEY(skipped, shown));
@@ -52,6 +54,13 @@ class OwnerStore:
         with closing(self.connect()) as db, db:
             db.execute('INSERT OR IGNORE INTO published_art VALUES (?,?)',
                        (ident, json.dumps(asdict(candidate))))
+
+    def register_variant(self, ident, canonical):
+        """Keep device raster ids tied to the shared owner artwork identity."""
+        with closing(self.connect()) as db, db:
+            db.execute('INSERT OR IGNORE INTO published_art SELECT ?, metadata FROM published_art WHERE frame_id=?',
+                       (ident, canonical))
+            db.execute('INSERT OR REPLACE INTO frame_variants VALUES (?,?)', (ident, canonical))
 
     def spares(self):
         with closing(self.connect()) as db:
@@ -89,8 +98,10 @@ class OwnerStore:
             candidate = json.loads(new[0])
             db.execute('UPDATE artworks SET last_shown=? WHERE source=? AND object_id=?',
                        (now.isoformat(), candidate['source'], candidate['object_id']))
+            variant = db.execute('SELECT canonical_id FROM frame_variants WHERE frame_id=?', (shown,)).fetchone()
+            canonical_shown = variant[0] if variant else shown
             for slot, entry in db.execute('SELECT slot, entry FROM spare_slots').fetchall():
-                if json.loads(entry)['id'] == shown:
+                if json.loads(entry)['id'] == canonical_shown:
                     # A board skip is an independent replacement reason.
                     db.execute('DELETE FROM ignore_replacements WHERE slot=?', (slot,))
                     db.execute('UPDATE spare_slots SET replace_due=1 WHERE slot=?', (slot,))

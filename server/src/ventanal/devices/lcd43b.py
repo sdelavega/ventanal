@@ -198,6 +198,9 @@ def tick(cfg, now, client) -> dict:
     out = device_dir(cfg)
     base_url = device_url(cfg)
     previous = _read_device_manifest(out)
+    from ventanal.owner import OwnerStore
+    owner = OwnerStore(cfg.cache_dir)
+    canonical = read_manifest(cfg.output_dir)
     screens = previous.get('screens') if isinstance(previous.get('screens'), dict) else {}
     screens = dict(screens)
     # Stale entries published under a previous device id are unreachable.
@@ -208,6 +211,10 @@ def tick(cfg, now, client) -> dict:
             screens[name] = _publish_frame(out, base_url, name,
                                            encode_frame(_render_screen(cfg, name, now, client)),
                                            now)
+            if name == 'art':
+                main = canonical.get('screens', {}).get('art', {})
+                if main.get('id'):
+                    owner.register_variant(screens[name]['id'], main['id'])
         except Exception as exc:
             log.warning('lcd43b %s render failed; previous frame retained: %s',
                         name, exc)
@@ -247,7 +254,11 @@ def _render_spares(cfg, now, client, out, base_url) -> list:
         try:
             image = _art_image(cfg, client, credit)
             data = encode_frame(render_art(image, credit))
-            spares.append(_publish_frame(out, base_url, f'spare{index}', data, now))
+            published = _publish_frame(out, base_url, f'spare{index}', data, now)
+            from ventanal.owner import OwnerStore
+            if entry.get('id'):
+                OwnerStore(cfg.cache_dir).register_variant(published['id'], entry['id'])
+            spares.append(published)
         except Exception as exc:
             if index < len(previous):
                 spares.append(previous[index])

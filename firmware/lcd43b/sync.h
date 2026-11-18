@@ -131,7 +131,8 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
-                const DeviceSettings& settings = DeviceSettings{});
+                const DeviceSettings& settings = DeviceSettings{},
+                const char* skips = "");
 
 // Apply a finished pass to the live state (single writer: the main loop).
 // Persists the validated quiet window and publish shape, normalises the

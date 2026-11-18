@@ -116,6 +116,11 @@ board connects, obtains the manifest, caches frames and displays its selection.
   classification timing and debounce rules are in the
   [firmware guide](firmware/README.md#wake-button-gestures).
 
+On the LCD, tap right/left to rotate art → weather → published solar (or back).
+Double tap swaps the art through cached spares and back to the main painting,
+then opens Art. Skips survive reboots and report on the next online refresh.
+Art off hides artwork and makes double tap a no-op. Hold for 1.5 seconds to refresh.
+
 Art changes on configured seasonal slots. Weather includes current conditions,
 seven-day forecast, alerts and radar. Solar appears only after the local ham
 licence check succeeds. Quiet hours suppress scheduled wakes; button actions

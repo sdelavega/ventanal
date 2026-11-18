@@ -73,10 +73,10 @@ bool syncTime(Watchdog& watchdog) {
 }
 
 bool fetchManifest(const char* hostUrl, const char* deviceId,
-                   DeviceManifest& out, Watchdog& watchdog) {
+                   DeviceManifest& out, Watchdog& watchdog, const char* skips) {
     HTTPClient http;
     const String url = String(hostUrl) + "/devices/" + deviceId
-                     + "/manifest.json";
+                     + "/manifest.json" + (skips[0] ? String("?skips=")+skips : String());
     http.begin(url);
     // Connection-close framing: never keep-alive, so a persistent-capable
     // HTTP/1.1 server hangs up after the body instead of holding the
@@ -215,12 +215,12 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
-                const DeviceSettings& settings) {
+                const DeviceSettings& settings, const char* skips) {
     result = RefreshResult{};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
     result.timeOk = syncTime(watchdog);
-    if (!fetchManifest(hostUrl, deviceId, result.manifest, watchdog)) return;
+    if (!fetchManifest(hostUrl, deviceId, result.manifest, watchdog, skips)) return;
     result.manifestOk = true;
 
     // One pass over every cache slot: download when the published id
@@ -237,6 +237,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     const int count=activeSlots(result.manifest.screens[2].present,result.manifest.spareCount,
                                 settings,slots,SCREEN_SLOTS);
     for(int i=0;i<count;++i) visible[slots[i]]=true;
+    for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
     uint8_t* buffer = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
     if (!buffer) {
         log("download error=allocation\n");

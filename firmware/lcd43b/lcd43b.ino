@@ -54,6 +54,7 @@
 #include "panel.h"
 #include "power_session.h"
 #include "persist.h"
+#include "owner.h"
 #include "screens.h"
 #include "settings_page.h"
 #include "sync.h"
@@ -116,7 +117,10 @@ bool settingsBatteryButton() {
 
 lcd::RefreshState state;   // manifest, cache ids, offline flag
 int screenIndex = 0;       // current screen within the screen list
-int spareCursor = 0;       // next spare shown by a double tap
+int spareCursor = -1;      // legacy selection key; OwnerState owns swapping
+OwnerState owner;
+uint32_t skipRevision=0, sentSkipRevision=0;
+char refreshSkips[280]{};
 
 // Long-press feedback (host-pinned in overlay.h): REFRESHING shows on the
 // gesture, UP TO DATE ~2 s when nothing changed, OFFLINE styling when the
@@ -372,7 +376,8 @@ bool show(int index) {
         lcd::log("blit error=screen-index index=%d\n", index);
         return false;
     }
-    const String path = String("/") + lcd::SLOT_NAMES[slot] + ".vnr";
+    const bool overrideArt=slot==0 && owner.overrideArt.id[0];
+    const String path = overrideArt ? String("/override.vnr") : String("/") + lcd::SLOT_NAMES[slot] + ".vnr";
     uint16_t* pixels = static_cast<uint16_t*>(
         ps_malloc(size_t(lcd::WIDTH) * lcd::HEIGHT * 2));
     if (!pixels) {
@@ -420,7 +425,7 @@ bool show(int index) {
     state.drawn = ok;
     if(ok) lcd::log("photo-ready slot=%s clock=board region-only-minute-redraw battery=none\n",lcd::SLOT_NAMES[slot]);
     lcd::log("blit screen=%s id=%.16s cache=%s offline=%d brightness=%u ms=%lu\n",
-             lcd::SLOT_NAMES[slot], state.cachedIds[slot],
+             lcd::SLOT_NAMES[slot], slot==0 ? lcd::selectedArtId(owner) : state.cachedIds[slot],
              ok ? "frame" : "waiting", state.offline,settings.brightness,
              static_cast<unsigned long>(millis() - started));
     return ok;
@@ -498,7 +503,7 @@ lcd::RefreshResult refreshStaging;   // worker writes, loop copies while parked
 void refreshWorker(void*) {
     refreshWatchdog.subscribe();
     lcd::runRefresh(VENTANAL_HOST_URL, VENTANAL_DEVICE_ID, state.cachedIds,
-                    refreshStaging, refreshWatchdog,refreshSettings);
+                    refreshStaging, refreshWatchdog,refreshSettings,refreshSkips);
     refreshWatchdog.unsubscribe();
     xSemaphoreGive(refreshStaged);
     // Park until loop() has copied the result, so the staging buffer is
@@ -512,6 +517,9 @@ void refreshWorker(void*) {
 bool startRefresh(bool redraw) {
     if (refreshBusy) return false;
     refreshSettings = settings;
+    owner.queue.query(refreshSkips,sizeof refreshSkips);
+    sentSkipRevision=skipRevision;
+    if(owner.queue.count) lcd::log("skip reports sending count=%u\n",unsigned(owner.queue.count));
     refreshRequested = redraw;
     lastFetchMs = millis();
     refreshBusy = true;
@@ -547,6 +555,13 @@ void applyFinishedRefresh() {
     const bool redraw = lcd::applyRefresh(state, screenIndex, spareCursor,
                                           prefs, refreshStaging,
                                           refreshRequested,settings);
+    if(refreshStaging.manifestOk) {
+        const unsigned before=owner.queue.count;
+        lcd::acknowledgeSkips(owner,skipRevision-sentSkipRevision,true);
+        lcd::log("skip reports acknowledged count=%u pending=%u\n",before-owner.queue.count,unsigned(owner.queue.count));
+        owner.mainChanged(state.manifest.screens[0].id);
+        lcd::saveOwner(prefs,owner);
+    }
     xSemaphoreGive(refreshCopied);
     refreshBusy = false;
     // A manifest that arrived but lost a frame it required is a failure for
@@ -642,12 +657,25 @@ void handleGesture(Gesture gesture, int x, int y) {
         break;
     case Gesture::DoubleTap:
         {
-            int targets[lcd::SCREEN_SLOTS];
-            const int count=lcd::spareTargets(solarPublished(),spareCount(),settings,targets,lcd::SCREEN_SLOTS);
-            if(!count) break;
-            screenIndex = targets[spareCursor % count];
-            spareCursor = (spareCursor + 1) % count;
-            lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
+            if(!settings.showArt) { lcd::log("spare skipped=art-hidden\n"); break; }
+            bool cached[3];
+            for(int i=0;i<3;++i) {
+                strcpy(owner.spares[i].id,state.cachedIds[3+i]);
+                const String path=String("/")+lcd::SLOT_NAMES[3+i]+".vnr";
+                cached[i]=owner.spares[i].id[0] && LittleFS.exists(path);
+            }
+            char skipped[17]; strcpy(skipped,lcd::selectedArtId(owner));
+            const bool swapped=lcd::swapArt(owner,settings.showArt,cached,[](int next) {
+                const String path=String("/")+lcd::SLOT_NAMES[3+next]+".vnr";
+                return lcd::copyArtOverride(path.c_str(),owner.spares[next].id);
+            });
+            if(!swapped) { lcd::log("spare error=copy\n"); break; }
+            if(strlen(skipped)==16 && strlen(lcd::selectedArtId(owner))==16
+               && strcmp(skipped,lcd::selectedArtId(owner))) ++skipRevision;
+            spareCursor=owner.cursor;
+            screenIndex=0;
+            lcd::saveOwner(prefs,owner);
+            lcd::log("spare selected=%d id=%s queued=%u screen=art\n",owner.cursor,lcd::selectedArtId(owner),unsigned(owner.queue.count));
             show(screenIndex);
         }
         break;
@@ -862,6 +890,9 @@ void setup() {
     // Restore persisted state so an offline boot still honours quiet hours
     // and the screen list matches the cache before the first fetch.
     lcd::loadCacheIds(prefs, state.cachedIds);
+    lcd::loadOwner(prefs,owner);
+    if(!owner.mainId[0]) owner.mainChanged(state.cachedIds[0]);
+    if(owner.overrideArt.id[0] && !LittleFS.exists("/override.vnr")) { owner.overrideArt={}; owner.cursor=-1; }
     lcd::loadSelection(prefs, screenIndex, spareCursor);
     lcd::loadQuiet(prefs, state.manifest);
     lcd::loadPublishShape(prefs, state.manifest);

@@ -280,8 +280,8 @@ int main() {
         urlResponses["http://host"+art.url]=frame;
         urlResponses["http://host"+spare.url]=frame;
         lcd::runRefresh("http://host","lcd43b",ids,result,watchdog,settings);
-        assert(result.frameOk[0] && result.frameOk[1] && result.frameOk[3]);
-        assert(requestedUrls.size()==4);
+        assert(!result.frameOk[0] && result.frameOk[1] && !result.frameOk[3]);
+        assert(requestedUrls.size()==2);
     }
     {   // Stalled transfers with the watchdog enabled: the manifest itself
         // arrives, every frame transfer gives up after its budget, the
@@ -389,6 +389,19 @@ int main() {
         assert(result.frameFailed[0] && result.frameFailed[1]);   // required
         assert(lcd::anyRequiredFrameFailed(result));
         assert(!files.count("/art.vnr"));          // nothing committed
+    }
+    {   // The shared queue wire format is sent on the device manifest GET.
+        resetFakes();
+        const auto frame=solidFrame(0xffff);
+        const auto art=makeEntry("art",frame), weather=makeEntry("weather",frame);
+        responseBody=manifestBody(art,weather);
+        sizeFromResponse=true;
+        char ids[lcd::SCREEN_SLOTS][17]={};
+        lcd::RefreshResult result; CountingWatchdog watchdog;
+        lcd::runRefresh("http://host","lcd43b",ids,result,watchdog,lcd::DeviceSettings{},
+                        "aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb");
+        assert(result.manifestOk);
+        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb");
     }
     {   // Manifest failure: nothing staged, nothing downloaded.
         resetFakes();

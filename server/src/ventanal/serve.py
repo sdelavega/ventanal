@@ -81,7 +81,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnf|previews/[A-Za-z0-9_-]+\.png|devices/[a-z0-9-]+/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnr))', path):
                 self.send_error(404)
                 return
-            if path == '/manifest.json' and cache_dir is not None:
+            if (cache_dir is not None and (path == '/manifest.json'
+                    or re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path))):
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                 board = parse_board(query)
                 BoardStore(cache_dir).checkin(self.client_address[0], board)
