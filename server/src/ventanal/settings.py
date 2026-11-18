@@ -92,7 +92,10 @@ def replace_config(path: Path, data: bytes, backup_dir: Path):
     original = path.lstat()
     if not stat.S_ISREG(original.st_mode):
         raise OSError('Expected a regular config file')
-    if original.st_uid != os.geteuid():
+    euid = os.geteuid()
+    if original.st_uid != euid:
+        if euid == 0:
+            raise ConfigWriteError(f'config.file: {path}: run as the service user: sudo -u ventanal …')
         raise ConfigWriteError(f'config.file: {path} must be owned by the service user. '
                                f'Run sudo chown ventanal:ventanal "{path}" and retry.')
     # Preserve the exact live bytes before replacing a malformed document with

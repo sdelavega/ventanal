@@ -191,10 +191,10 @@ rights checks and provider terms.
 ## Security and pairing
 
 The server accepts requests addressed to IP literals, `localhost`, its machine
-hostname, that hostname with `.local` appended, and the DNS names used for its
-certificate, including the FQDN. For a custom DNS name, list it in
-`server.allowed_hosts` in the TOML file and restart the service. List names
-without schemes or ports.
+hostname, that hostname with `.local` appended, and the DNS names stored in its
+active certificate. To use a fully qualified domain name (FQDN) in open mode,
+add it to `server.allowed_hosts` in the TOML file and restart the service.
+Use the same setting for any additional DNS names, without schemes or ports.
 
 With a password and security enabled, the browser/board use HTTPS, the board pins
 the host certificate, manifests and board reports are authenticated, and signed

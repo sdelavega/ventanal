@@ -260,6 +260,20 @@ def test_host_allowlist_in_open_mode_and_on_tls(web, monkeypatch):
         assert request(connection, 'GET', path, (host,)) == status
 
 
+def test_open_mode_rejects_resolver_supplied_host(request, monkeypatch):
+    from contextlib import closing
+    import socket
+
+    resolved_name = 'resolver.example.test'
+    monkeypatch.setattr(socket, 'getfqdn', lambda name='': resolved_name)
+    _, srv, _ = request.getfixturevalue('web')
+    srv.ui.auth.none()
+
+    with closing(HTTPConnection(*srv.server_address, timeout=2)) as connection:
+        connection.request('GET', '/settings', headers={'Host': resolved_name})
+        assert connection.getresponse().status == 400
+
+
 def test_silent_tls_connection_does_not_block_other_clients(web, monkeypatch):
     import socket
     from threading import Event

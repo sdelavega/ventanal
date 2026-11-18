@@ -18,7 +18,6 @@ from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
 from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
 from ventanal.owner import SkipQueue, parse_skips
-from ventanal.security import host_names
 
 
 MAX_TLS_CONNECTIONS = 32
@@ -61,7 +60,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     skip_queue = SkipQueue(cache_dir) if cache_dir is not None else None
     hostname = socket.gethostname().removesuffix('.')
     names = {'localhost', normalize_hostname(hostname), normalize_hostname(f'{hostname}.local')}
-    names.update(map(normalize_hostname, host_names()))
     names.discard(None)
     if ui is not None:
         names.update(cfg.allowed_hosts)

@@ -171,9 +171,26 @@ def test_cli_cache_writers_refuse_owner_mismatch(tmp_path, capsys, monkeypatch, 
     with pytest.raises(SystemExit) as error:
         cli.main(args)
     assert error.value.code == 2
-    assert f'run as: sudo -u ventanal ventanal {command}' in capsys.readouterr().err
+    message = capsys.readouterr().err
+    assert f'run as: sudo -u ventanal ventanal {command}' in message
+    assert 'server/deploy/install.sh' in message
     assert not list(cache.iterdir())
     assert not (tmp_path / 'output.png').exists()
+
+
+def test_setup_token_refuses_missing_cache_as_root(tmp_path, capsys, monkeypatch):
+    from ventanal import cache_access, cli
+
+    cache = tmp_path / 'cache'
+    config = tmp_path / 'settings.toml'
+    example = Path(__file__).parents[1] / 'ventanal.example.toml'
+    config.write_text(example.read_text().replace('/var/cache/ventanal', str(cache)))
+    monkeypatch.setattr(cache_access.os, 'geteuid', lambda: 0)
+    with pytest.raises(SystemExit) as error:
+        cli.main(['setup-token', '--config', str(config)])
+    assert error.value.code == 2
+    assert 'cache directory missing; run server/deploy/install.sh' in capsys.readouterr().err
+    assert not cache.exists()
 
 
 def test_cache_workers_refuse_owner_mismatch(tmp_path, capsys, monkeypatch):
