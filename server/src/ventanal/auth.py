@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 """Private password storage, signed sessions and bounded login attempts."""
 import base64
+import fcntl
 import hashlib
 import hmac
 import json
@@ -21,7 +22,7 @@ def validate_password(password, confirm):
         raise ValueError(f'Passwords must match and contain {PASSWORD_MIN_LENGTH}–{PASSWORD_MAX_LENGTH} characters.')
 
 
-def private_write(path, data, *, replace=True):
+def private_write(path, data, *, replace=True, durable=False):
     tmp = path.with_name(path.name + '.' + secrets.token_hex(8))
     try:
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
@@ -31,6 +32,12 @@ def private_write(path, data, *, replace=True):
             os.replace(tmp, path)
         else:
             os.link(tmp, path)
+        if durable:
+            fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(fd)
+            finally:
+                os.close(fd)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -39,6 +46,7 @@ class Auth:
     def __init__(self, directory: Path):
         directory.mkdir(parents=True, exist_ok=True)
         self.path = directory / 'auth.json'
+        self.token_path = directory / 'setup.token'
         secret = directory / 'session.secret'
         if not secret.exists():
             try:
@@ -56,11 +64,32 @@ class Auth:
     @property
     def mode(self): return self.state['mode']
 
-    def setup_token(self):
-        if self.mode == 'unset':
-            # Domain separation keeps this credential independent of session signatures.
-            # Persisting either completed mode retires it, including across restarts.
-            return hmac.new(self.secret, b'ventanal first-run setup', hashlib.sha256).hexdigest()
+    def issue_setup_token(self):
+        with self.token_path.with_suffix('.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                mode = json.loads(self.path.read_text())['mode']
+            except FileNotFoundError:
+                mode = 'unset'
+            if mode not in ('unset', 'none'):
+                return None
+            token = secrets.token_hex(32)
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            private_write(self.token_path, f'{mode}:{digest}'.encode(), durable=True)
+            return token
+
+    def consume_setup_token(self, token):
+        with self.token_path.with_suffix('.lock').open('a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                expected = self.token_path.read_bytes()
+            except FileNotFoundError:
+                return False
+            digest = hashlib.sha256(token.encode()).hexdigest()
+            if not hmac.compare_digest(expected, f'{self.mode}:{digest}'.encode()):
+                return False
+            private_write(self.token_path, b'', durable=True)
+            return True
 
     def _save(self, state):
         private_write(self.path, json.dumps(state).encode())

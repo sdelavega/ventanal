@@ -13,7 +13,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=/var/lib/ventanal /var/cache/ventanal /etc/ventanal/ventanal.toml /etc/ventanal/backups
+ReadWritePaths=/var/lib/ventanal /var/cache/ventanal /etc/ventanal
 
 [Install]
 WantedBy=multi-user.target

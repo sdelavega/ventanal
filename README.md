@@ -66,10 +66,17 @@ The example sections are:
 Battery calibration adds optional `battery.full_mv`. Auth, transport identities
 and Extras licences live separately in private state; they are not TOML settings.
 
+Season ranges must cover the full year, including February 29. Before
+upgrading an installation based on the old example, change winter's end date
+from `02-28` to `02-29` if no other season covers that day. The installer
+sets the configuration file's owner to the `ventanal` service account so the
+web UI can replace it atomically. If the file cannot be parsed, the service
+loads the newest usable settings backup from `/etc/ventanal/backups`.
+
 Open the host's HTTP address on port 8765. On first visit, enter the one-time
 setup token printed by the installer and choose a password of at least 10
-characters. If you missed the token or are upgrading an installation that has
-never completed setup, run this on the host:
+characters. Run this command on the host to issue a new token, including when
+you want to set a password after choosing to run without one:
 
 ```sh
 sudo -u ventanal /opt/ventanal/venv/bin/ventanal setup-token
@@ -77,9 +84,10 @@ sudo -u ventanal /opt/ventanal/venv/bin/ventanal setup-token
 
 Keep the token private. Both the password and the token travel over HTTP during
 initial setup, so complete that step over a trusted connection. To run without
-a password, enter the same token and confirm the network-access warning.
-Either choice consumes the token. Password setup starts HTTPS. Follow the
-Security pairing procedure below before using the board.
+a password, enter the token and confirm the network-access warning.
+The token is consumed as soon as it is accepted. If you need to retry after
+that, issue a new token with the command above. Password setup starts HTTPS.
+Follow the Security pairing procedure below before using the board.
 Use **Settings** to adjust location, schedules and sources; fields save directly.
 
 ### Firmware
@@ -155,9 +163,10 @@ voltage, then choose **Battery is full — set as 100%** on Status and confirm.
 Reset there to restore the default curve. Percentage remains an estimate; the
 board cannot detect charging or USB power.
 
-For colour calibration, open Calibration and publish its chart. Refresh the
-board, photograph the chart in indirect daylight without glare, and include
-plain white paper. Prefer original camera RAW/DNG (enable Apple ProRAW or your
+For colour calibration, open Calibration and publish its chart. Photo upload
+requires JavaScript. Refresh the board, photograph the chart in indirect
+daylight without glare, and include plain white paper.
+Prefer original camera RAW/DNG (enable Apple ProRAW or your
 camera's RAW mode); original HEIC is also accepted, with lower accuracy than RAW.
 Transfer the original file without messaging-app recompression, upload it, then
 pick the outer chart corners **TL, TR, BR, BL**. Optionally drag a white-paper

@@ -375,8 +375,7 @@ class UI:
             with self.auth.lock:
                 if session['epoch'] != self.auth.state['epoch']:
                     self.respond(h,403); return
-                expected = self.auth.setup_token()
-                if expected is None:
+                if self.auth.mode != 'unset':
                     self.respond(h,400); return
                 if path.endswith('confirm-skip'):
                     if not session.get('setup_skip') or values.get('confirm')!='yes':
@@ -386,8 +385,11 @@ class UI:
                         send(500,'Setup','Unable to save setup. Check service permissions and try again.'); return
                     session,cookie=self.auth.issue(False)
                     redirect('/'); return
-                if not hmac.compare_digest(values.get('setup_token','').encode(), expected.encode()):
-                    self.respond(h,403); return
+                try:
+                    if not self.auth.consume_setup_token(values.get('setup_token','')):
+                        self.respond(h,403); return
+                except OSError:
+                    send(500,'Setup','Unable to validate setup. Check service permissions and try again.'); return
                 cookie = self.auth.sign({**session, 'setup_skip': True})
             send(200,'Network access warning', '<div class="form-card auth"><p>Anyone on this network will be able to view and change settings. Continue only if you trust everyone with network access.</p>'+form('/setup/confirm-skip',token,'<input type="hidden" name="confirm" value="yes">','I understand — continue without a password')+'<a href="/setup">Choose a password instead</a></div>'); return
         if path in ('/setup','/password'):
@@ -401,8 +403,7 @@ class UI:
                             self.respond(h,403); return
                         if self.auth.mode == 'password' and (not change or not session['granted']):
                             redirect('/login'); return
-                        expected = self.auth.setup_token()
-                        if expected is not None and not hmac.compare_digest(values.get('setup_token','').encode(), expected.encode()):
+                        if not change and not self.auth.consume_setup_token(values.get('setup_token','')):
                             self.respond(h,403); return
                         if change and not self.auth.verify(values.get('current','')): raise ValueError('Current password is incorrect.')
                         password, confirm = values.get('password',''), values.get('confirm','')
@@ -419,8 +420,8 @@ class UI:
             title='Change password' if change else 'Choose a password'
             first_run = self.auth.mode == 'unset'
             body=f'<div class="form-card auth"><p class="error">{e(error)}</p>'
-            if first_run: body+='<p>Enter the setup token printed by the installer or the ventanal setup-token command.</p>'
-            body+=form(path,token,(SETUP_TOKEN_FIELD if first_run else '')+password_fields(change),title)
+            if not change: body+='<p>Enter the setup token printed by the installer or the ventanal setup-token command. If setup fails after the token is accepted, run the command for a new token.</p>'
+            body+=form(path,token,(SETUP_TOKEN_FIELD if not change else '')+password_fields(change),title)
             if first_run: body+=form('/setup/skip',token,SETUP_TOKEN_FIELD,'Continue without a password…')
             send(400 if error else 200,title,body+'</div>'); return
         if path=='/login':

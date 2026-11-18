@@ -22,6 +22,17 @@ CANDIDATE = Candidate('test', '1', 'Hunters in the Snow', 'Pieter Bruegel the El
                       '1565', 'Kunsthistorisches Museum', '', None, None)
 
 
+def test_rendered_credit_cleans_legacy_fields():
+    candidate = replace(CANDIDATE)
+    # Simulate a legacy candidate whose data bypassed construction-time cleanup.
+    object.__setattr__(candidate, 'artist', 'Pieter\ud800 Bruegel')
+    object.__setattr__(candidate, 'date', '1565\udfff')
+    object.__setattr__(candidate, 'museum', 'Kunst\x00museum')
+    _, credit = render_art(Image.new('RGB', (16, 12)), candidate)
+    assert (credit['artist'], credit['date'], credit['museum']) == (
+        'Pieter Bruegel', '1565', 'Kunstmuseum')
+
+
 def test_crop_vs_fit():
     landscape = Image.new('RGB', (2000, 1500), (120, 160, 200))
     assert compose(landscape).getpixel((0, 0)) == landscape.getpixel((0, 0))

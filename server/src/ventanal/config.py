@@ -4,9 +4,9 @@
 """Load and validate Ventanal's TOML configuration without side effects."""
 
 from dataclasses import dataclass, field
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
-import fcntl
+import logging
 import re
 import tomllib
 from typing import Literal
@@ -15,7 +15,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 def normalize_hostname(value: str) -> str | None:
     name = value.removesuffix(".").lower()
-    label = r"[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?"
+    label = r"[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?"
     if value.isascii() and len(name) <= 253 and re.fullmatch(rf"{label}(?:\.{label})*", name):
         return name
     return None
@@ -29,6 +29,11 @@ class Season:
     start: tuple[int, int]
     end: tuple[int, int]
     terms: tuple[str, ...]
+
+    def includes(self, day: tuple[int, int]) -> bool:
+        if self.start <= self.end:
+            return self.start <= day <= self.end
+        return day >= self.start or day <= self.end
 
 
 @dataclass(frozen=True)
@@ -118,19 +123,36 @@ def _clock(value, key):
     return value
 
 
+def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[str, dict]:
+    def read(source):
+        # Keep original newlines for comment-preserving settings/CLI edits.
+        text = source.read_bytes().decode("utf-8")
+        return text, tomllib.loads(text)
+
+    try:
+        return read(path)
+    except (FileNotFoundError, UnicodeError, tomllib.TOMLDecodeError):
+        backups = backup_dir if backup_dir is not None else path.parent / "backups"
+        for backup in sorted(backups.glob("ventanal-*.toml"), reverse=True):
+            try:
+                text, data = read(backup)
+                validate_config(data)
+            except (OSError, ValueError):
+                continue
+            logging.getLogger(__name__).warning("Config unreadable; using backup %s", backup.name)
+            return text, data
+    except OSError:
+        pass
+    raise ConfigError("config.file: unable to read valid TOML") from None
+
+
 def load_config(path: Path) -> Config:
     """Read a TOML file; report invalid settings with their dotted key names.
 
     Location may use a US ZIP (preserving ZIP+4) or a latitude/longitude pair.
     Other settings are explicit, as shown in ventanal.example.toml.
     """
-    try:
-        with path.open("rb") as source:
-            fcntl.flock(source, fcntl.LOCK_SH)
-            data = tomllib.load(source)
-    except (OSError, ValueError) as exc:
-        raise ConfigError("config.file: unable to read valid TOML") from exc
-
+    _, data = read_config_document(path)
     return validate_config(data)
 
 
@@ -202,6 +224,10 @@ def validate_config(data: dict) -> Config:
             end=_month_day(entry.get("end"), f"{key}.end"),
             terms=_strings(entry.get("terms"), f"{key}.terms"),
         ))
+    for offset in range(366):
+        day = date(2000, 1, 1) + timedelta(days=offset)
+        if not any(season.includes((day.month, day.day)) for season in seasons):
+            raise ConfigError(f"art.seasons: no season covers {day:%m-%d}; cover the full year including 02-29")
 
     palette = []
     for colour in ("black", "white", "yellow", "red", "blue", "green"):

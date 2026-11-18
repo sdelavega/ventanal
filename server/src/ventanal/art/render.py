@@ -9,7 +9,7 @@ from PIL import Image, ImageDraw, ImageFilter
 
 from ventanal.art.compose import compose
 from ventanal.art.sources import Candidate
-from ventanal.manifest import Readout
+from ventanal.manifest import Readout, clean_credit
 from ventanal.quantize import Canvas, Method
 from ventanal.text import fit, font, renderable
 
@@ -49,4 +49,4 @@ def render_art(img: Image.Image, c: Candidate) -> tuple[Canvas, dict]:
     credit = {'title': title, 'secondary': secondary, 'artist': c.artist,
               'date': c.date, 'museum': c.museum, 'source': c.source,
               'object_id': c.object_id, 'x': 28, 'y': 1172, 'w': ceil(text_width), 'h': 17}
-    return canvas, credit
+    return canvas, clean_credit(credit)

@@ -7,6 +7,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import IPv4Address, IPv6Address
 import logging
 import json
+import sqlite3
 import ssl
 import socket
 from threading import Thread, RLock
@@ -14,10 +15,9 @@ from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
-import fcntl
 from ventanal.config import load_config, normalize_hostname
 from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
-from ventanal.owner import OwnerStore, parse_skips
+from ventanal.owner import SkipQueue, parse_skips
 
 
 def allowed_host(headers, names):
@@ -48,8 +48,11 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         from ventanal.ui import UI
         cfg = load_config(config_path)
         ui = UI(config_path, cache_dir, rerender)
+        board_store = ui.store
     else:
         ui = None
+        board_store = BoardStore(cache_dir) if cache_dir is not None else None
+    skip_queue = SkipQueue(cache_dir) if cache_dir is not None else None
     hostname = socket.gethostname().removesuffix('.')
     names = {'localhost', normalize_hostname(hostname), normalize_hostname(f'{hostname}.local')}
     names.discard(None)
@@ -113,15 +116,18 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 return
             if path == '/manifest.json' and cache_dir is not None:
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
-                board = parse_board(query)
-                BoardStore(cache_dir).checkin(self.client_address[0], board)
                 values = query.get('skips', [])
                 if values:
-                    store = OwnerStore(cache_dir)
-                    with (cache_dir / 'tick.lock').open('a') as lock:
-                        fcntl.flock(lock, fcntl.LOCK_EX)
-                        for skipped, shown in parse_skips(','.join(values)):
-                            store.record(skipped, shown, datetime.now(timezone.utc))
+                    try:
+                        skip_queue.enqueue(parse_skips(','.join(values)), datetime.now(timezone.utc))
+                    except sqlite3.Error:
+                        logging.getLogger(__name__).warning('Unable to queue board skips')
+                        self.send_error(503)
+                        return
+                try:
+                    board_store.checkin(self.client_address[0], parse_board(query), timeout=1)
+                except sqlite3.Error:
+                    logging.getLogger(__name__).warning('Unable to record board check-in')
             if path == '/manifest.json':
                 target = root / 'manifest.json'
                 if ui is None and target.resolve() != target:
@@ -142,12 +148,15 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     omit_board_credits(manifest)
                     if active(): manifest = ui.security.manifest(manifest, root)
                     body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
-                    if len(body) > MAX_SERVED_MANIFEST_BYTES:
-                        raise ValueError('Manifest exceeds the board response budget')
                 except FileNotFoundError:
                     self.send_error(404 if ui is None else 503); return
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     self.send_error(503); return
+                if len(body) > MAX_SERVED_MANIFEST_BYTES:
+                    self.send_response(503)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
                 if ui is not None:
                     ui.respond(self, 200, body, 'application/json')
                 else:
@@ -205,15 +214,18 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             pass  # Error text may contain the raw request target.
 
     class TLSServer(ThreadingHTTPServer):
-        def get_request(self):
-            conn, addr = super().get_request()
+        def finish_request(self, conn, addr):
+            # ThreadingHTTPServer calls finish_request in the request worker.
             conn.settimeout(5)
             try:
                 secured = ui.security.context.wrap_socket(conn, server_side=True)
+            except OSError:
+                return
+            try:
                 secured.settimeout(30)
-                return secured, addr
-            except Exception:
-                conn.close(); raise
+                super().finish_request(secured, addr)
+            finally:
+                self.shutdown_request(secured)
 
     class Server(ThreadingHTTPServer):
         tls_server = None

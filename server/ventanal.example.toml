@@ -35,7 +35,7 @@ terms = ["winter", "snow", "Christmas", "Nativity", "Adoration of the Magi", "wi
 [[art.seasons]]
 name = "winter"
 start = "01-01"
-end = "02-28"
+end = "02-29"
 terms = ["winter landscape", "ice skating", "snow"]
 
 [[art.seasons]]

@@ -42,6 +42,22 @@ def test_get_only(server):
     conn.close()
 
 
+def test_oversized_manifest_returns_503_with_empty_body(server, monkeypatch, tmp_path):
+    (tmp_path / 'manifest.json').write_text('{"version":1,"screens":{}}')
+    monkeypatch.setattr('ventanal.serve.MAX_SERVED_MANIFEST_BYTES', 1)
+    conn = HTTPConnection(*server.server_address, timeout=2)
+    try:
+        conn.request('GET', '/manifest.json')
+        response = conn.getresponse()
+        assert response.status == 503
+        assert response.getheader('Content-Length') == '0'
+        # The HTTP/1.0 request closes the connection, so inspect even bytes
+        # accidentally written beyond the advertised zero-length body.
+        assert response.fp.read() == b''
+    finally:
+        conn.close()
+
+
 @pytest.mark.parametrize('error', [BrokenPipeError, ConnectionResetError])
 def test_disconnected_body_copy_is_quiet(server, monkeypatch, error):
     from io import BytesIO

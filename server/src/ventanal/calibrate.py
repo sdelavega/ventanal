@@ -102,8 +102,15 @@ def write_panel(path: Path, colours: list[tuple[int, int, int]]) -> None:
     The existing file must contain a [panel] table with all six colour keys.
     Parsing both versions before writing prevents partial or invalid updates.
     """
-    original = path.read_bytes().decode('utf-8')
-    tomllib.loads(original)
+    from ventanal.settings import read_document, replace_config, settings_lock
+
+    with settings_lock(path.parent / 'backups'):
+        original = read_document(path)
+        updated = _replace_panel(original, colours)
+        replace_config(path, updated.encode('utf-8'))
+
+
+def _replace_panel(original, colours):
     replacements = tomllib.loads(panel_block(colours))['panel']
     spans = []
     in_panel = False
@@ -129,7 +136,7 @@ def write_panel(path: Path, colours: list[tuple[int, int, int]]) -> None:
         updated = updated[:start] + value + updated[end:]
     if tomllib.loads(updated)['panel'] != {**tomllib.loads(original)['panel'], **replacements}:
         raise ValueError('unable to update panel colours')
-    path.write_bytes(updated.encode('utf-8'))
+    return updated
 
 
 def srgb_to_linear(rgb, maximum=255):

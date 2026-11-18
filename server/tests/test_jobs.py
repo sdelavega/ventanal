@@ -78,7 +78,7 @@ def test_optional_weather_failure_still_publishes(setup_job, monkeypatch, depend
 
 def test_weather_interval_and_pool_refresh(setup_job, monkeypatch):
     calls = []
-    monkeypatch.setattr(jobs, 'refresh_pool', lambda *a: calls.append(a) or 7)
+    monkeypatch.setattr(jobs, 'refresh_pool', lambda *a, **kw: calls.append(a) or 7)
     with httpx.Client() as client:
         jobs.tick(setup_job, NOW, client)
         assert jobs.tick(setup_job, NOW + timedelta(minutes=24), client)['weather'] is False
@@ -119,7 +119,7 @@ def test_cli_preview_does_not_publish(setup_job, monkeypatch, command, tmp_path)
     monkeypatch.setattr(cli, 'load_config', lambda path: setup_job)
     monkeypatch.setattr(cli.jobs, 'art_canvas', lambda *a: (object(), {}, None))
     monkeypatch.setattr(cli.jobs, 'weather_canvas', lambda *a: object())
-    monkeypatch.setattr(cli.jobs, 'refresh_pool', lambda *a: 0)
+    monkeypatch.setattr(cli.jobs, 'refresh_pool', lambda *a, **kw: 0)
     monkeypatch.setattr(cli, 'quantize', lambda *a: np.zeros((1200, 1600), dtype=np.uint8))
     monkeypatch.setattr(cli, 'simulate', lambda *a: Image.new('RGB', (16, 12)))
     destination = tmp_path / f'{command}.png'
@@ -172,11 +172,12 @@ def test_cli_pool_refresh_shared_and_bookkept(setup_job, monkeypatch, tmp_path):
     from ventanal.art.sources import USER_AGENT
     monkeypatch.setattr(cli, 'load_config', lambda path: setup_job)
     calls = []
-    def refresh(cfg, pool, client, today):
+    def search(sources, terms, limit_per_term, client, *, unavailable):
         assert client.headers['User-Agent'] == USER_AGENT
-        calls.append(today)
-        return 3
-    monkeypatch.setattr(jobs, 'refresh_pool', refresh)
+        calls.append(terms)
+        return [Candidate('met', '123', 'Snow', 'Artist', '1900', 'Met',
+                          'https://example.test/art', 1800, 1200)]
+    monkeypatch.setattr('ventanal.art.pool.search_all', search)
     monkeypatch.setattr(jobs, 'art_canvas', lambda *a: (object(), {}, None))
     monkeypatch.setattr(cli, 'quantize', lambda *a: np.zeros((12, 16), dtype=np.uint8))
     monkeypatch.setattr(cli, 'simulate', lambda *a: Image.new('RGB', (16, 12)))
@@ -184,7 +185,7 @@ def test_cli_pool_refresh_shared_and_bookkept(setup_job, monkeypatch, tmp_path):
     pool.set_refreshed(NOW - timedelta(days=10))
     for _ in range(2):
         cli.main(['render-art', '--out', str(tmp_path / 'preview.png')])
-    assert len(calls) == 1
+    assert len(calls) == 2  # Current and upcoming seasons, only on the first call.
     assert pool.last_refresh() > NOW
     assert not (setup_job.cache_dir / 'state.json').exists()
     with httpx.Client() as client:

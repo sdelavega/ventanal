@@ -62,7 +62,7 @@ def test_publish_exact_entry_and_assets(tmp_path):
 
 
 def test_credit_cleaned_at_ingestion_and_publication(tmp_path):
-    controls = ''.join(chr(c) for c in (*range(32), *range(127, 160)))
+    controls = ''.join(chr(c) for c in (*range(32), *range(127, 160))) + '\ud800\udfff'
     text = controls + 'é' * 130
     candidate = Candidate('met', '123', 'Title' + controls, text, text, text, '', None, None)
     assert candidate.title == 'Title'

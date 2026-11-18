@@ -52,7 +52,7 @@ def main(argv=None):
     cfg = load_config(args.config)
     if args.command == 'setup-token':
         from ventanal.auth import Auth
-        print(Auth(cfg.cache_dir).setup_token() or 'Setup is already complete.')
+        print(Auth(cfg.cache_dir).issue_setup_token() or 'Setup is already complete.')
         return
     now = datetime.now(ZoneInfo(cfg.timezone))
     if args.command == 'serve':

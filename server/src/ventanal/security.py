@@ -22,6 +22,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import NameOID
 from ventanal.auth import private_write
+from ventanal.manifest import reject_manifest_floats
 
 
 def canonical(value):
@@ -144,6 +145,7 @@ class Security:
 
     def manifest(self,manifest,root):
         result=copy.deepcopy(manifest); result.pop('sig',None)
+        reject_manifest_floats(result)
         for entry in [*result.get('screens',{}).values(),*result.get('spares',[])]:
             url=entry['url']
             if not re.fullmatch(r'/frames/[A-Za-z0-9_-]+\.vnf',url): raise ValueError('Invalid frame path')

@@ -27,11 +27,7 @@ def season_for(d: date, seasons: Sequence[Season]) -> Season:
     """Return the first matching inclusive month/day range, including wraps."""
     day = (d.month, d.day)
     for season in seasons:
-        if season.start <= season.end:
-            matches = season.start <= day <= season.end
-        else:
-            matches = day >= season.start or day <= season.end
-        if matches:
+        if season.includes(day):
             return season
     raise ValueError(f"No season matches {d.isoformat()}")
 
@@ -379,12 +375,13 @@ class ArtPool:
             )
 
 
-def refresh_pool(cfg: Config, pool: ArtPool, client: httpx.Client, today: date) -> int:
+def refresh_pool(cfg: Config, pool: ArtPool, client: httpx.Client, today: date, *, now: datetime | None = None) -> int:
     """Search this season and the first season starting after its end date."""
     current = season_for(today, cfg.seasons)
     upcoming = min(cfg.seasons, key=lambda s: (s.start <= current.end, s.start))
     sources = configured_sources(cfg)
     added = 0
+    found_candidates = False
     unavailable = set()
     for season in (current,) if upcoming == current else (current, upcoming):
         candidates = search_all(
@@ -394,6 +391,9 @@ def refresh_pool(cfg: Config, pool: ArtPool, client: httpx.Client, today: date) 
             client=client,
             unavailable=unavailable,
         )
-        added += pool.add(candidates, season.name)
-    pool.set_refreshed(datetime.now(timezone.utc))
+        if candidates:
+            found_candidates = True
+            added += pool.add(candidates, season.name)
+    if found_candidates:
+        pool.set_refreshed(now if now is not None else datetime.now(timezone.utc))
     return added

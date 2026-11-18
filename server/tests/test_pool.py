@@ -237,6 +237,26 @@ def test_refresh_wrapping_season_skips_overlapping_starts(pool, monkeypatch):
     with httpx.Client() as client:
         assert refresh_pool(cfg, pool, client, date(2026, 12, 15)) == 0
     assert calls == [('snow',), ('flowers',)]
+    assert pool.last_refresh() is None
+
+
+def test_stale_refresh_retries_until_candidates_return(pool, monkeypatch):
+    from ventanal.jobs import ensure_pool
+
+    cfg = load_config(EXAMPLE)
+    older = NOW - timedelta(days=2)
+    pool.set_refreshed(older)
+    artwork = candidate('existing')
+    pool.add([artwork], 'holiday-winter')
+    results = iter([[], [], [artwork], [artwork]])
+    monkeypatch.setattr('ventanal.art.pool.search_all', lambda *a, **k: next(results))
+    with httpx.Client() as client:
+        assert ensure_pool(cfg, pool, client, NOW) == 0
+        assert pool.last_refresh() == older
+        # Duplicates still prove the sources answered with candidates.
+        assert ensure_pool(cfg, pool, client, NOW) == 0
+        assert pool.last_refresh() == NOW
+        assert ensure_pool(cfg, pool, client, NOW) == 0
 
 
 def test_refresh_download_metadata_preserves_shown_history(pool):

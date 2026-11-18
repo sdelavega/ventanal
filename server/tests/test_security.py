@@ -91,6 +91,16 @@ def test_cross_language_manifest_controls():
     assert json.loads(fixture.read_text(encoding='utf-8')) == manifest
 
 
+@pytest.mark.parametrize('document', [
+    {'version': 1.0},
+    {'screens': {'art': {'readout': {'x': 1.0}}}},
+    {'spares': [{'size': 1.0}]},
+])
+def test_signed_manifest_rejects_floats(tmp_path, document):
+    with pytest.raises(ValueError, match='Floats are unsupported'):
+        Security(tmp_path).manifest(document, tmp_path)
+
+
 @pytest.mark.parametrize('mode', ['static', 'plain', 'signed'])
 def test_served_manifest_budget_with_four_long_credits(tmp_path, monkeypatch, mode):
     from ventanal.extras import registry

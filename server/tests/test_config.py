@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 
 from dataclasses import FrozenInstanceError
-from datetime import time
+from datetime import date, time
 from pathlib import Path
 
 import pytest
@@ -22,6 +22,8 @@ def changed_config(tmp_path, old, new):
 
 
 def test_example_loads():
+    from ventanal.art.pool import season_for
+
     cfg = load_config(EXAMPLE)
     assert cfg.art_slots[0] == time(2, 0)
     assert len(cfg.art_slots) == 6
@@ -33,6 +35,7 @@ def test_example_loads():
     ]
     assert cfg.output_dir == Path("/var/lib/ventanal")
     assert cfg.cache_dir == Path("/var/cache/ventanal")
+    assert season_for(date(2028, 2, 29), cfg.seasons).name == "winter"
     with pytest.raises(FrozenInstanceError):
         cfg.zip = "12345"
 
@@ -63,6 +66,15 @@ def test_coordinates_and_wrapping_season(tmp_path):
     cfg = load_config(path)
     assert (cfg.zip, cfg.latitude, cfg.longitude, cfg.place_name) == (None, 40.01, -105.27, "Boulder")
     assert cfg.seasons[0].end == (2, 28)
+
+
+@pytest.mark.parametrize(('old', 'new', 'gap'), [
+    ('end = "02-29"', 'end = "02-28"', '02-29'),
+    ('start = "03-01"', 'start = "03-02"', '03-01'),
+])
+def test_uncovered_season_dates_rejected(tmp_path, old, new, gap):
+    with pytest.raises(ConfigError, match=f'art.seasons: no season covers {gap}'):
+        load_config(changed_config(tmp_path, old, new))
 
 
 @pytest.mark.parametrize(("old", "new", "key"), [
