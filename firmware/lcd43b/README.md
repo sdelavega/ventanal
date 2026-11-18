@@ -147,10 +147,10 @@ Select the board's actual serial port. The board uses native USB Serial/JTAG.
 After light sleep, replug USB to restore the port. If the uploader cannot enter
 download mode, hold BOOT while plugging in.
 
-`normal` and `diag` require the owner release public key. Use `-e bench` for a
+`normal` requires the owner release public key. Use `-e bench` for a
 local build with the public fixture key. It prints **TEST RELEASE KEY** at boot
-and reports that status to the host. For a diagnostics-only bench build, set
-`-DVENTANAL_ALLOW_TEST_KEY=1` under local `private_flags`.
+and reports that status to the host. The diagnostic environments also permit
+the fixture key.
 
 `diag` starts a three-minute automatic screen
 cycle at boot, logs bounce and VSYNC statistics, and exercises shorter refresh
@@ -240,6 +240,14 @@ candidate. The ESP app descriptor identifies bench and diagnostic binaries
 with `-bench` and `-diag` suffixes. Use a newer product version for each OTA
 offer. Before handing a board back after a diagnostic run, replace the
 diagnostic apps in both OTA slots with regular builds.
+
+Build with `pio run -d firmware/lcd43b -e diag-dim` and flash the result to
+a provisioned bench board with Art enabled. At startup the diagnostic
+checks all 65,536 RGB565 values at 25%, 50%, and 75% against the scalar
+reference (196,608 comparisons). After `diag dim=start RGB565 exhaustive=pass`,
+it runs 20 dimmed Settings/Art cycles and forces refreshes. The
+`diag dim=done` line reports peak refill time and scan health. Brightness
+changes in this diagnostic are RAM-only.
 
 Capture native USB serial on macOS with
 `python3 firmware/tools/capture_serial.py --port /dev/cu.usbmodem…`.

@@ -1,6 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 
+#include <xtensa/config/core.h>
+
+    // One aligned save area per call on the internal task or interrupt stack.
+    // Leave room for window spills on both sides of the CP3 save area.
+    .equ .Lcp3Frame, 16 + XCHAL_CP3_SA_SIZE + 16
+    .if XCHAL_CP3_SA_ALIGN != 16 || (.Lcp3Frame & 15)
+    .error "Unexpected CP3 stack alignment"
+    .endif
+
     .section .iram1,"ax"
     .align  4
     .global lcdDimRgb565Vectors
@@ -9,9 +18,9 @@
 // a2 = 16-byte aligned pixels, a3 = number of eight-pixel blocks,
 // a4 = brightness quarters (1..3), a5 = four aligned vectors of masks.
 lcdDimRgb565Vectors:
-    entry   sp, 144
+    entry   sp, .Lcp3Frame
     // The RTOS can leave the PIE coprocessor disabled in interrupt context.
-    // Enable CP3 for this routine and restore both its registers and enable bit.
+    // Enable CP3 for this routine and restore the entry CPENABLE on exit.
     rsr     a11, cpenable
     movi    a12, 8
     or      a12, a11, a12
@@ -19,13 +28,7 @@ lcdDimRgb565Vectors:
     rsync
     rsr     a7, sar
     addi    a6, sp, 16
-    ee.vst.128.ip q0, a6, 16
-    ee.vst.128.ip q1, a6, 16
-    ee.vst.128.ip q2, a6, 16
-    ee.vst.128.ip q3, a6, 16
-    ee.vst.128.ip q4, a6, 16
-    ee.vst.128.ip q5, a6, 16
-    ee.vst.128.ip q6, a6, 16
+    xchal_cp3_store a6, a8, a9, a10, a12
 
     ee.vld.128.ip q4, a5, 16 // Mask for floor(channel / 2).
     ee.vld.128.ip q5, a5, 16 // Mask for floor(channel / 4).
@@ -79,13 +82,7 @@ lcdDimRgb565Vectors:
 
 .Lrestore:
     addi    a6, sp, 16
-    ee.vld.128.ip q0, a6, 16
-    ee.vld.128.ip q1, a6, 16
-    ee.vld.128.ip q2, a6, 16
-    ee.vld.128.ip q3, a6, 16
-    ee.vld.128.ip q4, a6, 16
-    ee.vld.128.ip q5, a6, 16
-    ee.vld.128.ip q6, a6, 16
+    xchal_cp3_load a6, a8, a9, a10, a12
     wsr     a7, sar
     wsr     a11, cpenable
     rsync

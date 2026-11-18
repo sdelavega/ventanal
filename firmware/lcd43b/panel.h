@@ -12,6 +12,12 @@ extern "C" {
 #include "esp_lcd_panel_rgb.h"
 }
 
+// The RGB refill ISR uses PIE only through scanout_dim_s3.S. The IRAM
+// routine restores CPENABLE, SAR and the full CP3 state (q0–q7, ACCX,
+// QACC_H/L, SAR_BYTE, FFT_BIT_WIDTH and UA_STATE). Each invocation owns a
+// 16-byte-aligned frame on its internal DRAM stack, including nested calls
+// and calls on the other core. Task callers must prevent scheduling while
+// CPENABLE is temporarily changed. Keep vector instructions in that routine.
 class Panel {
 public:
     static constexpr int WIDTH = 800;
@@ -64,8 +70,7 @@ private:
     std::atomic<unsigned> requested_{0}, active_{0};
     std::atomic<uint32_t> vsyncs_{0};
     std::atomic<uint32_t> lateRestarts_{0}, shortFrames_{0}, maxFillUs_{0}, maxGapUs_{0};
-    uint32_t lastVsyncUs_ = 0, lastEofUs_ = 0;
-    unsigned eofs_ = 0;
+    std::atomic<uint32_t> lastVsyncUs_{0}, lastEofUs_{0}, eofs_{0};
     int submitted_ = 0;
     std::atomic<unsigned> armed_{0}; // VSYNC writes it; the next row-zero refill consumes it.
 #ifdef VENTANAL_LCD_DIAG_PANEL

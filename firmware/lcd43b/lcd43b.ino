@@ -1258,6 +1258,7 @@ void runQueuedUpdate() {
                     lcd::log("ota reboot=%s\n", current.version);
                     esp_restart();
                 }
+                if (failure == OtaFailure::Download) wifiRetry.finished(millis(), false);
                 char report[otaReportCapacity];
                 formatOtaReport(report, updateBoot.journal.record);
                 lcd::log("ota=%s\n", report);
@@ -2002,7 +2003,7 @@ void loop() {
     const uint32_t interval=powerPollMs();
     const bool networkIdle = !refreshBusy && installQueued == lcd::UpdateSource::None;
     const bool refreshDue = wifiRetry.waiting()
-        ? networkIdle && wifiRetry.due(now)
+        ? networkIdle && wifiRetry.due(millis())
         : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,
                                   settingsRefreshPending);
     if (refreshDue) {

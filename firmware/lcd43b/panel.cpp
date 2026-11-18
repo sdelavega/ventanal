@@ -77,7 +77,10 @@ bool Panel::verifyDimming() {
     for (unsigned q = 1; q < 4; ++q) {
         for (unsigned i = 0; i < 65536; i += 16) {
             for (unsigned j = 0; j < 16; ++j) test[j] = i + j;
+            // Keep the scheduler out while the task borrows CP3.
+            const auto level = portSET_INTERRUPT_MASK_FROM_ISR();
             dimDmaPixels(test, 16, q);
+            portCLEAR_INTERRUPT_MASK_FROM_ISR(level);
             for (unsigned j = 0; j < 16; ++j) {
                 const unsigned rgb = i + j;
                 const unsigned expected = ((rgb >> 11) * q / 4 << 11)
@@ -128,14 +131,15 @@ bool Panel::begin(bool (*setLcdReset)(bool), esp_lcd_rgb_panel_vsync_cb_t observ
     rgbAllocator.store(nullptr, std::memory_order_relaxed);
 #endif
     if (created != ESP_OK) return false;
-    lastVsyncUs_ = lastEofUs_ = 0;
+    lastVsyncUs_.store(0, std::memory_order_relaxed);
+    lastEofUs_.store(0, std::memory_order_relaxed);
 #ifdef VENTANAL_LCD_DIAG_F3
     lateRestarts_.store(0, std::memory_order_relaxed);
     shortFrames_.store(0, std::memory_order_relaxed);
     maxFillUs_.store(0, std::memory_order_relaxed);
     maxGapUs_.store(0, std::memory_order_relaxed);
 #endif
-    eofs_ = 0;
+    eofs_.store(0, std::memory_order_relaxed);
     observer_ = observer;
     scenes_[0] = scenes_[1] = {};
     submitted_ = 0;
@@ -230,9 +234,11 @@ bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
     self.vsyncs_.fetch_add(1, std::memory_order_relaxed);
 #ifndef VENTANAL_HOST_TEST
     const uint32_t now = uint32_t(esp_timer_get_time());
-    const bool shortFrame = self.eofs_ < HEIGHT / BounceRows;
-    if (self.lastVsyncUs_) {
-        const uint32_t gap = now - self.lastVsyncUs_;
+    const uint32_t previousVsync = self.lastVsyncUs_.exchange(now, std::memory_order_relaxed);
+    const bool shortFrame = self.eofs_.exchange(0, std::memory_order_relaxed) < HEIGHT / BounceRows;
+    const uint32_t lastEof = self.lastEofUs_.exchange(0, std::memory_order_relaxed);
+    if (previousVsync) {
+        const uint32_t gap = now - previousVsync;
         if (gap > self.maxGapUs_.load(std::memory_order_relaxed))
             self.maxGapUs_.store(gap, std::memory_order_relaxed);
         if (shortFrame) self.shortFrames_.fetch_add(1, std::memory_order_relaxed);
@@ -241,13 +247,10 @@ bool IRAM_ATTR Panel::vsync(esp_lcd_panel_handle_t handle,
 #else
         const bool restarting = shortFrame;
 #endif
-        const uint32_t phase = now - self.lastEofUs_;
-        if (restarting && self.lastEofUs_ && phase > VBlankUs && phase < VBlankUs * 3)
+        const uint32_t phase = now - lastEof;
+        if (restarting && lastEof && phase > VBlankUs && phase < VBlankUs * 3)
             self.lateRestarts_.fetch_add(1, std::memory_order_relaxed);
     }
-    self.lastVsyncUs_ = now;
-    self.eofs_ = 0;
-    self.lastEofUs_ = 0;
 #endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
     self.syncAt_ = now;
@@ -262,11 +265,11 @@ bool IRAM_ATTR Panel::fillBounce(esp_lcd_panel_handle_t, void* buffer, int pos,
     auto& self = *static_cast<Panel*>(context);
 #ifndef VENTANAL_HOST_TEST
     const uint32_t start = uint32_t(esp_timer_get_time());
-    const bool prefill = !self.lastVsyncUs_ ||
-        (start - self.lastVsyncUs_ < 500 && pos < 2 * WIDTH * BounceRows);
+    const uint32_t lastVsync = self.lastVsyncUs_.load(std::memory_order_relaxed);
+    const bool prefill = !lastVsync || (start - lastVsync < 500 && pos < 2 * WIDTH * BounceRows);
     const bool lastActive = !prefill && pos == WIDTH * BounceRows;
-    if (!prefill) ++self.eofs_;
-    if (lastActive) self.lastEofUs_ = start;
+    if (!prefill) self.eofs_.fetch_add(1, std::memory_order_relaxed);
+    if (lastActive) self.lastEofUs_.store(start, std::memory_order_relaxed);
 #endif
 #ifdef VENTANAL_LCD_DIAG_PANEL
     self.diag_.beginFill(start, lastActive);
