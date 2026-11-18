@@ -119,7 +119,7 @@ Close and validate before LittleFS atomic rename; never unlink the old destinati
 A failed download, buffer allocation or rename leaves the previous frame intact.
 Wi-Fi power saving is disabled during each frame request and its exact previous
 mode is restored on every exit, including failure and diagnostic abort. All HTTP
-requests share the User-Agent `Ventanal/1.0.0 (+https://github.com/sdelavega)`.
+requests share the User-Agent `Ventanal/1.0.0`.
 Internal RAM avoids the flash driver's small PSRAM bounce copies, and stays off
 the 8 KiB task stack. Each frame log includes elapsed `ms` from allocation/request through validation
 and commit, plus read/write/check phase timings; the combined sketch download

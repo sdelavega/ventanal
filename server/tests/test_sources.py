@@ -17,7 +17,7 @@ from ventanal.art.sources import (
 
 
 FIXTURES = Path(__file__).parent / 'fixtures'
-USER_AGENT = 'Ventanal/1.0.0 (+https://github.com/sdelavega)'
+USER_AGENT = 'Ventanal/1.0.0'
 
 
 def fixture(name):

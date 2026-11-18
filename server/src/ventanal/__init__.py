@@ -3,6 +3,7 @@
 
 """Ventanal e-paper render service."""
 
-# api.weather.gov answers 403 to any User-Agent containing the repository
-# path "sdelavega/ventanal" (measured 2026-11-17), so link the profile instead.
-USER_AGENT = "Ventanal/1.0.0 (+https://github.com/sdelavega)"
+# Keep the User-Agent free of links: api.weather.gov refuses agents containing
+# "sdelavega/ventanal" and the Art Institute of Chicago image server refuses
+# any agent mentioning github.com (both measured 2026-11-17).
+USER_AGENT = "Ventanal/1.0.0"
