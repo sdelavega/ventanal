@@ -7,6 +7,7 @@
 // clock becomes trustworthy, then applies the persisted window.
 
 #include "../lcd43b/persist.h"
+#include "../lcd43b/clock.h"
 
 #include "Preferences.h"
 
@@ -83,6 +84,38 @@ int main() {
         assert(boot.screens[2].present && boot.spareCount == 3);
         int slots[6]; assert(lcd::activeSlots(true,3,lcd::DeviceSettings{},slots,6)==6);   // selection can normalise
     }
+    {   // Offline reboot: only NVS and the RTC time are available, no fetch.
+        freshNvs();
+        Preferences writer;
+        assert(writer.begin("ventanal", false));
+        lcd::DeviceManifest published;
+        published.clock24h = false;
+        lcd::savePublishShape(writer, published);
+        writer.end();
+        Preferences reader;
+        assert(reader.begin("ventanal", true));
+        lcd::DeviceManifest boot;
+        assert(boot.clock24h);
+        lcd::loadPublishShape(reader, boot);
+        assert(!boot.clock24h);
+        tm local{};
+        local.tm_year=126; local.tm_mon=10; local.tm_mday=17;
+        local.tm_wday=2; local.tm_hour=14; local.tm_min=32;
+        char time[16], date[24];
+        assert(lcd::formatClock(local,boot.clock24h,time,sizeof time,date,sizeof date));
+        assert(!strcmp(time,"2:32 PM"));
+        reader.end();
+        // A subsequent server change back to 24 h also survives reboot.
+        assert(writer.begin("ventanal", false));
+        published.clock24h = true;
+        lcd::savePublishShape(writer, published);
+        writer.end();
+        assert(reader.begin("ventanal", true));
+        lcd::loadPublishShape(reader, boot);
+        assert(boot.clock24h);
+        assert(lcd::formatClock(local,boot.clock24h,time,sizeof time,date,sizeof date));
+        assert(!strcmp(time,"14:32"));
+    }
     {   // Cache ids and the selection round-trip under the phase-1 keys.
         freshNvs();
         Preferences prefs;
@@ -112,6 +145,9 @@ int main() {
         lcd::DeviceManifest boot;
         assert(!lcd::loadQuiet(prefs, boot));
         assert(!boot.quietValid());
+        boot.clock24h = false;
+        lcd::loadPublishShape(prefs, boot);
+        assert(boot.clock24h); // missing key defaults to 24 h (older firmware)
     }
     {   // Fresh device: selection defaults to art/spare0.
         freshNvs();

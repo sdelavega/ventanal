@@ -865,4 +865,10 @@ constexpr ChromeSpan LCARS_CHROME[] = {
     {479,43,43,0xf380},
     {479,44,799,0xfba0},
 };
+struct SettingsSection { int y,h; const char* label; };
+constexpr SettingsSection SETTINGS_SECTIONS[] = {
+    {60,120,"DISPLAY"},
+    {184,100,"POWER"},
+    {288,138,"SCREENS"},
+};
 } // namespace lcd

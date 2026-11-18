@@ -7,6 +7,7 @@
 //   - the validated quiet window (the manifest's quiet block, so an
 //     offline reboot still honours quiet hours — pinned by
 //     test_lcd43b_persist);
+//   - the clock format (default 24 h), retained across offline reboots;
 //   - the published screen shape (solar present, spare count), so the
 //     boot-time screen list matches the cache before the first manifest
 //     fetch and the selection can be normalised;
@@ -89,13 +90,16 @@ inline bool loadQuiet(Preferences& prefs, DeviceManifest& manifest) {
 }
 
 // Persist the published screen shape so a boot before any manifest fetch
-// can still normalise the selection against the right list.
+// can still normalise the selection against the right list. Keep the
+// manifest clock preference alongside it for the same offline boot path.
 inline void savePublishShape(Preferences& prefs, const DeviceManifest& m) {
     prefs.putUChar("solar-pub", m.screens[2].present ? 1 : 0);
     prefs.putUChar("spare-count", m.spareCount);
+    prefs.putUChar("clock24h", m.clock24h ? 1 : 0);
 }
 
 inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
+    m.clock24h = prefs.getUChar("clock24h", 1) != 0;
     m.screens[2].present = prefs.getUChar("solar-pub", 0) != 0;
     m.spareCount = uint8_t(prefs.getUChar("spare-count", 0) % (SPARE_SLOTS + 1));
 }

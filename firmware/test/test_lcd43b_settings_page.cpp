@@ -59,7 +59,9 @@ int main(int argc,char** argv) {
     if(argc==2) {
         auto preview=defaultSettings(false);
         drawSettingsPage(px.data()+1,preview,true,false,"VENTANAL · LCD43B · WI-FI OK · v1.0.0");
-        drawTopBarClock(px.data()+1,"2:32 PM","TUE 17 NOV",-1,BatteryLevel::None);
+        uint16_t region[CLOCK_GAP.w*CLOCK_GAP.h];
+        renderReadout(region,nullptr,true,"2:32 PM","TUE 17 NOV",-1,BatteryLevel::None);
+        pasteReadout(px.data()+1,region,CLOCK_GAP);
         FILE* f=fopen(argv[1],"wb"); assert(f);
         assert(fwrite(px.data()+1,2,WIDTH*HEIGHT,f)==size_t(WIDTH)*HEIGHT); fclose(f);
     }

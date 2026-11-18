@@ -87,19 +87,6 @@ inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcar
 inline void pasteReadout(uint16_t* px, const uint16_t* region, ReadoutRect r) {
     for(int y=0;y<r.h;++y) memcpy(px+(r.y+y)*WIDTH+r.x,region+y*r.w,size_t(r.w)*2);
 }
-inline void drawTopBarClock(uint16_t* px, const char* time, const char* date,
-                            int percent, BatteryLevel lvl) {
-    uint16_t region[204*26];
-    renderReadout(region,nullptr,true,time,date,percent,lvl);
-    pasteReadout(px,region,CLOCK_GAP);
-}
-inline void drawArtCorner(uint16_t* px, const uint16_t* artRegion, const char* time,
-                          const char* date, int percent, BatteryLevel lvl) {
-    uint16_t region[250*80];
-    renderReadout(region,artRegion,false,time,date,percent,lvl);
-    pasteReadout(px,region,ART_CORNER);
-}
-
 // Small OFFLINE mark, top-left, mirroring the e-paper readout wording.
 inline void drawOfflineMark(uint16_t* pixels, int width, int height) {
     const int left = 8;

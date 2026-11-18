@@ -304,10 +304,10 @@ bool renderClock() {
     tm local{}; const time_t now=time(nullptr); localtime_r(&now,&local);
     char timeText[16], dateText[24];
     const bool valid=lcd::formatClock(local,state.manifest.clock24h,timeText,sizeof timeText,dateText,sizeof dateText);
-    // No voltage path on this board (board.h); batteryFullMv stays unused.
-    const int mv=-1, percent=-1;
+    const int mv=settingsBatteryMv();
+    const int percent=lcd::batteryPercent(mv,settings.batteryFullMv);
     lcd::renderReadout(clockPixels,clockBackground,settingsPage.active || lcd::isLcarsSlot(clockSlot),
-                       timeText,dateText,percent,lcd::batteryLevel(mv,percent));
+                       timeText,dateText,percent,powerLevel());
     lcd::log("readout valid=%d time=%s date=%s h24=%d battery=none\n",
              valid,timeText,dateText,state.manifest.clock24h);
     drawnMinute=now/60;

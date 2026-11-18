@@ -156,9 +156,11 @@ int main() {
     }
     for (bool lcars : {false,true}) {
         std::fill(screen,screen+PIXELS,0xffff);
+        uint16_t region[250*80];
+        const auto rect=lcars ? lcd::CLOCK_GAP : lcd::ART_CORNER;
         uint16_t art[250*80]; std::fill(art,art+250*80,0xffff);
-        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
-        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
+        lcd::renderReadout(region,art,lcars,"2:32 PM","TUE 17 NOV",-1,lcd::BatteryLevel::None);
+        lcd::pasteReadout(screen,region,rect);
         int changed=0;
         for(int y=0;y<lcd::HEIGHT;++y) for(int x=0;x<lcd::WIDTH;++x) {
             bool inside=lcars ? (x>=548 && x<752 && y<26) : (x>=550 && y<80);
@@ -167,11 +169,11 @@ int main() {
         assert(changed>0);
         uint16_t before[PIXELS]; memcpy(before,screen,sizeof screen);
         // None always omits percentage, regardless of its numeric input.
-        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::None);
-        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::None);
+        lcd::renderReadout(region,art,lcars,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::None);
+        lcd::pasteReadout(screen,region,rect);
         assert(!memcmp(before,screen,sizeof screen));
-        if(lcars) lcd::drawTopBarClock(screen,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::Ok);
-        else lcd::drawArtCorner(screen,art,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::Ok);
+        lcd::renderReadout(region,art,lcars,"2:32 PM","TUE 17 NOV",82,lcd::BatteryLevel::Ok);
+        lcd::pasteReadout(screen,region,rect);
         assert(memcmp(before,screen,sizeof screen));
     }
     {

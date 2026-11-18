@@ -179,7 +179,7 @@ build/test_lcd43b_manifest: test_lcd43b_manifest.cpp ../lcd43b/manifest.h ../lcd
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I"$(ARDUINOJSON)" test_lcd43b_manifest.cpp $(LDFLAGS) -o $@
 
-build/test_lcd43b_overlay: $(wildcard ../lcd43b/*.h) test_lcd43b_overlay.cpp ../lcd43b/overlay.h ../lcd43b/gfxfont.h ../ventanal/fonts/Antonio-Regular.h ../ventanal/fonts/Inter-Medium.h Makefile
+build/test_lcd43b_overlay: $(wildcard ../lcd43b/*.h) test_lcd43b_overlay.cpp ../lcd43b/overlay.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_overlay.cpp $(LDFLAGS) -o $@
 
@@ -197,7 +197,7 @@ build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp $(LDFLAGS) -fsanitize=address -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
-build/test_lcd43b_persist: test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
+build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_persist.cpp $(LDFLAGS) -o $@
 
@@ -205,9 +205,9 @@ build/test_lcd43b_clock: test_lcd43b_clock.cpp $(wildcard ../lcd43b/*.h) Makefil
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_clock.cpp $(LDFLAGS) -o $@
 
-build/test_lcd43b_battery: test_lcd43b_battery.cpp $(wildcard ../lcd43b/*.h) Makefile
+build/test_lcd43b_battery: ../ventanal/logic.cpp ../ventanal/logic.h test_lcd43b_battery.cpp $(wildcard ../lcd43b/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_battery.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_battery.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
 build/test_lcd43b_settings: test_lcd43b_settings.cpp $(wildcard ../lcd43b/*.h) $(wildcard fakes/*.h) Makefile
 	mkdir -p build

@@ -66,7 +66,8 @@ can supply time at boot before the network is available; an unset or invalid
 clock stays hidden until synchronized. The RTC needs a **CR927 coin cell** to
 keep time across loss of main power. The RTC backup cell is separate from the
 board's main battery supply. Configure the board's POSIX timezone privately;
-the manifest supplies the 12/24-hour format. The visible clock updates each minute.
+the manifest supplies the 12/24-hour format, saved in NVS for offline restarts
+(default 24-hour until first received). The visible clock updates each minute.
 
 This board has **no battery-voltage sense and no USB-source detection**. It
 cannot show battery percentage, charging status or voltage-based warnings, and
@@ -112,11 +113,18 @@ arduino-cli compile --fqbn 'esp32:esp32:esp32s3:FlashSize=16M,PSRAM=opi,FlashMod
   --build-path /tmp/lcd43b firmware/lcd43b
 ```
 
-The sketch-local [partitions.csv](partitions.csv) overrides the partition table
-with a 4 MiB factory app and 11.9 MiB LittleFS. **Known size limit:** the current
-firmware is roughly **91% of the standard 1.25 MB default app slot**. Keep that
-limited headroom in mind when adding features; the sketch's larger app partition
-must not be confused with the standard default-slot budget.
+The sketch-local [partitions.csv](partitions.csv) overrides the default layout.
+The build above emits `lcd43b.ino.partitions.bin` with a **4 MiB factory app**
+(`factory`, offset `0x10000`, size `0x400000`) and **11.9 MiB LittleFS**
+(`littlefs`, offset `0x410000`, size `0xBF0000`); that is the partition table
+used when flashing this build. Decoding the generated binary on 2026-11-17,
+using the public example configuration, confirmed these entries. The app binary
+was 1,197,456 bytes: about **28.6% of the real app slot**, leaving **2.86 MiB**
+of headroom. Exact usage varies with configuration and code changes.
+
+arduino-cli still reports roughly **91% of 1,310,720 bytes (1.25 MiB)** because
+its size-report yardstick comes from `default.csv` for `PartitionScheme=default`.
+That report does not describe the app capacity of the emitted partition table.
 
 Logs use native USB Serial/JTAG, with `USBMode=hwcdc,CDCOnBoot=cdc` required.
 Select the board's actual serial port; USB CDC ignores the baud rate. Replug USB

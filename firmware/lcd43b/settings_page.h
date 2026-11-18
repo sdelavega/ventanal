@@ -99,9 +99,7 @@ inline void drawSettingsChrome(uint16_t* px,bool labels=true) {
     memset(px,0,size_t(WIDTH)*HEIGHT*2);
     for(const auto& span:LCARS_CHROME)
         for(int x=span.left;x<=span.right;++x) px[span.y*WIDTH+x]=span.colour;
-    struct Section { int y,h; const char* label; };
-    const Section sections[]={{60,120,"DISPLAY"},{184,100,"POWER"},{288,138,"SCREENS"}};
-    if(labels) for(const auto& section:sections)
+    if(labels) for(const auto& section:SETTINGS_SECTIONS)
         drawText(px,WIDTH,HEIGHT,SidebarLabel,section.label,
                  92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
 }

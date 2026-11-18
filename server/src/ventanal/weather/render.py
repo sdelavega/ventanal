@@ -78,10 +78,6 @@ def _location_marker(canvas, centre, colours, here_label="es"):
     solid.ellipse((cx - 7, cy - 7, cx + 7, cy + 7), fill=colours['black'])
 
 
-# Public entry point for device renderers; retain the e-paper implementation.
-location_marker = _location_marker
-
-
 def render_weather(w: Weather, alerts: list[Alert], radar: Radar | None, lines,
                    place: str, coords: tuple[float, float], now: datetime, cfg: Config) -> Canvas:
     """Compose a 1600×1200 frame; radar inputs use the 782×462 inner size."""
