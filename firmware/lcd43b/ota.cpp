@@ -10,6 +10,7 @@
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
+#include <esp_timer.h>
 #include <mbedtls/sha256.h>
 #include <memory>
 #include <sdkconfig.h>
@@ -35,6 +36,8 @@ constexpr char githubAttemptsKey[] = "ota-gh-tries";
 constexpr char checkKey[] = "ota-gh-check";
 constexpr uint32_t transferMs = 60000;
 constexpr uint32_t idleMs = 6000;
+constexpr uint64_t healthyBootUs = 150ULL * 1000 * 1000;
+esp_timer_handle_t updateDeadline = nullptr;
 
 bool saveJournal(Preferences& prefs, const UpdateJournal& journal) {
     if (prefs.putBytes(journalKey, &journal, sizeof journal) == sizeof journal) return true;
@@ -212,7 +215,10 @@ public:
         config.disable_auto_redirect = true;
         if (!strncmp(url, "https://", 8)) config.crt_bundle_attach = esp_crt_bundle_attach;
 #ifdef VENTANAL_LCD_OTA_BASE_URL
-        else if (strncmp(url, "http://", 7)) return -1;
+        else if (strncmp(url, "http://", 7)) {
+            log("ota github error=unsupported-url-scheme\n");
+            return -1;
+        }
 #else
         else return -1;
 #endif
@@ -329,6 +335,19 @@ bool mountUpdateCache(Preferences& prefs) {
     return false;
 }
 
+bool armUpdateDeadline() {
+    if (slotState(esp_ota_get_running_partition()) != OtaSlotState::Pending) return false;
+    // The timer task runs independently of Arduino setup/loop. Resetting a
+    // pending image lets the bootloader mark it aborted and select its predecessor.
+    esp_timer_create_args_t timer{};
+    timer.callback = [](void*) { esp_restart(); };
+    timer.name = "ota-health";
+    if (esp_timer_create(&timer, &updateDeadline) != ESP_OK
+        || esp_timer_start_once(updateDeadline, healthyBootUs) != ESP_OK)
+        esp_restart();
+    return true;
+}
+
 UpdateBoot readUpdateBoot(Preferences& prefs) {
     UpdateBoot boot{};
     const auto* running = esp_ota_get_running_partition();
@@ -337,7 +356,8 @@ UpdateBoot readUpdateBoot(Preferences& prefs) {
     auto& journal = boot.journal;
     auto& record = journal.record;
     if (prefs.getBytes(journalKey, &journal, sizeof journal) != sizeof journal
-        || !terminated(record.version) || !terminated(journal.approval)) {
+        || !validOtaRecord(record) || !terminated(journal.approval)
+        || journal.source > UpdateSource::GitHub) {
         journal = {};
         return boot;
     }
@@ -366,12 +386,26 @@ void acknowledgeUpdate(Preferences& prefs, UpdateBoot& boot, const char* sentRep
     char current[otaReportCapacity];
     formatOtaReport(current, boot.journal.record);
     if (strcmp(current, sentReport) || strcmp(boot.journal.approval, sentApproval)) return;
+    const auto& journal = boot.journal;
+    if ((journal.record.result == OtaResult::Ok || journal.record.result == OtaResult::RolledBack)
+        && journal.source != UpdateSource::None) {
+        const char* key = attemptsKey(journal.source);
+        if (prefs.isKey(key) && !prefs.remove(key)) {
+            log("ota error=nvs-attempt-ack\n");
+            return;
+        }
+    }
     if (!prefs.isKey(journalKey) || prefs.remove(journalKey)) boot.journal = {};
 }
 
 bool confirmUpdate(Preferences& prefs, UpdateBoot& boot) {
     if (!boot.pending || !boot.matching || esp_ota_mark_app_valid_cancel_rollback() != ESP_OK)
         return false;
+    if (updateDeadline) {
+        esp_timer_stop(updateDeadline);
+        esp_timer_delete(updateDeadline);
+        updateDeadline = nullptr;
+    }
     boot.pending = false;
     boot.journal.record.result = OtaResult::Ok;
     saveJournal(prefs, boot.journal);
@@ -488,7 +522,7 @@ CheckResult checkGithub(int64_t last, GithubCheck& result, Watchdog& watchdog) {
             && response.readText(body, limit, started, watchdog);
     };
     String metadata, signature;
-    if (!fetch(base + ".json", metadata, sizeof result.offer.release - 1)
+    if (!fetch(base + ".json", metadata, otaReleaseMetadataLimit)
         || !fetch(base + ".json.sig", signature, 128)
         || strlen(metadata.c_str()) != metadata.length() || strlen(signature.c_str()) != signature.length())
         return CheckResult::Failed;
@@ -519,6 +553,8 @@ int64_t loadGithubCheck(Preferences& prefs, UpdateOffer& offer) {
 }
 
 bool saveGithubCheck(Preferences& prefs, const GithubCheck& result) {
+    // Reset only the direct-install budget. Host attempts are tied to approvals.
+    if (prefs.isKey(githubAttemptsKey) && !prefs.remove(githubAttemptsKey)) return false;
     return prefs.putBytes(checkKey, &result, sizeof result) == sizeof result;
 }
 }  // namespace lcd

@@ -103,7 +103,7 @@ when that check and the configured solar schedule allow it.
 Never commit network credentials, host addresses, location or licence details.
 Keep the header outside the repository. [config.example.h](config.example.h)
 documents the installation fields. An unprovisioned generic build displays
-a waiting screen.
+**Not set up**.
 
 The LCD project uses PlatformIO Core 6.2.0 and pins
 [pioarduino 55.03.312-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.312-1)
@@ -128,7 +128,7 @@ private_flags =
 
 For a secure override, add
 `'-DVENTANAL_LCD_SECURITY_CONFIG="/absolute/path/to/pairing_override.h"'`
-under `private_flags`. The same options apply to both environments.
+under `private_flags`. The same options apply to all environments.
 See the firmware guide for [LCD pairing](../README.md#waveshare-lcd-pairing).
 The first wired private build stores these installation values in NVS. Later
 generic builds reuse them. For a certificate or settings change, add
@@ -147,7 +147,12 @@ Select the board's actual serial port. The board uses native USB Serial/JTAG.
 After light sleep, replug USB to restore the port. If the uploader cannot enter
 download mode, hold BOOT while plugging in.
 
-`normal` is the everyday build. `diag` starts a three-minute automatic screen
+`normal` and `diag` require the owner release public key. Use `-e bench` for a
+local build with the public fixture key. It prints **TEST RELEASE KEY** at boot
+and reports that status to the host. For a diagnostics-only bench build, set
+`-DVENTANAL_ALLOW_TEST_KEY=1` under local `private_flags`.
+
+`diag` starts a three-minute automatic screen
 cycle at boot, logs bounce and VSYNC statistics, and exercises shorter refresh
 and cache-save intervals. Use `-e diag -t upload` for that test and then restore
 `normal`. To add another existing build flag, put it under `private_flags` in

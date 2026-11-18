@@ -65,6 +65,10 @@ struct DeferredSave {
         return pending && (!retrying || now - failedAt >= 10000);
     }
 
+    bool dueUnderPressure(uint32_t now) const {
+        return body.bytes && ready(now);
+    }
+
     bool replace(const char* nextId, const FrameBody& nextBody, uint32_t now) {
         size_t length = 0;
         while (length < sizeof id && nextId[length]) ++length;

@@ -130,11 +130,11 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     self.proof_key = ui.security.authenticate(
                         self.command, self.path, self.headers, profile[1] if profile else None, firmware=firmware)
                 if self.proof_key is None:
-                    logging.getLogger(__name__).info('Board proof rejected')
+                    log.info('Board proof rejected')
                     self.send_error(403)
                     return False
                 self.pairing_id = self.headers.get('X-Ventanal-Device')
-                logging.getLogger(__name__).info('Board proof accepted')
+                log.info('Board proof accepted')
             return True
 
         def do_GET(self):
@@ -316,8 +316,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             ui.handle(self, unquote(urlsplit(self.path).path), post=True)
 
         def log_request(self, code='-', size='-'):
-            logging.getLogger(__name__).info('HTTP %s %s %s', self.command,
-                                            urlsplit(self.path).path, code)
+            log.info('HTTP %s %s %s', self.command, urlsplit(self.path).path, code)
 
         def log_message(self, fmt, *args):
             pass  # Error text may contain the raw request target.

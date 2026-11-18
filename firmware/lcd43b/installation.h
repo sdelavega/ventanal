@@ -2,7 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 
-#include <Preferences.h>
+#include "../common/installation.h"
 #include <cstdint>
 #include <cstring>
 
@@ -49,31 +49,15 @@ inline bool validInstallation(const Installation& config) {
         && strspn(config.deviceKey, "0123456789abcdef") == 64;
 }
 
+inline bool migrateInstallation(Installation&, size_t) {
+    return false;  // Schema 1 is the first stored LCD format.
+}
+
 inline bool loadInstallation(Installation& out, const Installation* seed = nullptr,
-                             uint32_t forceRevision = 0) {
-    out = {};
-    Preferences prefs;
-    const bool canSeed = seed && validInstallation(*seed);
-    if (!prefs.begin(installationNamespace, !canSeed)) return false;
-    const bool present = prefs.isKey(installationKey);
-    size_t length = present ? prefs.getBytesLength(installationKey) : 0;
-    bool read = length >= sizeof out.schema && length <= sizeof out
-        && prefs.getBytes(installationKey, &out, length) == length;
-    const bool force = forceRevision && (!read || length != sizeof out
-        || out.schema != installationSchema || out.forcedRevision != forceRevision);
-    if (canSeed && (force || !present || (read && out.schema < installationSchema))) {
-        out = *seed;
-        out.forcedRevision = forceRevision;
-        if (prefs.putBytes(installationKey, &out, sizeof out) != sizeof out) {
-            out = {};
-            return false;
-        }
-        length = sizeof out;
-        read = prefs.getBytes(installationKey, &out, length) == length;
-    }
-    if (read && length == sizeof out && validInstallation(out)) return true;
-    out = {};
-    return false;
+                             uint32_t forceRevision = 0, bool persistMigration = true) {
+    return loadInstallationSettings(out, installationNamespace, installationKey, seed,
+                                    forceRevision, persistMigration, validInstallation,
+                                    migrateInstallation);
 }
 
 #ifdef VENTANAL_HOST_TEST
@@ -82,6 +66,6 @@ inline Installation installation{installationSchema, 0, "your-network-name",
     "your-network-password", "", "EST5EDT,M3.2.0,M11.1.0"};
 #else
 inline Installation installation{};
-bool initializeInstallation();
+bool initializeInstallation(bool pendingUpdate);
 #endif
 }  // namespace lcd

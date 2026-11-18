@@ -18,6 +18,7 @@
 // run. The loop owns display state and cache saves. The worker reserves
 // replay counters for paired requests and signals the loop after writing.
 
+#include "../common/release_key.h"
 #include <Arduino.h>
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -118,7 +119,6 @@ lcd::UpdateOffer hostOffer, githubOffer, queuedOffer;
 lcd::UpdateSource installQueued = lcd::UpdateSource::None;
 lcd::GithubCheck githubStaging;
 int64_t githubLastCheck = 0;
-uint32_t updateBootStarted = 0;
 std::atomic<bool> updateManifestVerified{false};
 char refreshOtaReport[otaReportCapacity]{};
 char refreshOtaApproval[otaApprovalCapacity]{};
@@ -488,7 +488,7 @@ void loadResidentCache() {
 #endif
     lcd::log("psram total=%u free=%u largest=%u slots=%u/%u loaded=%u load_ms=%lu\n",
              unsigned(ESP.getPsramSize()), unsigned(ESP.getFreePsram()),
-             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM)),
+             unsigned(heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT)),
              allocated, unsigned(lcd::SCREEN_SLOTS), loaded, millis() - started);
 }
 time_t drawnMinute = -1;
@@ -629,7 +629,8 @@ bool show(int index) {
         auto* waiting = localCanvas();
         if (!waiting) { lcd::log("blit error=allocation\n"); return false; }
         lcd::drawWaiting(waiting, lcd::WIDTH, lcd::HEIGHT,
-                         installationReady ? lcd::installation.host : "Provision Wi-Fi and host over USB");
+                         installationReady ? lcd::installation.host : "Provision Wi-Fi and host over USB",
+                         installationReady);
         if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
             const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
                           || refreshLabel.label() == lcd::RefreshLabel::Failed;
@@ -858,7 +859,7 @@ bool persistDeferred(bool memoryPressure) {
     // The spare backing a selected override must stay available until its
     // archive is committed. Other slots can save in either order.
     const auto due = [now, memoryPressure](const lcd::DeferredSave& save) {
-        if (memoryPressure) return save.body.bytes && save.ready(now);
+        if (memoryPressure) return save.dueUnderPressure(now);
         uint32_t elapsed = now - save.queuedAt;
 #ifdef VENTANAL_LCD_DIAG_PANEL
         if (elapsed >= 12000) elapsed = lcd::MAX_SAVE_DELAY_MS; // exercise the deadline
@@ -921,6 +922,7 @@ bool persistDeferred(bool memoryPressure) {
 void reclaimCacheMemory(size_t bytes) {
     // Queued frames own their compressed bodies until LittleFS commits them.
     // A cold cache can fill PSRAM before the regular dark-screen save window.
+    // ps_malloc requires byte-addressable PSRAM, even for RGB565 pixels.
     while (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < bytes) {
         if (!persistDeferred(true)) break;
     }
@@ -1067,11 +1069,6 @@ void applyFinishedRefresh() {
 
 void tickUpdateBoot() {
     if (!updateBoot.pending) return;
-    constexpr uint32_t healthyBootMs = 150000;
-    if (millis() - updateBootStarted >= healthyBootMs) {
-        setBacklight(false);
-        lcd::rollbackUpdate();
-    }
     if (updateManifestVerified.load() && WiFi.status() == WL_CONNECTED
         && state.drawn && panel.waitForPresent()) {
         ScanoutSavePause pause;
@@ -1084,12 +1081,18 @@ bool showUpdating() {
     // Keep the panel dark while retiring and redrawing that canvas.
     setBacklight(false);
     auto* pixels = localCanvas();
-    if (!pixels) return false;
+    if (!pixels) {
+        backlightRefresh();
+        return false;
+    }
     lcd::drawSettingsChrome(pixels, false);
     lcd::drawText(pixels, lcd::WIDTH, lcd::HEIGHT, StatusFont, "Updating...",
                   150, 210, lcd::rgb565(255,170,0));
     clockSlot = -1;
-    if (!presentScreen(pixels, true) || !panel.waitForPresent()) return false;
+    if (!presentScreen(pixels, true) || !panel.waitForPresent()) {
+        backlightRefresh();
+        return false;
+    }
     setBacklight(true);
     lcd::log("ota update-screen=presented\n");
     return true;
@@ -1106,7 +1109,7 @@ void runQueuedUpdate() {
         } else if (!showUpdating()) {
             updateNotice = "Update screen unavailable";
         } else {
-            delay(2000);  // Leave the notice visible before blanking for the transfer.
+            delay(1000);  // Leave the notice visible before blanking for the transfer.
             {
                 ScanoutSavePause pause;
                 refreshWatchdog.subscribe();
@@ -1476,6 +1479,7 @@ void tickPower() {
 }  // namespace
 
 void setup() {
+    const bool pendingUpdate = lcd::armUpdateDeadline();
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
     // HWCDC (native USB-Serial/JTAG): keep the last boot lines while no
     // host has the port open (the not-connected write path drops only the
@@ -1485,7 +1489,9 @@ void setup() {
 #endif
     Serial.begin(115200);
     delay(300);
-    lcd::log("ventanal lcd43b boot\n");
+    lcd::log("ventanal lcd43b boot fw=%s\n", lcd::FIRMWARE_VERSION);
+    if (VENTANAL_TEST_RELEASE_KEY)
+        lcd::log("!!! TEST RELEASE KEY - BENCH FIRMWARE ONLY !!!\n");
     lcd::log("usb cdc hw=%d onboot=%d\n", ARDUINO_USB_MODE,
              ARDUINO_USB_CDC_ON_BOOT);
     lcd::log("memory psram_bytes=%u xip=%d dcache_line_bytes=%d\n",
@@ -1500,9 +1506,8 @@ void setup() {
     Wire.setClock(400000);
     if (!expander.begin()) lcd::log("error=ch422g-begin\n");
     expander.setBacklight(false);
-    installationReady = lcd::initializeInstallation();
+    installationReady = lcd::initializeInstallation(pendingUpdate);
     if (installationReady && !prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
-    updateBootStarted = millis();
     updateBoot = lcd::readUpdateBoot(prefs);
     int previous = -1;
     if (installationReady) {

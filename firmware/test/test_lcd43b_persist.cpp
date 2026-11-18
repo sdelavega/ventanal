@@ -187,6 +187,7 @@ int main() {
         assert(lcd::persistNow(true, false, lcd::MAX_SAVE_DELAY_MS, true));
 
         lcd::DeferredSave save;
+        assert(!save.dueUnderPressure(0));
         auto oldBytes = std::make_shared<uint8_t>(1);
         std::weak_ptr<uint8_t> previous = oldBytes;
         assert(save.replace("aaaaaaaaaaaaaaaa", {oldBytes, 1}, 100));
@@ -194,10 +195,10 @@ int main() {
         auto current = std::make_shared<uint8_t>(2);
         assert(save.replace("bbbbbbbbbbbbbbbb", {current, 1}, 300));
         assert(previous.expired());
-        assert(save.ready(300) && save.queuedAt == 100);
+        assert(save.ready(300) && save.dueUnderPressure(300) && save.queuedAt == 100);
         save.failedAt = 400;
         save.retrying = true;
-        assert(!save.ready(10399) && save.ready(10400));
+        assert(!save.dueUnderPressure(10399) && save.dueUnderPressure(10400));
         assert(!save.replace("0123456789abcdef0", {}, 425));
         assert(!strcmp(save.id, "bbbbbbbbbbbbbbbb") && save.body.bytes == current);
         assert(save.pending && save.queuedAt == 100 && save.retrying && save.failedAt == 400);
@@ -206,6 +207,7 @@ int main() {
         assert(save.queuedAt == 100);
         assert(save.replace("", {}, 500));
         assert(save.pending && save.queuedAt == 100 && !save.id[0] && !save.body.bytes);
+        assert(save.ready(500) && !save.dueUnderPressure(500));
     }
     puts("lcd43b persist: quiet, publish shape, cache ids, offline boot in"
          " quiet hours passed");

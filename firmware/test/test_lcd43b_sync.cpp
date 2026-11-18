@@ -43,14 +43,17 @@ struct CountingWatchdog : lcd::Watchdog {
 lcd::FrameBody stagedBodies[lcd::SCREEN_SLOTS];
 bool stagedDrops[lcd::SCREEN_SLOTS]{};
 int rejectStageSlot = -1;
+unsigned wireReclaims = 0;
 
 void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SLOTS][17],
              lcd::RefreshResult& result, CountingWatchdog& watchdog,
              const lcd::DeviceSettings& settings = {}, const char* skips = "",
-             const char* ota = "", const char* approval = "") {
+             const char* ota = "", const char* approval = "",
+             void (*reclaim)(size_t) = nullptr) {
     std::vector<uint8_t> staging(lcd::FRAME_BYTES);
     lcd::ResidentCache cache;
     cache.staging = staging.data();
+    cache.reclaimWireMemory = reclaim;
     std::fill_n(cache.allocated, lcd::SCREEN_SLOTS, true);
     cache.publish = [](int slot, const lcd::FrameInfo* info, const lcd::FrameBody& body) {
         if (info && slot == rejectStageSlot) return false;
@@ -254,7 +257,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         urlResponses["http://host" + weather.url] = weatherFrame;
@@ -447,7 +450,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         // Full-length bodies so the advertised size passes the gate; the
         // stall flag keeps any body byte from ever arriving.
@@ -503,7 +506,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         // Weather's server answer truncates: no full body ever arrives.
@@ -532,7 +535,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         urlResponses["http://host" + weather.url] = weatherFrame;
@@ -546,6 +549,17 @@ int main() {
         assert(result.frameFailed[0] && result.frameFailed[1]);   // required
         assert(lcd::anyRequiredFrameFailed(result));
         assert(!stagedBodies[0].bytes && !stagedBodies[1].bytes);
+
+        wireReclaims = 0;
+        refresh("http://host", "lcd43b", currentIds, result, watchdog, {}, "", "", "",
+                [](size_t bytes) {
+                    assert(bytes == lcd::FRAME_BYTES && failAllocation);
+                    ++wireReclaims;
+                    failAllocation = false;
+                });
+        assert(wireReclaims == 1);
+        assert(result.manifestOk && !lcd::anyRequiredFrameFailed(result));
+        assert(stagedBodies[0].bytes && stagedBodies[1].bytes);
     }
     {   // The shared queue wire format is sent on the device manifest GET.
         resetFakes();
@@ -567,7 +581,7 @@ int main() {
         assert(!strcmp(result.firmware.path, "/firmware/lcd43b-3.0.0.bin"));
         assert(!strcmp(result.firmware.approval, "0123456789abcdef"));
         assert(lastUserAgent == "Ventanal/1.0.0");
-        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"
+        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"
                                 "&skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb"
                                 "&ota=rolled_back:2.0.0&ota_approval=fedcba9876543210");
     }

@@ -41,8 +41,17 @@ int main() {
     assert(loadInstallation(loaded, &seed, 3) && !strcmp(loaded.ssid, "third-network"));
 
     Preferences::failWriteKey = installationKey;
-    assert(!loadInstallation(loaded, &seed, 4));
+    assert(loadInstallation(loaded, &seed, 4) && loaded.forcedRevision == 3);
     assert(loadInstallation(loaded) && loaded.forcedRevision == 3);
+    Preferences::failWriteKey.clear();
+
+    settingsPreferences[installationKey] = {1, 0, 0, 0};
+    assert(!loadInstallation(loaded));
+    assert(loadInstallation(loaded, &seed) && !strcmp(loaded.ssid, "third-network"));
+
+    settingsPreferences[installationKey][0] = 2;
+    assert(!loadInstallation(loaded, &seed, 5));
+    assert(settingsPreferences.at(installationKey)[0] == 2);
     assert((preferences.at("lcd-sec-counter") == std::vector<uint8_t>{1, 2, 3, 4}));
     puts("lcd43b installation: read-only start, paired seed, force-once, failed write and counter preservation passed");
 }

@@ -18,8 +18,10 @@ inline bool validOtaApproval(const char* id) {
     return strspn(id, "0123456789abcdef") == otaApprovalCapacity - 1;
 }
 
+inline constexpr size_t otaReleaseMetadataLimit = 2048;
+
 struct FirmwareOffer {
-    char release[2049];
+    char release[otaReleaseMetadataLimit + 1];
     char signature[89];
     char path[64];
     char approval[otaApprovalCapacity];

@@ -43,6 +43,7 @@ bool sameOffer(const UpdateOffer& a, const UpdateOffer& b);
 bool rolledBackOffer(const UpdateBoot& boot, const UpdateOffer& offer);
 bool mountUpdateCache(Preferences& prefs);
 UpdateBoot readUpdateBoot(Preferences& prefs);
+bool armUpdateDeadline();
 void acknowledgeUpdate(Preferences& prefs, UpdateBoot& boot, const char* sentReport,
                        const char* sentApproval);
 bool confirmUpdate(Preferences& prefs, UpdateBoot& boot);

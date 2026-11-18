@@ -27,8 +27,9 @@ offer are saved for a week between checks.
 After three failed attempts for the same host approval, select **Install**
 again on the host to grant a new approval, or approve a newer version. The
 Inkplate reports `failed:attempts:<last reason>`. The LCD has a separate
-three-attempt budget for each GitHub version. The Inkplate offers direct GitHub
-checks with its [diagnostic build flag](../firmware/README.md#toolchain).
+three-attempt budget for each GitHub version. A fresh completed GitHub check
+resets that budget. Direct GitHub checks are available in the LCD Settings
+and in Inkplate builds with the [diagnostic flag](../firmware/README.md#toolchain).
 
 ## Rollback
 
@@ -37,9 +38,10 @@ An interrupted transfer leaves the existing image bootable. After switching,
 the new image must connect to Wi-Fi, verify the host manifest and complete a
 frame refresh before it is marked healthy. If Wi-Fi or the host is temporarily
 unreachable, the Inkplate takes one short light-sleep wake and tries again.
-The image remains pending until the full health check succeeds. A failed
-health check or a reset before confirmation returns the board to the previous
-image. The next check-in reports the outcome on **Status** and includes the
+The image remains pending until the full health check succeeds. On the LCD,
+a 150-second timer resets an unconfirmed image even if setup or the main loop
+stalls. A failed health check or a reset before confirmation returns the
+board to the previous image. The next check-in reports the outcome on **Status** and includes the
 approval ID so the host can clear that install. Review the result before
 selecting **Install** again to retry the same version. Automatic installs skip
 that version after a rollback.
@@ -68,7 +70,7 @@ The replay counter stays in its existing NVS namespace.
 On the LCD, the first wired build with a private installation header provisions
 Wi-Fi, the host origin, timezone, display profile and optional pairing and
 TLS values. Generic builds read that installation from NVS. An unprovisioned
-generic LCD displays a waiting screen. To revise a provisioned installation,
+generic LCD displays **Not set up**. To revise a provisioned installation,
 add `-DVENTANAL_FORCE_PROVISION=1` to the PlatformIO private build flags, using
 a new revision for each change. Brightness, sleep settings and the pairing
 counter keep their existing storage.

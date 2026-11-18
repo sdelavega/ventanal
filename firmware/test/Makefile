@@ -278,3 +278,6 @@ build/test_cache build/test_cache_abort build/test_net build/test_secure_transpo
 build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h ../common/release_key.h ../common/ota_state.h
 
 build/test_settings build/test_security build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../common/installation.h
+
+build/test_lcd43b_installation build/test_lcd43b_sync: ../common/installation.h
+build/test_lcd43b_sync: ../common/release_key.h

@@ -41,16 +41,16 @@
 #endif
 
 namespace lcd {
-bool initializeInstallation() {
+bool initializeInstallation(bool pendingUpdate) {
 #if !defined(VENTANAL_RELEASE_BUILD) && defined(VENTANAL_LCD_CONFIG)
     static constexpr Installation seed{
         installationSchema, 0, VENTANAL_WIFI_SSID, VENTANAL_WIFI_PASSWORD,
         VENTANAL_HOST_URL, VENTANAL_TZ, VENTANAL_DEVICE_ID, VENTANAL_PAIRING_ID,
         VENTANAL_HOST_CERT_PEM, VENTANAL_DEVICE_KEY
     };
-    return loadInstallation(installation, &seed, VENTANAL_FORCE_PROVISION);
+    return loadInstallation(installation, &seed, VENTANAL_FORCE_PROVISION, !pendingUpdate);
 #else
-    return loadInstallation(installation);
+    return loadInstallation(installation, nullptr, 0, !pendingUpdate);
 #endif
 }
 }  // namespace lcd

@@ -12,7 +12,7 @@
 
 #define VENTANAL_WIFI_SSID "your-network-name"
 #define VENTANAL_WIFI_PASSWORD "your-network-password"
-// Local test server on this Mac, e.g. http://192.168.0.10:18780
+// Local test server on your host, e.g. http://192.168.0.10:18780
 #define VENTANAL_HOST_URL "http://192.168.0.10:18780"
 // Per-device profile published at <output>/devices/<device id>/manifest.json.
 #ifndef VENTANAL_DEVICE_ID

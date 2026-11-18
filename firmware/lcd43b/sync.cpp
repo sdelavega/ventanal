@@ -7,6 +7,7 @@
 // fakes and AddressSanitizer watching the frame buffer).
 
 #include "sync.h"
+#include "../common/release_key.h"
 #include "inflate.h"
 #include "scanout_diag.h"
 #include <vector>
@@ -67,6 +68,7 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     // The comma and tilde separators are permitted literally in a query.
     String path = String("/devices/") + deviceId + "/manifest.json?board=" + BOARD_ID
                   + "&fw=" + FIRMWARE_VERSION;
+    if (VENTANAL_TEST_RELEASE_KEY) path += "&test_release_key=1";
     if (skips[0]) path += String("&skips=") + skips;
     if (otaReport[0]) path += String("&ota=") + otaReport;
     if (otaApproval[0]) path += String("&ota_approval=") + otaApproval;

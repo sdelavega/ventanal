@@ -534,7 +534,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
             headers = {**proof(keys[name], path, counter), "X-Ventanal-Device": name}
         return request(path, headers=headers, tls=password_mode)
 
-    assert get(manifest, "desk", 1)[0] == 200
+    assert get(manifest + "&test_release_key=1", "desk", 1)[0] == 200
     assert get(manifest, "hall", 1)[0] == 200
     server.ui.firmware.cache(verified_metadata(*signed(board=LCD)), IMAGE)
     _, page, cookie = request("/login" if password_mode else "/", tls=password_mode)
@@ -548,6 +548,7 @@ def test_lcd_manifest_and_status_approval(web, signed, password_mode):
         _, page, _ = request("/", headers=session, tls=True)
         assert b"Waveshare 4.3B LCD (desk)" in page and b"Waveshare 4.3B LCD (hall)" in page
         csrf = re.search(rb'name="csrf" value="([^"]+)"', page)[1].decode()
+    assert b"Board reports TEST RELEASE KEY" in page
     fields = {"csrf": csrf, "board": LCD, "version": "2.0.0"}
     if password_mode:
         fields["pairing"] = server.ui.firmware_devices()["desk"]
