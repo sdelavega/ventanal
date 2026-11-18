@@ -19,6 +19,7 @@ import pytest
 from test_security import proof
 from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, encode_board_manifest
 from ventanal.ota import FirmwareStore, OPEN_DEVICE, poll_github, verified_metadata
+from ventanal.ota_ui import MAX_UPLOAD, PART_LIMITS
 from ventanal.release import canonical_release_json, sign_release, ReleaseError
 from ventanal.security import canonical
 from ventanal.serve import make_server
@@ -112,7 +113,7 @@ def test_poll_verifies_and_caches_only_usable_images(tmp_path, signed):
 ])
 def test_poll_failures_preserve_cached_images(tmp_path, signed, failure, message):
     store = FirmwareStore(tmp_path)
-    store.cache(verified_metadata(*signed()), IMAGE, OPEN_DEVICE)
+    store.cache(verified_metadata(*signed()), IMAGE)
 
     def github(request):
         if failure == "timeout":
@@ -129,8 +130,8 @@ def test_poll_failures_preserve_cached_images(tmp_path, signed, failure, message
 
 def test_device_approvals_are_isolated_and_survive_restart(tmp_path, signed):
     store = FirmwareStore(tmp_path)
-    store.cache(verified_metadata(*signed()), IMAGE, "pair-A")
-    store.cache(verified_metadata(*signed(LCD)), IMAGE, "pair-A")
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.cache(verified_metadata(*signed(LCD)), IMAGE)
     for board, device in ((BOARD, "pair-A"), (BOARD, "pair-B"), (LCD, "pair-A"), (BOARD, OPEN_DEVICE)):
         assert store.checkin(board, device, "1.0.0", None) is None
     assert not store.boards("pair-A")[0][0]["automatic"]
@@ -143,7 +144,7 @@ def test_device_approvals_are_isolated_and_survive_restart(tmp_path, signed):
     assert store.checkin(BOARD, "pair-A", "1.0.0", "rolled_back:2.0.0") is None
     store.set_automatic(BOARD, "pair-A", True)
     assert store.checkin(BOARD, "pair-A", "1.0.0", None) is None
-    store.cache(verified_metadata(*signed(version="3.0.0")), IMAGE, "pair-A")
+    store.cache(verified_metadata(*signed(version="3.0.0")), IMAGE)
     assert store.checkin(BOARD, "pair-A", "1.0.0", None)["path"].endswith("3.0.0.bin")
     assert store.checkin(BOARD, "pair-A", "3.0.0", "ok:3.0.0") is None
     state, releases = store.boards("pair-A")[0]
@@ -156,7 +157,7 @@ def test_cache_prunes_old_images_and_retains_pending_and_last_upload(tmp_path, s
     store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
     for major in range(2, 9):
         release = verified_metadata(*signed(version=f"{major}.0.0"))
-        store.cache(release, IMAGE, OPEN_DEVICE, manual=(major == 3))
+        store.cache(release, IMAGE, manual=(major == 3))
         if major == 2:
             store.approve(BOARD, OPEN_DEVICE, "2.0.0")
     for major in (2, 3, 6, 7, 8):
@@ -165,8 +166,25 @@ def test_cache_prunes_old_images_and_retains_pending_and_last_upload(tmp_path, s
         assert store.image(f"{BOARD}-{major}.0.0.bin") is None
     with pytest.raises(ReleaseError, match="already uses"):
         store.cache(verified_metadata(*signed(version="8.0.0", image=b"replacement")),
-                    b"replacement", OPEN_DEVICE)
+                    b"replacement")
     assert store.image(f"{BOARD}-8.0.0.bin") == IMAGE
+
+
+def test_cache_retains_pending_versions_for_two_devices(tmp_path, signed):
+    store = FirmwareStore(tmp_path)
+    for device, major in (("pair-A", 2), ("pair-B", 3)):
+        store.checkin(BOARD, device, "1.0.0", None)
+        store.cache(verified_metadata(*signed(version=f"{major}.0.0")), IMAGE)
+        store.approve(BOARD, device, f"{major}.0.0")
+
+    for major in range(4, 8):
+        store.cache(verified_metadata(*signed(version=f"{major}.0.0")), IMAGE)
+
+    assert store.image(f"{BOARD}-4.0.0.bin") is None
+    for device, major in (("pair-A", 2), ("pair-B", 3)):
+        path = f"/firmware/{BOARD}-{major}.0.0.bin"
+        assert store.checkin(BOARD, device, "1.0.0", None)["path"] == path
+        assert store.image(path.removeprefix("/firmware/")) == IMAGE
 
 
 def test_checkin_validates_new_fields():
@@ -219,6 +237,74 @@ def multipart(parts):
     return b"".join(chunks)
 
 
+def test_upload_rejects_oversized_content_length_without_a_body(web):
+    server, request, _ = web
+    server.ui.auth.none()
+    _, _, cookie = request("/")
+    headers = {
+        "Cookie": cookie.split(";")[0],
+        "Content-Type": "multipart/form-data; boundary=test-boundary",
+        "Content-Length": str(MAX_UPLOAD + 1),
+    }
+    assert request("/updates/upload", data=b"", headers=headers)[0] == 413
+
+
+@pytest.mark.parametrize("field", PART_LIMITS)
+def test_upload_rejects_oversized_part_before_processing(web, signed, monkeypatch, field):
+    server, request, _ = web
+    server.ui.auth.none()
+    _, page, cookie = request("/")
+    csrf = re.search(rb'name="csrf" value="([^"]+)"', page)[1]
+    headers = {
+        "Cookie": cookie.split(";")[0],
+        "Content-Type": "multipart/form-data; boundary=test-boundary",
+    }
+    metadata, sig = signed()
+    parts = {"csrf": csrf, "metadata": metadata, "signature": sig, "image": IMAGE}
+
+    def unexpected_upload(*args):
+        pytest.fail("Oversized part reached firmware processing")
+
+    monkeypatch.setattr(server.ui, "firmware_action", unexpected_upload)
+    body = multipart({**parts, field: b"x" * (PART_LIMITS[field] + 1)})
+    assert len(body) <= MAX_UPLOAD
+    assert request("/updates/upload", data=body, headers=headers)[0] == 400
+    assert request(IMAGE_PATH)[0] == 404
+
+
+def test_firmware_download_finishes_after_its_image_is_pruned(web, signed, monkeypatch):
+    server, request, _ = web
+    server.ui.auth.none()
+    store = server.ui.firmware
+    store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.approve(BOARD, OPEN_DEVICE, "2.0.0")
+    for major in range(3, 6):
+        store.cache(verified_metadata(*signed(version=f"{major}.0.0")), IMAGE)
+
+    started, finish = Event(), Event()
+    send_asset = server.RequestHandlerClass.send_asset
+
+    def wait_before_sending(handler, *args):
+        started.set()
+        assert finish.wait(5)
+        send_asset(handler, *args)
+
+    monkeypatch.setattr(server.RequestHandlerClass, "send_asset", wait_before_sending)
+    result = []
+    download = Thread(target=lambda: result.append(request(IMAGE_PATH)[:2]))
+    download.start()
+    try:
+        assert started.wait(2)
+        store.checkin(BOARD, OPEN_DEVICE, "2.0.0", "ok:2.0.0")
+        store.cache(verified_metadata(*signed(version="6.0.0")), IMAGE)
+        assert request(IMAGE_PATH)[0] == 404
+    finally:
+        finish.set()
+        download.join()
+    assert result == [(200, IMAGE)]
+
+
 def test_open_status_upload_install_and_result(web, signed):
     server, request, _ = web
     server.ui.auth.none()
@@ -261,7 +347,7 @@ def test_signed_manifest_full_budget_and_firmware_transport(web, signed, monkeyp
     server.ui.enable_security()
     server.ui.auth.set_password("test password", "test password")
     device = server.ui.firmware_device()
-    server.ui.firmware.cache(verified_metadata(*signed(notes="https://example.test/" + "x" * 1700)), IMAGE, device)
+    server.ui.firmware.cache(verified_metadata(*signed(notes="https://example.test/" + "x" * 1700)), IMAGE)
     extras = ("extra-" + "x" * 42, "extra-" + "y" * 42)
     monkeypatch.setattr("ventanal.extras.registry.active", lambda *a, **kw: [SimpleNamespace(screens=extras)])
     monkeypatch.setattr("ventanal.solar.licence.verify", lambda *a: SimpleNamespace(ok=True))
@@ -339,6 +425,35 @@ def test_manual_check_runs_in_background_and_displays_error(web, monkeypatch):
         finish.set()
     assert done.wait(2)
     assert b"GitHub returned HTTP 403" in request("/", headers=headers)[1]
+
+
+def test_daily_check_removes_stale_device_rows(web, signed, monkeypatch):
+    server, _, _ = web
+    store = server.ui.firmware
+    for device in (OPEN_DEVICE, "old-pairing", "current-pairing"):
+        store.checkin(BOARD, device, "1.0.0", None)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.approve(BOARD, "old-pairing", "2.0.0")
+    for major in range(3, 7):
+        store.cache(verified_metadata(*signed(version=f"{major}.0.0")), IMAGE)
+        if major == 3:
+            store.approve(BOARD, "current-pairing", "3.0.0")
+    store.record_poll(datetime.now(timezone.utc) - timedelta(days=2), "")
+    completed = Event()
+
+    def poll(store, client, device):
+        store.record_poll(datetime.now(timezone.utc), "")
+        completed.set()
+
+    monkeypatch.setattr(server.ui, "firmware_device", lambda: "current-pairing")
+    monkeypatch.setattr("ventanal.ui.poll_github", poll)
+    server.ui.start_firmware_check(force=False)
+    assert completed.wait(2)
+    assert store.boards(OPEN_DEVICE) == []
+    assert store.boards("old-pairing") == []
+    assert store.image(IMAGE_PATH.removeprefix("/firmware/")) is None
+    assert store.boards("current-pairing")[0][0]["pending"] == "3.0.0"
+    assert store.image(f"{BOARD}-3.0.0.bin") == IMAGE
 
 
 def test_oversize_offer_preserves_existing_manifest():

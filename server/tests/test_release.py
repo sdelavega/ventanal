@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 import hashlib
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -77,3 +78,26 @@ def test_release_keygen_preserves_existing_public_key(tmp_path):
     assert exc.value.code == 2
     assert not private.exists()
     assert public.read_bytes() == b"existing"
+
+
+def test_release_keygen_cleans_up_when_fdopen_fails(tmp_path, monkeypatch):
+    private = tmp_path / "new.pem"
+    public = tmp_path / "new.pub"
+    fdopen = os.fdopen
+    descriptors = []
+
+    def fail_second_open(fd, *args, **kwargs):
+        descriptors.append(fd)
+        if len(descriptors) == 2:
+            raise RuntimeError("fdopen failed")
+        return fdopen(fd, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", fail_second_open)
+    with pytest.raises(RuntimeError, match="fdopen failed"):
+        main(["release", "keygen", str(private), str(public)])
+    assert not private.exists()
+    assert not public.exists()
+    assert len(descriptors) == 2
+    for fd in descriptors:
+        with pytest.raises(OSError):
+            os.fstat(fd)

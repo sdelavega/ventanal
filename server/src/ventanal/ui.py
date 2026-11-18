@@ -99,16 +99,19 @@ class UI:
 
     def start_firmware_check(self, *, force):
         with self.lock:
-            device = self.firmware_device()
-            if device is None or self.firmware_checking:
+            if self.firmware_checking:
                 return
             self.firmware_checking = True
 
         def run():
             try:
                 if force or self.firmware.poll_due(datetime.now(timezone.utc)):
-                    with httpx.Client(timeout=15, trust_env=False) as client:
-                        poll_github(self.firmware, client, device)
+                    with self.auth.lock, self.security.lock:
+                        device = self.firmware_device()
+                        self.firmware.retain_devices(() if device is None else (device,))
+                    if device is not None:
+                        with httpx.Client(timeout=15, trust_env=False) as client:
+                            poll_github(self.firmware, client, device)
             except (OSError, sqlite3.Error):
                 logging.getLogger(__name__).warning('Firmware release check could not access the cache')
             finally:
@@ -125,7 +128,7 @@ class UI:
             self.start_firmware_check(force=True)
         elif path == '/updates/upload':
             release = verified_metadata(values['metadata'], values['signature'])
-            self.firmware.cache(release, values['image'], device, manual=True)
+            self.firmware.cache(release, values['image'], manual=True)
         else:
             board = values.get('board')
             if board not in BOARDS:

@@ -103,7 +103,7 @@ class FirmwareStore:
         return sorted(releases, key=lambda release: version_tuple(release.info.version), reverse=True)
 
     @staticmethod
-    def _prune(db, device):
+    def _prune(db):
         for board in BOARDS:
             releases = FirmwareStore._releases(db, board)
             keep = {release.info.version for release in releases[:RETAIN_RELEASES]}
@@ -114,7 +114,7 @@ class FirmwareStore:
             if manual:
                 keep.add(manual["version"])
             for state in db.execute(
-                "SELECT running, pending FROM firmware_devices WHERE board=? AND device=?", (board, device)
+                "SELECT running, pending FROM firmware_devices WHERE board=?", (board,)
             ):
                 keep.add(state["pending"])
                 best = next((release for release in releases if release.supports(state["running"])), None)
@@ -125,7 +125,7 @@ class FirmwareStore:
                 [(board, release.info.version) for release in releases if release.info.version not in keep],
             )
 
-    def cache(self, release, image, device, *, manual=False):
+    def cache(self, release, image, *, manual=False):
         info = release.info
         if not info.matches_image(len(image), hashlib.sha256(image).digest()):
             raise ReleaseError("Image size or SHA-256 does not match signed metadata")
@@ -148,7 +148,16 @@ class FirmwareStore:
                     "UPDATE firmware_releases SET uploaded=? WHERE board=? AND version=?",
                     (uploaded, info.board, info.version),
                 )
-            self._prune(db, device)
+            self._prune(db)
+
+    def retain_devices(self, active_devices):
+        with closing(self.connect()) as db, db:
+            db.execute("BEGIN IMMEDIATE")
+            known = {row["device"] for row in db.execute("SELECT DISTINCT device FROM firmware_devices")}
+            stale = known.difference(active_devices)
+            if stale:
+                db.executemany("DELETE FROM firmware_devices WHERE device=?", [(device,) for device in stale])
+                self._prune(db)
 
     def cached_metadata(self, release):
         with closing(self.connect()) as db:
@@ -346,7 +355,7 @@ def poll_github(store, client, device, *, now=None):
                         raise ReleaseError("Signed metadata does not match the GitHub asset name")
                     if release.supports(running.get(board)) and not store.cached_metadata(release):
                         image = _download(client, base + ".bin", release.info.size, asset=True)
-                        store.cache(release, image, device)
+                        store.cache(release, image)
                 except httpx.HTTPStatusError as exc:
                     if exc.response.status_code != 404:
                         raise

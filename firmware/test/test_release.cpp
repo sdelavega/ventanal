@@ -21,9 +21,15 @@ static const char* verdictName(ReleaseVerdict verdict) {
 }
 
 int main() {
-    std::ifstream input("../../server/tests/fixtures/release/vectors.json");
+    const char* fixture = "../../server/tests/fixtures/release/vectors.json";
+    std::ifstream input(fixture);
+    if (!input) {
+        std::cerr << "Could not open release vectors fixture: " << fixture
+                  << " (run from firmware/test)\n";
+        return 1;
+    }
     JsonDocument vectors;
-    assert(input && !deserializeJson(vectors, input));
+    assert(!deserializeJson(vectors, input));
     const auto cases = vectors.as<JsonArrayConst>();
     assert(cases.size() >= 10);
     for (JsonObjectConst test : cases) {

@@ -42,9 +42,12 @@ def _release_command(parser, args):
     def write_new(path, data, mode):
         fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
         try:
-            with os.fdopen(fd, 'wb') as output:
-                output.write(data)
-        except OSError:
+            try:
+                with os.fdopen(fd, 'wb', closefd=False) as output:
+                    output.write(data)
+            finally:
+                os.close(fd)
+        except BaseException:
             path.unlink()
             raise
 
@@ -59,7 +62,7 @@ def _release_command(parser, args):
                 write_new(args.public_key, key.public_key().public_bytes(
                     serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
                 ), 0o644)
-            except OSError:
+            except BaseException:
                 args.private_key.unlink()
                 raise
             return
