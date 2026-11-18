@@ -35,7 +35,7 @@ terms = ["winter", "snow", "Christmas", "Nativity", "Adoration of the Magi", "wi
 [[art.seasons]]
 name = "winter"
 start = "01-01"
-end = "02-28"
+end = "02-29"
 terms = ["winter landscape", "ice skating", "snow"]
 
 [[art.seasons]]
@@ -72,6 +72,8 @@ blue = "#2a59b8"
 green = "#2a6a3a"
 
 [server]
+# Optional custom DNS names (without schemes or ports). Restart after editing.
+# allowed_hosts = ["frame.example.com"]
 # HTTPS listener used after password setup / Security activation.
 https_listen = "0.0.0.0:8766"
 listen = "0.0.0.0:8765"

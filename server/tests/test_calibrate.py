@@ -117,6 +117,10 @@ def test_write_panel_loadable_example(tmp_path):
     from ventanal.config import load_config
     config = tmp_path / 'example.toml'
     config.write_bytes(Path('ventanal.example.toml').read_bytes())
+    original = config.read_bytes()
     before = load_config(config)
     write_panel(config, KNOWN)
     assert load_config(config) == replace(before, panel_rgb=tuple(KNOWN))
+    backup, = (tmp_path / 'backups').glob('ventanal-*.toml')
+    assert backup.read_bytes() == original
+    assert backup.stat().st_mode & 0o777 == 0o600

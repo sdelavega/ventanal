@@ -10,12 +10,13 @@ import json
 import logging
 import os
 import random
+import sqlite3
 from zoneinfo import ZoneInfo
 
 import httpx
 
 from ventanal.config import Config
-from ventanal.owner import OwnerStore, SPARES
+from ventanal.owner import OwnerStore, SkipQueue, SPARES
 from ventanal.art.pool import ArtPool, aspect_allowed, refresh_pool, season_for
 from ventanal.art.sources import fetch_image
 from ventanal.art.render import ART_READOUT, render_art
@@ -194,9 +195,7 @@ def ensure_pool(cfg: Config, pool: ArtPool, client: httpx.Client, now: datetime)
     """Refresh stale pool contents and record cache freshness for all callers."""
     refreshed = pool.last_refresh()
     if refreshed is None or _elapsed(now, refreshed) > timedelta(hours=24):
-        count = refresh_pool(cfg, pool, client, now.date())
-        pool.set_refreshed(now)
-        return count
+        return refresh_pool(cfg, pool, client, now.date(), now=now)
     return 0
 
 
@@ -283,6 +282,10 @@ def _tick_locked(cfg, now, client, force_art, force_spares, force_weather):
         candidate = pool.get(old_credit["source"], old_credit["object_id"])
         if candidate is not None:
             owner.register(old_art["id"], candidate)
+    try:
+        SkipQueue(cfg.cache_dir).drain(owner)
+    except sqlite3.Error:
+        log.warning("Unable to process queued skips; pending reports will retry")
     try:
         result["pool"] = ensure_pool(cfg, pool, client, now)
     except Exception as exc:

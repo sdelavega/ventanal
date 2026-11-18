@@ -3,7 +3,7 @@
 """Durable artwork identities, spare slots and idempotent owner feedback."""
 from contextlib import closing
 from dataclasses import asdict
-from datetime import timezone
+from datetime import datetime, timezone
 import json
 import logging
 import re
@@ -24,6 +24,37 @@ def parse_skips(value: str) -> list[tuple[str, str]]:
         else:
             log.warning('skip report malformed pair ignored')
     return result
+
+
+class SkipQueue:
+    """Store board reports independently of the artwork database and tick lock."""
+
+    def __init__(self, cache_dir):
+        self.path = cache_dir / 'skip-queue.sqlite3'
+        with closing(self.connect()) as db, db:
+            db.execute('''CREATE TABLE IF NOT EXISTS pending_skips (
+                skipped TEXT NOT NULL, shown TEXT NOT NULL, time TEXT NOT NULL,
+                PRIMARY KEY (skipped, shown))''')
+
+    def connect(self):
+        return sqlite3.connect(self.path, timeout=1)
+
+    def enqueue(self, pairs, now):
+        if not pairs:
+            return
+        timestamp = now.astimezone(timezone.utc).isoformat()
+        with closing(self.connect()) as db, db:
+            db.executemany('INSERT OR IGNORE INTO pending_skips VALUES (?,?,?)',
+                           ((skipped, shown, timestamp) for skipped, shown in pairs))
+
+    def drain(self, owner):
+        """Called with the tick lock held. Remove reports only after recording."""
+        with closing(self.connect()) as db:
+            rows = db.execute('SELECT skipped, shown, time FROM pending_skips ORDER BY time, rowid').fetchall()
+            for skipped, shown, at in rows:
+                owner.record(skipped, shown, datetime.fromisoformat(at))
+                with db:
+                    db.execute('DELETE FROM pending_skips WHERE skipped=? AND shown=?', (skipped, shown))
 
 
 class OwnerStore:
@@ -47,8 +78,8 @@ class OwnerStore:
                     metadata TEXT NOT NULL, PRIMARY KEY(skipped, shown));
             ''')
 
-    def connect(self):
-        return sqlite3.connect(self.path, timeout=120)
+    def connect(self, *, timeout=120):
+        return sqlite3.connect(self.path, timeout=timeout)
 
     def register(self, ident, candidate):
         with closing(self.connect()) as db, db:
@@ -96,8 +127,13 @@ class OwnerStore:
             if not inserted:
                 return False
             candidate = json.loads(new[0])
-            db.execute('UPDATE artworks SET last_shown=? WHERE source=? AND object_id=?',
-                       (now.isoformat(), candidate['source'], candidate['object_id']))
+            identity = (candidate['source'], candidate['object_id'])
+            row = db.execute('SELECT last_shown FROM artworks WHERE source=? AND object_id=?',
+                             identity).fetchone()
+            # A queued report can arrive before a newer publication is committed.
+            if row and (row[0] is None or now > datetime.fromisoformat(row[0])):
+                db.execute('UPDATE artworks SET last_shown=? WHERE source=? AND object_id=?',
+                           (now.isoformat(), *identity))
             variant = db.execute('SELECT canonical_id FROM frame_variants WHERE frame_id=?', (shown,)).fetchone()
             canonical_shown = variant[0] if variant else shown
             for slot, entry in db.execute('SELECT slot, entry FROM spare_slots').fetchall():

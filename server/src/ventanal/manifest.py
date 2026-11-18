@@ -17,6 +17,50 @@ from PIL import Image
 from ventanal.frame import frame_id
 
 
+MAX_SERVED_MANIFEST_BYTES = 6144
+CREDIT_FIELD_LIMITS = {"artist": 120, "date": 120, "museum": 120}
+_CREDIT_INVALID = re.compile(r"[\x00-\x1f\x7f-\x9f\ud800-\udfff]")
+
+
+def clean_credit_text(value: str, limit: int | None = None) -> str:
+    return _CREDIT_INVALID.sub("", value)[:limit]
+
+
+def clean_credit(credit: dict | None) -> dict | None:
+    if not isinstance(credit, dict):
+        return credit
+    return {
+        key: clean_credit_text(value, CREDIT_FIELD_LIMITS.get(key))
+        if key in ("title", "secondary", *CREDIT_FIELD_LIMITS) and isinstance(value, str)
+        else value
+        for key, value in credit.items()
+    }
+
+
+def _entries(manifest: dict):
+    yield from manifest.get("screens", {}).values()
+    yield from manifest.get("spares", [])
+
+
+def omit_board_credits(manifest: dict) -> None:
+    """The artwork already has its credits rendered into the frame."""
+    for entry in _entries(manifest):
+        entry.pop("credit", None)
+
+
+def reject_manifest_floats(value) -> None:
+    """Signed manifests use numbers with matching Python and ArduinoJson encodings."""
+    if isinstance(value, float):
+        raise ValueError("Floats are unsupported in signed manifests")
+    if isinstance(value, dict):
+        for key, entry in value.items():
+            reject_manifest_floats(key)
+            reject_manifest_floats(entry)
+    elif isinstance(value, (list, tuple)):
+        for entry in value:
+            reject_manifest_floats(entry)
+
+
 @dataclass(frozen=True)
 class Readout:
     x: int
@@ -83,7 +127,7 @@ def publish(
         "size": len(data),
         "rendered": now.isoformat(timespec="seconds"),
         "readout": asdict(readout),
-        "credit": credit,
+        "credit": clean_credit(credit),
     }
     frames = out_dir / "frames"
     previews = out_dir / "previews"
@@ -116,6 +160,9 @@ def write_manifest(out_dir: Path, manifest: dict) -> None:
     """Atomically update optional metadata under the caller's publication lock."""
     out_dir.mkdir(parents=True, exist_ok=True)
     order_screens(manifest)
+    for entry in _entries(manifest):
+        if "credit" in entry:
+            entry["credit"] = clean_credit(entry["credit"])
     temporary = out_dir / "manifest.json.tmp"
     try:
         with temporary.open("w", encoding="utf-8") as stream:

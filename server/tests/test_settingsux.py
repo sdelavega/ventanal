@@ -7,6 +7,59 @@ import pytest
 from test_gui import web, EXAMPLE
 from ventanal.settings import save_settings
 
+
+def test_config_save_is_atomic_and_preserves_metadata(tmp_path, monkeypatch):
+    import os
+    import stat
+    from ventanal.config import load_config
+
+    path = tmp_path / 'settings.toml'
+    path.write_text(EXAMPLE.read_text())
+    path.chmod(0o640)
+    before = path.stat()
+    replace = os.replace
+
+    def interrupt(source, destination):
+        if destination == path:
+            assert load_config(path).clock_24h
+            assert not load_config(source).clock_24h
+            raise OSError('interrupted before rename')
+        return replace(source, destination)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, 'replace', interrupt)
+        with pytest.raises(OSError, match='interrupted'):
+            save_settings(path, {'display.clock': '12h'})
+    assert load_config(path).clock_24h
+    assert path.stat().st_ino == before.st_ino
+    assert not list(tmp_path.glob('.settings.toml.*'))
+    save_settings(path, {'display.clock': '12h'})
+    after = path.stat()
+    assert not load_config(path).clock_24h
+    assert after.st_ino != before.st_ino
+    assert (after.st_uid, after.st_gid, stat.S_IMODE(after.st_mode)) == (
+        before.st_uid, before.st_gid, 0o640)
+
+
+def test_config_fallback_uses_newest_usable_backup(tmp_path):
+    from ventanal.config import ConfigError, load_config
+
+    path = tmp_path / 'settings.toml'
+    path.write_text(EXAMPLE.read_text())
+    save_settings(path, {'display.clock': '12h'})
+    save_settings(path, {'display.clock': '24h'})
+    backups = tmp_path / 'backups'
+    (backups / 'ventanal-99990101T000000.000000Z.toml').write_text('[broken\n')
+    (backups / 'ventanal-99990101T000001.000000Z.toml').write_text('[display]\n')
+    path.write_bytes(b'\xff')
+    assert not load_config(path).clock_24h
+    assert path.read_bytes() == b'\xff'
+    assert not save_settings(path, {'display.units': 'metric'}).clock_24h
+    assert load_config(path).units == 'metric'
+    path.write_text(EXAMPLE.read_text().replace('end = "02-29"', 'end = "02-28"'))
+    with pytest.raises(ConfigError, match='no season covers 02-29'):
+        load_config(path)
+
 @pytest.mark.parametrize('raw,want', [('2200','22:00'),('22:00','22:00'),('22.00','22:00'),('10pm','22:00'),('10 pm','22:00'),('10:00 PM','22:00'),('10 p.m.','22:00'),('6','06:00'),('0600','06:00'),('6:00 am','06:00'),('12am','00:00'),('12PM','12:00')])
 def test_time_parser(raw,want):
     from ventanal.settings import parse_time
@@ -49,7 +102,7 @@ def test_field_endpoint(web):
     assert srv.ui.render_effects == {'schedule'}  # metadata only; no frame tick
 
 def test_field_auth(web):
-    r,srv,_=web; srv.ui.auth.set_password('secret','secret')
+    r,srv,_=web; srv.ui.auth.set_password('test secret','test secret')
     assert r('/settings/field', {'field':'display.units'})[0]==303
 
 def test_debounce_and_no_overlap(web):
@@ -75,7 +128,7 @@ def test_grouped_season_and_effects(web):
     r,srv,token,_=ready(web)
     srv.ui.render_delay=60
     field='art.seasons[0]'
-    values={field+'.name':' Winter ',field+'.start':'12-01',field+'.end':'02-28',field+'.terms':' snow, trees '}
+    values={field+'.name':' Winter ',field+'.start':'11-01',field+'.end':'02-29',field+'.terms':' snow, trees '}
     assert r('/settings/field', {'csrf':token,'field':field,**values})[0]==200
     from ventanal.config import load_config
     season=load_config(srv.ui.config_path).seasons[0]
@@ -90,8 +143,8 @@ def test_grouped_season_and_effects(web):
 
 def test_fallback_month_day(tmp_path):
     p=tmp_path/'settings.toml';p.write_text(EXAMPLE.read_text())
-    cfg=save_settings(p,{'art.seasons[0].start.month':'02','art.seasons[0].start.day':'28'})
-    assert cfg.seasons[0].start==(2,28)
+    cfg=save_settings(p,{'art.seasons[0].end.month':'02','art.seasons[0].end.day':'29'})
+    assert cfg.seasons[0].end==(2,29)
 
 def test_worker_pool_only_and_weather_flags(tmp_path,monkeypatch):
     from types import SimpleNamespace

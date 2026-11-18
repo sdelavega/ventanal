@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
 """Comment-preserving settings edits using the loader's validation."""
+from contextlib import contextmanager
 from datetime import datetime, timezone
 import fcntl
 import os
@@ -10,8 +11,11 @@ import re
 import time
 import hashlib
 import json
+import stat
+import tempfile
 import tomlkit
-from ventanal.config import validate_config
+from ventanal.auth import private_write
+from ventanal.config import read_config_document, validate_config
 from ventanal.art.sources import registry
 
 # Managed values remain visible here; dedicated pages own their edits.
@@ -58,9 +62,50 @@ def parse_time(value):
 
 
 def read_document(path):
-    with path.open() as source:
-        fcntl.flock(source, fcntl.LOCK_SH)
-        return source.read()
+    return read_config_document(path)[0]
+
+
+@contextmanager
+def settings_lock(backup_dir):
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    with (backup_dir / '.settings.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def replace_config(path: Path, data: bytes):
+    original = path.lstat()
+    if not stat.S_ISREG(original.st_mode):
+        raise OSError('Expected a regular config file')
+    with tempfile.NamedTemporaryFile(dir=path.parent, prefix=f'.{path.name}.', delete=False) as output:
+        temporary = Path(output.name)
+        try:
+            fd = output.fileno()
+            current = os.fstat(fd)
+            if (current.st_uid, current.st_gid) != (original.st_uid, original.st_gid):
+                os.fchown(fd, original.st_uid, original.st_gid)
+            output.write(data)
+            output.flush()
+            os.fchmod(fd, stat.S_IMODE(original.st_mode))
+            os.fsync(fd)
+            os.replace(temporary, path)
+            directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
+        finally:
+            temporary.unlink(missing_ok=True)
+
+
+def backup_config(backup_dir: Path, original: str):
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
+    private_write(backup_dir / f'ventanal-{stamp}.toml', original.encode(), durable=True)
+
+
+def prune_config_backups(backup_dir: Path):
+    for old in sorted(backup_dir.glob('ventanal-*.toml'))[:-10]:
+        old.unlink()
 
 
 def edit_document(doc, values):
@@ -131,34 +176,26 @@ def edit_document(doc, values):
 def save_settings(path: Path, values, backup_dir=None, *, mutate=None, browser_session=None, now=None):
     backup_dir = backup_dir or path.parent / 'backups'
     # All browser saves serialize; tick consumes each file atomically.
-    backup_dir.mkdir(parents=True, exist_ok=True)
-    with (backup_dir / '.settings.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        original = read_document(path)
+    with settings_lock(backup_dir):
+        original, _ = read_config_document(path, backup_dir)
         doc = edit_document(tomlkit.parse(original), values)
         if mutate is not None:
             mutate(doc)
             validate_config(doc.unwrap())
-        backup_dir.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S.%fZ')
-        from ventanal.auth import private_write
         clock = time.time() if now is None else now
         metadata = backup_dir / '.browser-backups.json'
         try: sessions = json.loads(metadata.read_text())
         except (OSError, ValueError): sessions = {}
         ident = hashlib.sha256(browser_session.encode()).hexdigest() if browser_session else None
-        if ident is None or ident not in sessions or clock - sessions[ident] >= 3600:
-            private_write(backup_dir / f'ventanal-{stamp}.toml', original.encode())
-            if ident:
-                sessions = {k:v for k,v in sessions.items() if clock-v < 30*86400}
-                sessions[ident] = clock
-                private_write(metadata, json.dumps(sessions).encode())
-        # Preserve root/group ownership and mode on the existing config inode;
-        # service cannot chown a newly replaced file to root. Lock readers too.
-        with path.open('r+') as output:
-            fcntl.flock(output, fcntl.LOCK_EX)
-            output.write(tomlkit.dumps(doc)); output.truncate(); output.flush(); os.fsync(output.fileno())
-        for old in sorted(backup_dir.glob('ventanal-*.toml'))[:-10]: old.unlink()
+        take_backup = ident is None or ident not in sessions or clock - sessions[ident] >= 3600
+        if take_backup:
+            backup_config(backup_dir, original)
+        replace_config(path, tomlkit.dumps(doc).encode())
+        if take_backup and ident:
+            sessions = {k:v for k,v in sessions.items() if clock-v < 30*86400}
+            sessions[ident] = clock
+            private_write(metadata, json.dumps(sessions).encode())
+        prune_config_backups(backup_dir)
     return validate_config(doc.unwrap())
 
 

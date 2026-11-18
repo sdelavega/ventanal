@@ -95,11 +95,27 @@ Even rotations are rejected because the VNF1 frames require 1600×1200.
 
 ## Cache provisioning and recovery
 
-Normal firmware never formats LittleFS on mount failure. It shows “Waiting for
-host” if the selected frame cannot be blitted. The mounted filesystem's committed
-art/weather files can be erased for a recovery check with the explicit debug flag
-`-DVENTANAL_ERASE_CACHE=1`; it removes only the two frames and their `.tmp` files.
-Always return to a build without debug flags afterwards.
+For first bring-up, prepare the host and private board settings, then compile
+and upload the normal firmware with the custom partition table and upload helper
+above. Power the board with a charged battery or other stable supply. On the
+first boot, capture serial at 115200 while it connects to the host and downloads
+the initial weather and art frames. A blank LittleFS partition should log
+`cache provisioning=mount-failed-no-state` once, then show weather. Reboot and
+verify the filesystem mounts without provisioning. A short WAKE press should
+cycle the cached frames with the host offline.
+
+The firmware tries a regular mount first. If it fails, formatting is allowed
+only when the `ventanal` NVS namespace is absent or NVS confirms that both saved
+`state13` and quarantined `state-bad` are absent. Formatting erases the whole
+LittleFS partition. If the first format fails, the firmware logs
+`error=cache-provision` and can retry on the next wake. The firmware creates
+`state13` only while the filesystem is mounted.
+When saved state exists or the NVS check fails, the firmware preserves the
+partition and logs `error=cache-mount`. It shows “Waiting for host” if the
+selected frame cannot be blitted. On a mounted filesystem, the explicit debug
+flag `-DVENTANAL_ERASE_CACHE=1` removes the committed art, weather and solar frames
+and the art/weather `.tmp` files. Always return to a build without debug flags
+afterwards.
 
 Every cold/timer wake syncs the tiny manifest and downloads only changed or missing
 frames. IDs and their readout rectangles advance in NVS after each successful
@@ -135,14 +151,31 @@ arduino-cli compile --fqbn "$FQBN" --build-property upload.maximum_size=4194304 
 Upload that build with a changed/missing frame to exercise its download branch.
 It aborts at exactly 100000 bytes, leaving the partial `.tmp`. A failed transfer
 preserves the committed cache. After checking recovery, upload the normal build
-with all flags disabled. The Task 12 report contains the earlier bring-up pattern,
-provisioning and boot-cache evidence; those bring-up modes were replaced by the
-full application.
+with all flags disabled.
 
 State is in the `ventanal` NVS namespace (`state13` blob): active screen, cached
 IDs/rectangles and `Drawn`. Battery smoothing history persists across deep sleep
-in RTC memory. Critical voltage shows “Charge me” and arms only GPIO18; normal
-sleep uses the pure scheduling helper (quiet hours and low-battery interval).
+in RTC memory. At critical voltage the firmware records the refresh attempt
+in NVS before drawing “Charge me,” then enters deep sleep with every wake
+source disabled. A brownout can leave a partial image. The marker suppresses
+a repeat while the battery is critical and sends an abnormal reboot directly
+back to sleep. A stalled “Charge me” refresh also goes straight to sleep.
+
+**After charging, turn the ON/OFF switch off and back on, or press RESET.**
+The WAKE button and timer are disabled during critical sleep. On power-up or
+reset the firmware runs its normal checks. A successful replacement refresh
+clears the marker.
+
+On the 13SPECTRA v1.1, the physical ON/OFF latch supplies the main regulator,
+whose enable is wired to its input. Firmware controls the separate panel
+regulator through GPIO21. Before critical sleep it shuts down Wi-Fi, holds
+GPIO21 low and sets the panel signal pins to input to prevent backfeeding. The
+library turns off the battery-sense divider after sampling, and the unused
+microSD supply defaults off. The RTC, I/O expander and optional blue power LED
+remain on their normal supplies. The power LED has its own switch. Sleep
+current and board behavior still need post-soak verification.
+[Soldered v1.1 schematic, sheets 2–6](https://community.soldered.com/uploads/short-url/7CTPEO0Ta4QczGAJhpwzArGSHxY.pdf)
+[Inkplate 13SPECTRA driver](https://github.com/SolderedElectronics/Inkplate-Arduino-library/blob/master/src/boards/Inkplate13SPECTRA/Inkplate13SPECTRADriver.cpp)
 
 RTC is initialized by `display.begin()`. A set PCF85063A seeds system time even
 offline. Online `configTzTime` waits up to 15 seconds for NTP completion and writes
@@ -173,12 +206,19 @@ Keep installed CLI, board core and libraries; remove temporary Arduino builds.
 
 ## Wake watchdog
 
-The IDF 5 task watchdog subscribes an unfed `ventanal-wake` user at the start
-of setup, with a 180000 ms timeout and panic/reset enabled. It remains armed
-through deep sleep entry. NVS `wdt-count` records consecutive watchdog resets;
-three resets skip all panel access for that wake, seed time from the standalone
-RTC over I2C, and sleep on the normal schedule. A subsequent scheduled wake
-retries; a returned refresh or unchanged-frame wake clears the count.
+The IDF 5 task watchdog subscribes an unfed `ventanal-wake` user after reset
+accounting and before initializing the panel. It uses a 180000 ms timeout with
+panic/reset enabled and stays armed through deep sleep entry. The existing NVS
+`wdt-count` records strikes for abnormal resets, including panics, brownouts and
+all watchdog reasons. The third strike skips panel access, seeds time from the
+standalone RTC over I2C, and sleeps on the normal schedule. If the charge
+marker is set, an abnormal reboot disables all wake sources. A returned
+refresh or unchanged-frame wake clears the count. The PON timer callback samples
+BUSYN and signals a dedicated 8 KiB FreeRTOS task on a stall. That task handles
+two bounded software restarts for ordinary refreshes, then powers down the
+panel and sleeps if both retries fail. A critical refresh stall goes directly
+to the critical sleep path.
+The stall diagnostics continue their samples after recording reset strikes.
 `VENTANAL_HANGTEST=1` (default 0) loops with delay(1) immediately before every
 panel refresh, including the critical-battery screen. The diagnostic alone shortens the watchdog timeout to 60 s; production uses 180 s. Always restore a build without diagnostic defines.
 Frame downloads have a 30 s total network budget, using nonblocking reads of available bytes; HTTP connect timeout is 5 s and read timeout 15 s.
@@ -197,18 +237,28 @@ Settings → Security before trusting it. Use **Reveal board values** to copy
 `VENTANAL_DEVICE_KEY` (64 lowercase hex characters) into private `config.h`.
 Change `VENTANAL_HOST_URL` to the displayed HTTPS URL and build/upload normally.
 Keep these values out of logs and version control. Regeneration requires updating
-the certificate on the board; re-pairing requires updating its device key.
+the certificate on the board. The device key stays valid until you explicitly
+choose **Re-pair board** and copy the new key. See the
+[regeneration and pairing steps](../README.md#security-and-pairing).
 
 The self-signed ECDSA P-256 certificate is the firmware's sole trust anchor via
-`WiFiClientSecure::setCACert`: mbedTLS checks its signature, hostname and validity.
+`WiFiClientSecure::setCACert`. For a locally trusted self-signed leaf, mbedTLS
+requires an exact certificate match and checks the hostname or IP. The TLS
+handshake verifies proof of possession of the leaf's private key. Certificate
+date checks depend on the core's mbedTLS build; the documented Inkplate core
+ships with those checks disabled.
 There is no insecure TLS mode or HTTP downgrade when any security value is set.
 The task stack is 16 KiB to leave room for certificate rejection paths too.
 HTTPS uses HTTP/1.1 and one verified connection across the wake, including
 spare refills; every request still has a fresh counter/proof. Partial
 responses close that connection. HTTP mode keeps its existing connection behavior.
 
-Each GET signs the exact `GET` + request path/query + decimal unsigned counter
-with HMAC-SHA256. The board commits `sec-counter` in NVS before transmitting;
+Each GET signs `method\npath\ncounter` with HMAC-SHA256. The path includes the
+exact query string, and the unsigned counter uses decimal digits. The two LF
+separators are part of the MAC input. Upgrade the HTTPS server together with
+the board firmware so both use the same proof format.
+
+The board commits `sec-counter` in NVS before transmitting;
 server state persists the accepted counter before processing reports. Missing,
 corrupt or unwritable existing counter storage fails closed. After NVS loss,
 use **Re-pair board** and update its key. NVS State/frame layouts are unchanged.

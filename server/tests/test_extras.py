@@ -131,10 +131,10 @@ def test_production_has_no_signer():
 
 def test_page(web, signer, monkeypatch):
     r, srv, root = web
-    srv.ui.auth.set_password("test", "test")
+    srv.ui.auth.set_password("test password", "test password")
     assert r("/extras")[0] == 303
     _, _, csrf = r("/login")
-    assert r("/login", {"csrf": csrf, "password": "test"})[0] == 303
+    assert r("/login", {"csrf": csrf, "password": "test password"})[0] == 303
     status, body, csrf = r("/extras")
     assert status == 200 and "No extras installed yet" in body
     assert "Licences" in body and "Available" in body

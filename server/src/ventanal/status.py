@@ -43,8 +43,8 @@ class BoardStore(OwnerStore):
             row = db.execute('SELECT role FROM frame_roles WHERE frame_id=?', (ident,)).fetchone()
         return row[0] if row else None
 
-    def checkin(self, ip, values):
-        with closing(self.connect()) as db, db:
+    def checkin(self, ip, values, *, timeout=120):
+        with closing(self.connect(timeout=timeout)) as db, db:
             db.execute('INSERT INTO board_checkins VALUES (?,?,?)',
                        (datetime.now(timezone.utc).isoformat(), ip, json.dumps(values)))
             db.execute('DELETE FROM board_checkins WHERE rowid NOT IN (SELECT rowid FROM board_checkins ORDER BY rowid DESC LIMIT 500)')

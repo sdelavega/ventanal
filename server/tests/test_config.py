@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 
 from dataclasses import FrozenInstanceError
-from datetime import time
+from datetime import date, time
 from pathlib import Path
 
 import pytest
@@ -22,6 +22,8 @@ def changed_config(tmp_path, old, new):
 
 
 def test_example_loads():
+    from ventanal.art.pool import season_for
+
     cfg = load_config(EXAMPLE)
     assert cfg.art_slots[0] == time(2, 0)
     assert len(cfg.art_slots) == 6
@@ -33,6 +35,7 @@ def test_example_loads():
     ]
     assert cfg.output_dir == Path("/var/lib/ventanal")
     assert cfg.cache_dir == Path("/var/cache/ventanal")
+    assert season_for(date(2028, 2, 29), cfg.seasons).name == "winter"
     with pytest.raises(FrozenInstanceError):
         cfg.zip = "12345"
 
@@ -50,23 +53,32 @@ def test_bad_palette_rejected(tmp_path):
 
 
 def test_zip_plus4_kept(tmp_path):
-    path = changed_config(tmp_path, 'zip = "00000"', 'zip = "80302-1234"')
-    assert load_config(path).zip == "80302-1234"
+    path = changed_config(tmp_path, 'zip = "00000"', 'zip = "32084-1234"')
+    assert load_config(path).zip == "32084-1234"
 
 
 def test_coordinates_and_wrapping_season(tmp_path):
     path = changed_config(
         tmp_path, 'zip = "00000"',
-        'latitude = 40.01\nlongitude = -105.27\nplace_name = "Boulder"',
+        'latitude = 29.9144193\nlongitude = -81.3628995\nplace_name = "St. Augustine"',
     )
     path.write_text(path.read_text().replace('end = "12-31"', 'end = "02-28"'))
     cfg = load_config(path)
-    assert (cfg.zip, cfg.latitude, cfg.longitude, cfg.place_name) == (None, 40.01, -105.27, "Boulder")
+    assert (cfg.zip, cfg.latitude, cfg.longitude, cfg.place_name) == (None, 29.9144193, -81.3628995, "St. Augustine")
     assert cfg.seasons[0].end == (2, 28)
 
 
+@pytest.mark.parametrize(('old', 'new', 'gap'), [
+    ('end = "02-29"', 'end = "02-28"', '02-29'),
+    ('start = "03-01"', 'start = "03-02"', '03-01'),
+])
+def test_uncovered_season_dates_rejected(tmp_path, old, new, gap):
+    with pytest.raises(ConfigError, match=f'art.seasons: no season covers {gap}'):
+        load_config(changed_config(tmp_path, old, new))
+
+
 @pytest.mark.parametrize(("old", "new", "key"), [
-    ('zip = "00000"', 'zip = 80302', "location.zip"),
+    ('zip = "00000"', 'zip = 32084', "location.zip"),
     ('zip = "00000"', 'latitude = 91\nlongitude = 0', "location.latitude"),
     ('zip = "00000"', 'latitude = 35', "location.longitude"),
     ('units = "imperial"', 'units = "kelvin"', "display.units"),

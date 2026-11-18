@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
 from dataclasses import replace, asdict
-from datetime import timedelta
+from datetime import datetime, timedelta
 import json
 from pathlib import Path
 import random
@@ -13,7 +13,7 @@ from ventanal.art.pool import ArtPool
 from ventanal.art.sources import Candidate
 from ventanal.config import load_config, ConfigError
 from ventanal.manifest import read_manifest
-from ventanal.owner import OwnerStore, parse_skips
+from ventanal.owner import OwnerStore, SkipQueue, parse_skips
 
 
 def test_ignored_config(tmp_path):
@@ -71,10 +71,10 @@ def test_spares_persist_and_replace_only_reported(setup_job, monkeypatch):
         assert read_manifest(cfg.output_dir)['spares']==before
         store=OwnerStore(cfg.cache_dir)
         skipped=manifest['screens']['art']['id']; shown=before[0]['id']
-        assert store.record(skipped,shown,NOW)
-        assert not store.record(skipped,shown,NOW+timedelta(seconds=30))
-        rows=store.skipped()
-        assert len(rows)==1 and rows[0]['count']==1
+        queue = SkipQueue(cfg.cache_dir)
+        queue.enqueue([(skipped, shown)], NOW)
+        queue.enqueue([(skipped, shown)], NOW + timedelta(seconds=30))
+        assert not store.skipped()
         jobs.tick(cfg,NOW+timedelta(hours=4,minutes=1),client)
         after=read_manifest(cfg.output_dir)['spares']
         assert after[1:]==before[1:] and after[0]['id']!=before[0]['id']
@@ -83,7 +83,7 @@ def test_spares_persist_and_replace_only_reported(setup_job, monkeypatch):
         with sqlite3.connect(store.path) as db:
             row=db.execute('SELECT last_shown FROM artworks WHERE source=? AND object_id=?',
                            (before[0]['credit']['source'],before[0]['credit']['object_id'])).fetchone()
-            assert row[0]==NOW.isoformat()
+            assert datetime.fromisoformat(row[0]) == NOW
         assert not store.record('f'*16,shown,NOW)
         assert pool.get(before[0]['credit']['source'],before[0]['credit']['object_id']) is not None
 
@@ -104,6 +104,8 @@ def test_cli_skipped(setup_job,monkeypatch,capsys):
 
 @pytest.mark.parametrize("route", ["/manifest.json", "/devices/lcd43b/manifest.json", "/devices/lcd43b-1/manifest.json"])
 def test_http_skip_get_only_and_idempotent(tmp_path, route):
+    import fcntl
+    from contextlib import closing
     from http.client import HTTPConnection
     from threading import Thread
     from ventanal.serve import make_server
@@ -119,13 +121,27 @@ def test_http_skip_get_only_and_idempotent(tmp_path, route):
     server=make_server(out,'127.0.0.1',0,cache_dir=cache)
     thread=Thread(target=server.serve_forever); thread.start()
     try:
-        for method in ['HEAD','POST','GET','GET']:
-            conn=HTTPConnection(*server.server_address)
-            conn.request(method,route+'?skips='+('a'*16)+'~'+('b'*16)+',bad')
-            response=conn.getresponse(); response.read(); conn.close()
-            assert response.status==(200 if method=='GET' else 501)
-            assert len(store.skipped())==(1 if method=='GET' else 0)
-        assert store.skipped()[0]['count']==1
+        assert (cache / 'skip-queue.sqlite3').is_file()
+        queue = SkipQueue(cache)
+        with (cache/'tick.lock').open('a') as lock, closing(store.connect()) as db:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            db.execute('BEGIN IMMEDIATE')
+            for method in ['HEAD','POST','GET','GET']:
+                conn=HTTPConnection(*server.server_address, timeout=3)
+                try:
+                    conn.request(method,route+'?skips='+('a'*16)+'~'+('b'*16)+',bad')
+                    response=conn.getresponse(); response.read()
+                    assert response.status==(200 if method=='GET' else 501)
+                finally:
+                    conn.close()
+                with closing(queue.connect()) as pending:
+                    count, = pending.execute('SELECT count(*) FROM pending_skips').fetchone()
+                    assert count == (1 if method == 'GET' else 0)
+            assert not store.skipped()
+            db.rollback()
+            queue.drain(store)
+            queue.drain(store)
+            assert store.skipped()[0]['count']==1
     finally:
         server.shutdown(); server.server_close(); thread.join()
 

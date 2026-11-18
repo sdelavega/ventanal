@@ -4,18 +4,53 @@
 #include "security.h"
 #include <ArduinoJson.h>
 #include <algorithm>
-// Manifest schema uses integer numbers and UTF-8 strings. Recursively sorted
-// object keys, array order retained, compact ArduinoJson string escaping.
+#include <utility>
+
+// Match Python json.dumps(..., ensure_ascii=False), including embedded NULs.
+inline void appendCanonicalString(std::string& out, const char* data, size_t size) {
+    constexpr char hex[] = "0123456789abcdef";
+    out += '"';
+    for (size_t i = 0; i < size; ++i) {
+        const unsigned char c = data[i];
+        switch (c) {
+            case '"': out += "\\\""; break;
+            case '\\': out += "\\\\"; break;
+            case '\b': out += "\\b"; break;
+            case '\f': out += "\\f"; break;
+            case '\n': out += "\\n"; break;
+            case '\r': out += "\\r"; break;
+            case '\t': out += "\\t"; break;
+            default:
+                if (c < 0x20) {
+                    out += "\\u00";
+                    out += hex[c >> 4];
+                    out += hex[c & 0x0f];
+                } else {
+                    out += data[i];
+                }
+        }
+    }
+    out += '"';
+}
+
+// The manifest schema uses integer numbers and UTF-8 strings. Sort object keys
+// recursively and retain array order.
 inline std::string canonicalJson(JsonVariantConst value) {
     std::string out;
     if(value.is<JsonObjectConst>()) {
-        std::vector<std::string> keys;
-        for(JsonPairConst pair:value.as<JsonObjectConst>()) keys.emplace_back(pair.key().c_str());
-        std::sort(keys.begin(),keys.end()); out="{";
-        for(const auto& key:keys) {
+        std::vector<std::pair<std::string, JsonVariantConst>> fields;
+        for (JsonPairConst pair : value.as<JsonObjectConst>()) {
+            const JsonString key = pair.key();
+            fields.emplace_back(std::string(key.c_str(), key.size()), pair.value());
+        }
+        std::sort(fields.begin(), fields.end(), [](const auto& a, const auto& b) {
+            return a.first < b.first;
+        });
+        out="{";
+        for (const auto& field : fields) {
             if(out.size()>1) out+=',';
-            JsonDocument name; name.set(key); std::string quoted; serializeJson(name,quoted); out+=quoted;
-            out+=':'; out+=canonicalJson(value[key]);
+            appendCanonicalString(out, field.first.data(), field.first.size());
+            out+=':'; out+=canonicalJson(field.second);
         }
         out+='}';
     } else if(value.is<JsonArrayConst>()) {
@@ -25,6 +60,9 @@ inline std::string canonicalJson(JsonVariantConst value) {
             out+=canonicalJson(entry);
         }
         out+=']';
+    } else if (value.is<JsonString>()) {
+        const JsonString str = value.as<JsonString>();
+        appendCanonicalString(out, str.c_str(), str.size());
     } else serializeJson(value,out);
     return out;
 }

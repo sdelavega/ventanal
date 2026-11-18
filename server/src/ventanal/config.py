@@ -4,13 +4,21 @@
 """Load and validate Ventanal's TOML configuration without side effects."""
 
 from dataclasses import dataclass, field
-from datetime import date, time
+from datetime import date, time, timedelta
 from pathlib import Path
-import fcntl
+import logging
 import re
 import tomllib
 from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
+
+
+def normalize_hostname(value: str) -> str | None:
+    name = value.removesuffix(".").lower()
+    label = r"[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?"
+    if value.isascii() and len(name) <= 253 and re.fullmatch(rf"{label}(?:\.{label})*", name):
+        return name
+    return None
 
 
 @dataclass(frozen=True)
@@ -21,6 +29,11 @@ class Season:
     start: tuple[int, int]
     end: tuple[int, int]
     terms: tuple[str, ...]
+
+    def includes(self, day: tuple[int, int]) -> bool:
+        if self.start <= self.end:
+            return self.start <= day <= self.end
+        return day >= self.start or day <= self.end
 
 
 @dataclass(frozen=True)
@@ -50,6 +63,7 @@ class Config:
     image_cache_bytes: int = 2 * 1024**3
     https_host: str = "0.0.0.0"
     https_port: int = 8766
+    allowed_hosts: tuple[str, ...] = ()
     ham_call_sign: str = ""
     battery_full_mv: int | None = None
     ignored: tuple[str, ...] = ()
@@ -111,19 +125,36 @@ def _clock(value, key):
     return value
 
 
+def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[str, dict]:
+    def read(source):
+        # Keep original newlines for comment-preserving settings/CLI edits.
+        text = source.read_bytes().decode("utf-8")
+        return text, tomllib.loads(text)
+
+    try:
+        return read(path)
+    except (FileNotFoundError, UnicodeError, tomllib.TOMLDecodeError):
+        backups = backup_dir if backup_dir is not None else path.parent / "backups"
+        for backup in sorted(backups.glob("ventanal-*.toml"), reverse=True):
+            try:
+                text, data = read(backup)
+                validate_config(data)
+            except (OSError, ValueError):
+                continue
+            logging.getLogger(__name__).warning("Config unreadable; using backup %s", backup.name)
+            return text, data
+    except OSError:
+        pass
+    raise ConfigError("config.file: unable to read valid TOML") from None
+
+
 def load_config(path: Path) -> Config:
     """Read a TOML file; report invalid settings with their dotted key names.
 
     Location may use a US ZIP (preserving ZIP+4) or a latitude/longitude pair.
     Other settings are explicit, as shown in ventanal.example.toml.
     """
-    try:
-        with path.open("rb") as source:
-            fcntl.flock(source, fcntl.LOCK_SH)
-            data = tomllib.load(source)
-    except (OSError, ValueError) as exc:
-        raise ConfigError("config.file: unable to read valid TOML") from exc
-
+    _, data = read_config_document(path)
     return validate_config(data)
 
 
@@ -195,6 +226,10 @@ def validate_config(data: dict) -> Config:
             end=_month_day(entry.get("end"), f"{key}.end"),
             terms=_strings(entry.get("terms"), f"{key}.terms"),
         ))
+    for offset in range(366):
+        day = date(2000, 1, 1) + timedelta(days=offset)
+        if not any(season.includes((day.month, day.day)) for season in seasons):
+            raise ConfigError(f"art.seasons: no season covers {day:%m-%d}; cover the full year including 02-29")
 
     palette = []
     for colour in ("black", "white", "yellow", "red", "blue", "green"):
@@ -215,6 +250,12 @@ def validate_config(data: dict) -> Config:
     if not sep or not shost.strip() or not sport.isdecimal() or not 1 <= int(sport) <= 65535:
         raise ConfigError("server.https_listen: expected host:port with port 1..65535")
     if shost.startswith("[") and shost.endswith("]"): shost = shost[1:-1]
+
+    allowed_hosts = server.get("allowed_hosts", [])
+    if not isinstance(allowed_hosts, list) or any(
+        not isinstance(name, str) or normalize_hostname(name) is None for name in allowed_hosts
+    ):
+        raise ConfigError("server.allowed_hosts: expected an array of hostnames without ports")
 
     credentials = art.get('credentials', {})
     if not isinstance(credentials, dict) or any(
@@ -286,6 +327,7 @@ def validate_config(data: dict) -> Config:
         panel_rgb=tuple(palette),
         listen_host=host,
         listen_port=int(port),
+        allowed_hosts=tuple(normalize_hostname(name) for name in allowed_hosts),
         output_dir=Path(_string(server.get("output_dir"), "server.output_dir")),
         cache_dir=Path(_string(server.get("cache_dir"), "server.cache_dir")),
     )

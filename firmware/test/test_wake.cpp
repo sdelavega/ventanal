@@ -27,15 +27,34 @@ void drawReadout(Inkplate&,const ReadoutRect& rect,int pct,bool offline,bool,tim
 void drawWaiting(Inkplate&,const char*) { ++waiting; }
 void drawChargeMe(Inkplate&) { ++charges; }
 #include "../ventanal/ventanal.ino"
+static void simulateBoot(esp_reset_reason_t reason) {
+    fakeReset=reason;
+    batteryCount=0;
+    timerRunning=false;
+    registeredTimerCallback=nullptr;
+    notifiedTask=nullptr;
+    panelTimer=nullptr;
+    panelRecoveryTask=nullptr;
+}
 static void wake(int cause, bool critical=false) {
-    fakeWake=cause; timerUs=0; buttonArmed=false;
+    fakeWake=cause;
+    // Start with both sources enabled when testing that critical sleep disables them.
+    timerUs=critical ? 1000 : 0;
+    buttonArmed=critical;
     const unsigned before=display.refreshes;
     try { setup(); assert(false); } catch(const Sleeping&) {}
-    assert(display.refreshes-before<=1); assert(buttonArmed);
-    assert(critical ? timerUs==0 : timerUs>0);
+    assert(display.refreshes-before<=1);
+    if(critical) {
+        assert(!buttonArmed && timerUs==0);
+        assert(pwrHeld && deepHold && pwrLevel==0);
+    } else {
+        assert(buttonArmed && timerUs>0);
+    }
 }
 int main() {
-    for(auto reason : {ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_WDT}) {
+    for(auto reason : {ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_WDT, ESP_RST_PANIC,
+                       ESP_RST_BROWNOUT, ESP_RST_UNKNOWN, ESP_RST_EFUSE, ESP_RST_PWR_GLITCH, ESP_RST_CPU_LOCKUP}) {
+        assert(isAbnormalReset(reason));
         fakeReset=reason;
         wake(ESP_SLEEP_WAKEUP_EXT0);
         assert(watchdogTimeout==180000 && watchdogArmed);
@@ -46,6 +65,7 @@ int main() {
     guard.putBytes("wdt-count", &watchdogResets, sizeof watchdogResets); guard.end();
     const auto refreshes=display.refreshes;
     const auto begins=display.begins;
+    fakeReset=ESP_RST_PANIC;
     wake(0);
     assert(watchdogResets==3 && display.refreshes==refreshes && display.begins==begins);
     fakeReset=ESP_RST_DEEPSLEEP;
@@ -76,6 +96,7 @@ int main() {
     LittleFS.failBegin=false;
     wake(ESP_SLEEP_WAKEUP_TIMER);
     assert(downloads==priorDownloads && readouts==priorReadouts+1);
+    assert(LittleFS.formatAttempts==0);
 
     // NVS failure degrades to a usable draw without changing persisted state.
     const auto savedPreferences=preferences;
@@ -90,6 +111,108 @@ int main() {
 
     display.voltage=3.3f; batteryCount=0;
     int before=connections; wake(0,true); assert(charges==1 && connections==before && timerUs==0);
-    puts("wake cycle: one refresh, ID skipping/retry, button offline, waiting/recovery, mount/NVS failures, normal timers, critical passed");
+
+    // A replacement draw clears the marker and permits a future critical episode.
+    display.voltage=3.92f; batteryCount=0;
+    simulateBoot(ESP_RST_POWERON);
+    wake(0);
+    assert(preferences.at(chargeMarker).at(0)==0 && !pwrHeld);
+    display.voltage=3.3f; batteryCount=0;
+    struct Brownout {};
+    displayHook=[] {
+        assert(preferences.at(chargeMarker).at(0)==1);
+        throw Brownout{};
+    };
+    try { setup(); assert(false); } catch(const Brownout&) {}
+    assert(charges==2 && timerRunning);
+    displayHook={};
+    // Simulate boot losing RTC battery history and a misleading recovered ADC value.
+    simulateBoot(ESP_RST_BROWNOUT);
+    display.voltage=3.92f;
+    before=connections;
+    const auto afterBrownout=display.begins;
+    wake(0,true);
+    assert(charges==2 && connections==before && display.begins==afterBrownout);
+    assert(preferences.at("wdt-count").at(0)==1);
+    simulateBoot(ESP_RST_POWERON);
+    display.voltage=3.3f;
+    wake(0,true);
+    assert(charges==2 && connections==before);
+    const auto beforeReplacement=display.refreshes;
+    simulateBoot(ESP_RST_POWERON);
+    display.voltage=3.92f;
+    wake(0);
+    assert(display.refreshes==beforeReplacement+1 && preferences.at(chargeMarker).at(0)==0);
+    batteryCount=0; display.voltage=3.3f;
+    preferences.erase(chargeMarker);
+    Preferences::failWriteKey=chargeMarker;
+    wake(ESP_SLEEP_WAKEUP_EXT0,true);
+    assert(charges==2 && !preferences.count(chargeMarker));
+    Preferences::failWriteKey="wdt-count";
+    fakeReset=ESP_RST_BROWNOUT;
+    const auto beforeFailedStrike=display.begins;
+    wake(0);
+    assert(display.begins==beforeFailedStrike);
+    Preferences::failWriteKey.clear();
+
+    // Read-only NVS distinguishes a missing namespace from an empty existing one.
+    preferences.clear(); files.clear();
+    preferencesNamespaceExists=false;
+    nvs_handle_t handle;
+    assert(nvs_open("ventanal",NVS_READONLY,&handle)==ESP_ERR_NVS_NOT_FOUND);
+    assert(canProvisionCache() && !preferencesNamespaceExists);
+    assert(nvs_open("ventanal",NVS_READWRITE,&handle)==ESP_OK);
+    nvs_close(handle);
+    assert(preferencesNamespaceExists && preferences.empty() && canProvisionCache());
+    failNvsOpen=true;
+    assert(!canProvisionCache());
+    failNvsOpen=false;
+    preferencesNamespaceExists=false;
+
+    // Critical voltage on first boot must leave factory provisioning available.
+    simulateBoot(ESP_RST_POWERON);
+    display.voltage=3.3f;
+    LittleFS.failBegin=true;
+    wake(0,true);
+    assert(LittleFS.formatAttempts==0 && !preferences.count("state13"));
+    assert(preferences.at(chargeMarker).at(0)==1 && canProvisionCache());
+
+    // A failed first format keeps the next boot eligible to provision.
+    simulateBoot(ESP_RST_POWERON);
+    display.voltage=3.92f;
+    LittleFS.failBegin=LittleFS.failFormat=true;
+    priorDownloads=downloads;
+    wake(0);
+    assert(LittleFS.formatAttempts==1 && !preferences.count("state13") && downloads==priorDownloads);
+    LittleFS.failFormat=false;
+    wake(ESP_SLEEP_WAKEUP_EXT0);
+    assert(LittleFS.formatAttempts==2 && downloads==priorDownloads+2 && blitted=="/weather.vnf");
+    assert(preferences.count("state13"));
+
+    // Quarantined state, inaccessible NVS, and an uncertain key lookup all protect flash.
+    const auto cachedFiles=files;
+    preferences.clear(); preferences["state-bad"]={1};
+    LittleFS.failBegin=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles && !preferences.count("state13"));
+    preferences.clear(); Preferences::failBegin=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles && !preferences.count("state13"));
+    Preferences::failBegin=false; failKeyLookup=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles && !preferences.count("state13"));
+    failKeyLookup=false;
+    wake(0);
+    assert(LittleFS.formatAttempts==3 && preferences.count("state13"));
+
+    // A normal boot with both NVS and LittleFS blank provisions in one wake.
+    preferences.clear(); preferencesNamespaceExists=false; files.clear();
+    LittleFS.failBegin=true;
+    simulateBoot(ESP_RST_POWERON);
+    priorDownloads=downloads;
+    wake(0);
+    assert(LittleFS.formatAttempts==4 && preferences.count("state13"));
+    assert(downloads==priorDownloads+2 && blitted=="/weather.vnf");
+    puts("wake cycle: cache provisioning and preservation, reset strikes, charge latch and normal draw passed");
     return 0;
 }

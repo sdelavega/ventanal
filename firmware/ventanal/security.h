@@ -78,7 +78,7 @@ inline bool nextCounter(uint64_t& value) {
 }
 inline std::string requestProof(const std::string& key,const char* method,const char* path,uint64_t counter) {
     char number[21]; snprintf(number,sizeof number,"%llu",static_cast<unsigned long long>(counter));
-    return hmacHex(key,std::string(method)+path+number);
+    return hmacHex(key,std::string(method)+'\n'+path+'\n'+number);
 }
 #ifdef VENTANAL_HOST_TEST
 using TransportClient=WiFiClient;

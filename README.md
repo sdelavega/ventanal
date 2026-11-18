@@ -7,12 +7,12 @@ downloads them, displays the selected screen, and sleeps. Cached screens work
 without Wi-Fi. Ventanal 1.0.0 is free software under GPL-3.0-or-later.
 
 ![Seasonal museum art with soft-shade credit](docs/images/art.png)
-![Weather example for Boulder, CO 80302](docs/images/weather.png)
+![Weather example for St. Augustine, FL 32084](docs/images/weather.png)
 ![Solar conditions with CALL SIGN placeholder](docs/images/solar.png)
 
-These previews come from the deterministic test goldens, rather than live owner
-data. The weather example is Boulder, CO 80302 (40.01 N, 105.27 W); solar uses a
-public test location and the “CALL SIGN” placeholder. Colours simulate the panel.
+These previews come from the deterministic test goldens. Weather uses St. Augustine,
+FL 32084 (29.91 N, 81.36 W, `America/New_York`). Solar uses a public test location
+and the “CALL SIGN” placeholder. Colours simulate the panel.
 
 ## Requirements and architecture
 
@@ -60,16 +60,36 @@ The example sections are:
 | `art.credentials.paris` | Optional Paris Musées token; keep private |
 | `weather` | Radar source/radius, marker caption and optional NWS contact |
 | `panel` | Six measured RGB colours, updated through Calibration |
-| `server` | HTTP/HTTPS listeners, output and cache directories |
+| `server` | HTTP/HTTPS listeners, allowed hostnames, output and cache directories |
 | `ham` | Optional US amateur call sign for local FCC verification |
 
 Battery calibration adds optional `battery.full_mv`. Auth, transport identities
 and Extras licences live separately in private state; they are not TOML settings.
 
-Visit `http://192.168.0.10:8765` (substitute your host address). On first visit,
-choose a password and confirm it. Explicitly skipping the password requires a
-second confirmation and leaves the installation unprotected. Password setup
-starts HTTPS; follow the Security pairing procedure below before using the board.
+Season ranges must cover the full year, including February 29. Before
+upgrading an installation based on the old example, change winter's end date
+from `02-28` to `02-29` if no other season covers that day. The installer
+sets the configuration file's owner to the `ventanal` service account so the
+web UI can replace it atomically. Use a regular file at the configured path.
+The installer and writes from Settings and Calibration reject symlinked
+configuration files. If the file cannot be parsed, the service
+loads the newest usable settings backup from `/etc/ventanal/backups`.
+
+Open the host's HTTP address on port 8765. On first visit, enter the one-time
+setup token printed by the installer and choose a password of at least 10
+characters. Run this command on the host to issue a new token, including when
+you want to set a password after choosing to run without one:
+
+```sh
+sudo -u ventanal /opt/ventanal/venv/bin/ventanal setup-token
+```
+
+Keep the token private. Both the password and the token travel over HTTP during
+initial setup, so complete that step over a trusted connection. To run without
+a password, enter the token and confirm the network-access warning.
+The token is consumed as soon as it is accepted. If you need to retry after
+that, issue a new token with the command above. Password setup starts HTTPS.
+Follow the Security pairing procedure below before using the board.
 Use **Settings** to adjust location, schedules and sources; fields save directly.
 
 ### Firmware
@@ -150,14 +170,16 @@ voltage, then choose **Battery is full — set as 100%** on Status and confirm.
 Reset there to restore the default curve. Percentage remains an estimate; the
 board cannot detect charging or USB power.
 
-For colour calibration, open Calibration and publish its chart. Refresh the
-board, photograph the chart in indirect daylight without glare, and include
-plain white paper. Prefer original camera RAW/DNG (enable Apple ProRAW or your
+For colour calibration, open Calibration and publish its chart. Photo upload
+requires JavaScript. Refresh the board, photograph the chart in indirect
+daylight without glare, and include plain white paper.
+Prefer original camera RAW/DNG (enable Apple ProRAW or your
 camera's RAW mode); original HEIC is also accepted, with lower accuracy than RAW.
 Transfer the original file without messaging-app recompression, upload it, then
 pick the outer chart corners **TL, TR, BR, BL**. Optionally drag a white-paper
 reference rectangle. Preview the measured colours before applying them; the page
 also offers restoration. This changes the host palette, not firmware settings.
+Each palette write saves the previous TOML to a private timestamped backup.
 
 Met, AIC and Cleveland are enabled by default. Rijksmuseum, NGA and SMK are
 available too. **Wikimedia Commons is opt-in:** public-domain artwork metadata
@@ -169,19 +191,65 @@ rights checks and provider terms.
 
 ## Security and pairing
 
+The server accepts requests addressed to IP literals, `localhost`, its machine
+hostname, and that hostname with `.local` appended. For a custom DNS name, list
+it in `server.allowed_hosts` in the TOML file and restart the service. List names
+without schemes or ports.
+
 With a password and security enabled, the browser/board use HTTPS, the board pins
 the host certificate, manifests and board reports are authenticated, and signed
 manifest hashes verify frame contents. There is no insecure TLS fallback.
 On older password installations, explicitly choose **Settings → Security → Enable
-security**; installing an update does not rotate an existing identity.
+security** to create an identity. Existing certificates stay in use across upgrades
+until you explicitly regenerate them. New certificates are self-signed TLS server
+certificates for the Ventanal host. Verify the SHA-256 fingerprint over a trusted
+channel before accepting the certificate for this site in your browser. Keep it
+out of your system's CA trust store.
 
-Compare the HTTPS certificate SHA-256 fingerprint with the Security page before
-trusting it. Reveal the board values privately, copy the complete PEM and device
-key into `config.h`, set the matching HTTPS host URL, then rebuild/upload.
-Certificate regeneration requires updating the board certificate; **Re-pair board**
-requires updating its key. After NVS loss, re-pair rather than resetting replay
-protection. Never publish these values or private configuration files. See the
-[transport details](firmware/README.md#password-protected-transport).
+For an initial pairing, use **Settings → Security → Reveal board values**, then
+configure and flash the board as described under Firmware above.
+
+Coordinate regeneration with the board flash. The current pin stops working
+for new TLS connections as soon as the server starts presenting the new certificate.
+
+1. Save the current public PEM from **Settings → Security → Reveal board
+   values** for the rollback test. Then confirm and select **Regenerate certificate**.
+   On a systemd installation you can also rotate from the host as follows.
+
+   ```sh
+   sudo systemctl stop ventanal-serve.service
+   sudo -u ventanal /opt/ventanal/venv/bin/ventanal regenerate-certificate --confirm
+   sudo systemctl start ventanal-serve.service
+   ```
+
+2. Open **Settings → Security → Reveal board values** and copy the complete
+   new PEM into `VENTANAL_HOST_CERT_PEM` in your private `config.h`. Set
+   `VENTANAL_HOST_URL` to an HTTPS URL whose hostname or IP is in the certificate.
+   For a flash where rollback must work without another upload, put both complete
+   PEM blocks, separated by a newline, in the same C++ raw string. This lets
+   the board connect when the server presents either certificate. Remove the
+   previous PEM at the next firmware update after verifying the new certificate.
+   Regeneration preserves the device key and replay counter. For a fresh
+   pairing, NVS loss, or device-key rotation, confirm **Re-pair board (new
+   device key)** and copy the new `VENTANAL_DEVICE_KEY` as well.
+3. Rebuild and upload with the firmware instructions above. Verify a successful
+   board check-in and frame refresh over HTTPS. Keep the pairing values private.
+   See the [transport details](firmware/README.md#password-protected-transport).
+
+If the board rejects the new certificate and still trusts the previous PEM,
+confirm **Restore previous certificate** on the Security page. The server
+presents the previous certificate on new connections immediately and preserves
+the current device key and replay counter. The restore uses up the saved
+certificate. Each regeneration saves the certificate and private key it replaces.
+On a systemd installation, use the same stop/start sequence above with
+`restore-certificate --confirm` in place of `regenerate-certificate --confirm`.
+Both certificate commands refuse to run against a cache directory used by a
+running Ventanal server.
+
+The installer gives the `ventanal` account write access to
+`/etc/ventanal/ventanal.toml` and its containing directory so the service can
+replace the file atomically. A compromised service can rewrite its own
+configuration and create files in that directory.
 
 ## Ham solar screen
 

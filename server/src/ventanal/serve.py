@@ -4,17 +4,43 @@
 """A read-only HTTP surface limited to published display assets."""
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from ipaddress import IPv4Address, IPv6Address
 import logging
 import json
+import sqlite3
 import ssl
 import socket
-from threading import Thread, RLock
+from threading import BoundedSemaphore, Thread, RLock
 from pathlib import Path
 import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
-import fcntl
-from ventanal.owner import OwnerStore, parse_skips
+from ventanal.config import load_config, normalize_hostname
+from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
+from ventanal.owner import SkipQueue, parse_skips
+
+
+MAX_TLS_CONNECTIONS = 32
+
+
+def allowed_host(headers, names):
+    hosts = headers.get_all('Host', [])
+    if len(hosts) != 1:
+        return False
+    authority = re.fullmatch(r'(\[[0-9a-fA-F:.]+\]|[^:\[\]]+)(?::([0-9]{1,5}))?', hosts[0].strip(' \t'))
+    if not authority:
+        return False
+    name, port = authority.groups()
+    if port is not None and not 1 <= int(port) <= 65535:
+        return False
+    try:
+        if name.startswith('['):
+            IPv6Address(name[1:-1])
+        else:
+            IPv4Address(name)
+    except ValueError:
+        return normalize_hostname(name) in names
+    return True
 
 
 def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None = None, config_path: Path | None = None, rerender=None, https_host=None, https_port=None) -> ThreadingHTTPServer:
@@ -23,9 +49,18 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     from ventanal.status import BoardStore, parse_board
     if config_path is not None:
         from ventanal.ui import UI
+        cfg = load_config(config_path)
         ui = UI(config_path, cache_dir, rerender)
+        board_store = ui.store
     else:
         ui = None
+        board_store = BoardStore(cache_dir) if cache_dir is not None else None
+    skip_queue = SkipQueue(cache_dir) if cache_dir is not None else None
+    hostname = socket.gethostname().removesuffix('.')
+    names = {'localhost', normalize_hostname(hostname), normalize_hostname(f'{hostname}.local')}
+    names.discard(None)
+    if ui is not None:
+        names.update(cfg.allowed_hosts)
 
     def active():
         return ui is not None and ui.auth.mode == 'password' and ui.security.ready
@@ -48,6 +83,22 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
         @property
         def protocol_version(self):
             return 'HTTP/1.1' if active() and isinstance(self.connection, ssl.SSLSocket) else 'HTTP/1.0'
+
+        def parse_request(self):
+            if not super().parse_request():
+                return False
+            if not allowed_host(self.headers, names):
+                self.send_error(400, 'Invalid Host header')
+                return False
+            return True
+
+        def handle_expect_100(self):
+            # Defer the interim response until the route is ready to read the body.
+            return True
+
+        def continue_body(self):
+            if self.protocol_version == 'HTTP/1.1' and self.request_version == 'HTTP/1.1' and self.headers.get('Expect', '').lower() == '100-continue':
+                super().handle_expect_100()
 
         def transport(self):
             if not active(): return True
@@ -84,34 +135,60 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             if (cache_dir is not None and (path == '/manifest.json'
                     or re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path))):
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
-                board = parse_board(query)
-                BoardStore(cache_dir).checkin(self.client_address[0], board)
                 values = query.get('skips', [])
                 if values:
-                    store = OwnerStore(cache_dir)
-                    with (cache_dir / 'tick.lock').open('a') as lock:
-                        fcntl.flock(lock, fcntl.LOCK_EX)
-                        for skipped, shown in parse_skips(','.join(values)):
-                            store.record(skipped, shown, datetime.now(timezone.utc))
-            if ui is not None and path == '/manifest.json':
+                    try:
+                        skip_queue.enqueue(parse_skips(','.join(values)), datetime.now(timezone.utc))
+                    except sqlite3.Error:
+                        logging.getLogger(__name__).warning('Unable to queue board skips')
+                        self.send_error(503)
+                        return
                 try:
-                    with (root / 'manifest.json').open() as f:
+                    board_store.checkin(self.client_address[0], parse_board(query), timeout=1)
+                except sqlite3.Error:
+                    logging.getLogger(__name__).warning('Unable to record board check-in')
+            if path == '/manifest.json':
+                target = root / 'manifest.json'
+                if ui is None and target.resolve() != target:
+                    self.send_error(404); return
+                try:
+                    with target.open(encoding='utf-8') as f:
                         manifest = json.load(f)
-                    from ventanal.config import load_config
-                    cfg = load_config(config_path)
-                    from ventanal.solar.licence import verify
-                    if not verify(cfg.cache_dir/'fcc.sqlite3', cfg.ham_call_sign, cfg.zip, datetime.now(timezone.utc)).ok:
-                        manifest.get('screens', {}).pop('solar', None)
-                    from ventanal.extras.publish import filter_manifest
-                    manifest = filter_manifest(manifest,cfg.cache_dir)
-                    full_mv = cfg.battery_full_mv
-                    manifest.pop('battery', None)
-                    if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
+                    if ui is not None:
+                        cfg = load_config(config_path)
+                        from ventanal.solar.licence import verify
+                        if not verify(cfg.cache_dir/'fcc.sqlite3', cfg.ham_call_sign, cfg.zip, datetime.now(timezone.utc)).ok:
+                            manifest.get('screens', {}).pop('solar', None)
+                        from ventanal.extras.publish import filter_manifest
+                        manifest = filter_manifest(manifest,cfg.cache_dir)
+                        full_mv = cfg.battery_full_mv
+                        manifest.pop('battery', None)
+                        if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
+                    omit_board_credits(manifest)
                     if active(): manifest = ui.security.manifest(manifest, root)
                     body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
-                except (OSError, ValueError, KeyError):
+                except FileNotFoundError:
+                    self.send_error(404 if ui is None else 503); return
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     self.send_error(503); return
-                ui.respond(self, 200, body, 'application/json'); return
+                if len(body) > MAX_SERVED_MANIFEST_BYTES:
+                    self.send_response(503)
+                    self.send_header('Content-Length', '0')
+                    self.end_headers()
+                    return
+                if ui is not None:
+                    ui.respond(self, 200, body, 'application/json')
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    try:
+                        self.wfile.write(body)
+                    except (ConnectionError, TimeoutError):
+                        pass
+                return
             if (ui is not None and config_path is not None
                     and re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path)):
                 # Device manifests re-check the ham licence on every
@@ -133,7 +210,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         raise ValueError('expected a JSON object')
                 except (OSError, ValueError):
                     self.send_error(404); return
-                from ventanal.config import load_config
                 screens = manifest.get('screens')
                 if not solar_allowed(load_config(config_path)) and isinstance(screens, dict):
                     screens.pop('solar', None)
@@ -184,15 +260,39 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             pass  # Error text may contain the raw request target.
 
     class TLSServer(ThreadingHTTPServer):
-        def get_request(self):
-            conn, addr = super().get_request()
+        def __init__(self, *args):
+            self.connection_slots = BoundedSemaphore(MAX_TLS_CONNECTIONS)
+            super().__init__(*args)
+
+        def process_request(self, conn, addr):
+            # Reserve capacity before starting a worker, including keep-alive time.
+            if not self.connection_slots.acquire(blocking=False):
+                self.shutdown_request(conn)
+                return
+            try:
+                super().process_request(conn, addr)
+            except BaseException:
+                self.connection_slots.release()
+                raise
+
+        def process_request_thread(self, conn, addr):
+            try:
+                super().process_request_thread(conn, addr)
+            finally:
+                self.connection_slots.release()
+
+        def finish_request(self, conn, addr):
+            # ThreadingHTTPServer calls finish_request in the request worker.
             conn.settimeout(5)
             try:
                 secured = ui.security.context.wrap_socket(conn, server_side=True)
+            except OSError:
+                return
+            try:
                 secured.settimeout(30)
-                return secured, addr
-            except Exception:
-                conn.close(); raise
+                super().finish_request(secured, addr)
+            finally:
+                self.shutdown_request(secured)
 
     class Server(ThreadingHTTPServer):
         tls_server = None
@@ -209,8 +309,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
     server = Server((host, port), Handler)
     server.ui = ui
     if ui is not None:
-        from ventanal.config import load_config
-        cfg = load_config(config_path)
         tls_lock = RLock()
         def start_tls():
             with tls_lock:

@@ -15,7 +15,7 @@ import re
 from urllib.parse import parse_qs
 from zoneinfo import ZoneInfo
 import tomlkit
-from ventanal.auth import Auth
+from ventanal.auth import Auth, PASSWORD_MAX_LENGTH, PASSWORD_MIN_LENGTH, validate_password
 from ventanal.config import load_config, ConfigError
 from ventanal.manifest import read_manifest
 from ventanal.settings import FIELDS, SOURCE_REGISTRY, MUSEUMS, MUSEUM_LABELS, FIELD_HELP, OPTION_LABELS, READ_ONLY, ADVANCED, season_count, save_settings, read_document
@@ -30,7 +30,12 @@ def form(action, csrf, body, button):
 
 
 def password_fields(change=False):
-    return ('<label>Current password<input type="password" name="current" autocomplete="current-password" required></label>' if change else '') + '<label>Password<input type="password" name="password" autocomplete="new-password" maxlength="1024" required></label><label>Confirm password<input type="password" name="confirm" autocomplete="new-password" maxlength="1024" required></label>'
+    current = '<label>Current password<input type="password" name="current" autocomplete="current-password" required></label>' if change else ''
+    limits = f'minlength="{PASSWORD_MIN_LENGTH}" maxlength="{PASSWORD_MAX_LENGTH}" required'
+    return current + f'<label>Password<input type="password" name="password" autocomplete="new-password" {limits}></label><label>Confirm password<input type="password" name="confirm" autocomplete="new-password" {limits}></label>'
+
+
+SETUP_TOKEN_FIELD = '<label>Setup token<input name="setup_token" type="password" autocomplete="off" required></label>'
 
 
 class UI:
@@ -55,7 +60,6 @@ class UI:
         self.lock = RLock()
         # Photo workflows serialize separately; fetch/quantize must not block pages.
         self.calibration_lock = RLock()
-        self.skip_pending = set()
         self.render_result = ''
         self.rendering = False
         self.render_pending = False
@@ -148,7 +152,7 @@ class UI:
 
     def page(self, path, session, title, body):
         nav = ''.join(f'<a class="{cls}{" cur" if path==url else ""}" href="{url}">{name}</a>' for cls,url,name in [('status','/','STATUS'),('art','/art','ART'),('settings','/settings','SETTINGS'),('cal','/calibration','CALIBRATION'),('extras','/extras','EXTRAS')])
-        banner = '<div class="warn"><span>NO PASSWORD SET · ANYONE ON THIS NETWORK CAN CHANGE SETTINGS</span><a class="btn" href="/setup">SET A PASSWORD</a></div>' if self.auth.mode != 'password' else ''
+        banner = '<div class="warn"><span>NO PASSWORD SET · ANYONE ON THIS NETWORK CAN CHANGE SETTINGS</span><a class="btn" href="/setup">SET A PASSWORD</a></div>' if self.auth.mode == 'none' else ''
         account = ''
         if self.auth.mode == 'password' and session['granted']:
             account = '<div class="account"><a href="/password">Change password</a>'+form('/logout',session['csrf'],'','Log out')+'</div>'
@@ -297,7 +301,18 @@ class UI:
         def send(status,title,body): self.respond(h,status,self.page(path,session,title,body),cookie=cookie)
         def redirect(url): self.respond(h,303,cookie=cookie,location=url)
         if self.auth.mode=='password' and not session['granted'] and path!='/login': redirect('/login'); return
+        if path=='/security' and self.auth.mode!='password':
+            self.respond(h,403); return
+        if self.auth.mode=='unset' and path not in ('/setup','/setup/skip','/setup/confirm-skip','/login'):
+            if post: self.respond(h,403); return
+            path='/setup'
         if post:
+            if cookie is not None:
+                self.respond(h,403); return
+            if path == '/calibration/upload':
+                submitted = h.headers.get_all('X-CSRF-Token', [])
+                if len(submitted) != 1 or not hmac.compare_digest(submitted[0].encode(), token.encode()):
+                    self.respond(h,403); return
             try:
                 length = int(h.headers.get('Content-Length','0'))
                 if path == '/extras/upload':
@@ -305,6 +320,7 @@ class UI:
                     if length > 24576:
                         send(413,'Extras','Licence upload exceeds 16 KiB.'); return
                     if not h.headers.get('Content-Type','').startswith('multipart/form-data;'): raise ValueError()
+                    h.continue_body()
                     values = upload(h,length)
                 elif path == '/calibration/upload':
                     from ventanal.calibration_ui import MAX_UPLOAD, UPLOAD_HINT
@@ -313,35 +329,29 @@ class UI:
                     if length <= 0 or not h.headers.get('Content-Type','').startswith('multipart/form-data;'): raise ValueError()
                     from email.parser import BytesParser
                     from email.policy import default
+                    h.continue_body()
                     payload = h.rfile.read(length)
                     message = BytesParser(policy=default).parsebytes(('Content-Type: '+h.headers['Content-Type']+'\r\nMIME-Version: 1.0\r\n\r\n').encode()+payload)
                     parts = list(message.iter_parts())
-                    if len(parts)!=2 or message.defects: raise ValueError()
-                    values = {}
-                    for part in parts:
-                        if part.is_multipart() or part.defects or part.get_content_disposition() != 'form-data': raise ValueError()
-                        name = part.get_param('name',header='content-disposition')
-                        if name in values or name not in ('csrf','photo'): raise ValueError()
-                        content = part.get_payload(decode=True)
-                        if not isinstance(content, bytes): raise ValueError()
-                        if name=='photo':
-                            if len(content)>MAX_UPLOAD: send(413,'Calibration',e(UPLOAD_HINT)); return
-                            values['photo']=content; values['filename']=part.get_filename() or ''
-                        else: values['csrf']=content.decode()
-                    if set(values) != {'photo','filename','csrf'}: raise ValueError()
+                    if len(parts) != 1 or message.defects: raise ValueError()
+                    part = parts[0]
+                    if (part.is_multipart() or part.defects or part.get_content_disposition() != 'form-data'
+                            or part.get_param('name', header='content-disposition') != 'photo'):
+                        raise ValueError()
+                    content = part.get_payload(decode=True)
+                    if not isinstance(content, bytes): raise ValueError()
+                    if len(content)>MAX_UPLOAD: send(413,'Calibration',e(UPLOAD_HINT)); return
+                    values = {'photo': content, 'filename': part.get_filename() or ''}
                 else:
                     if not 0 < length <= 131072 or h.headers.get('Content-Type','').split(';')[0] != 'application/x-www-form-urlencoded': raise ValueError()
+                    h.continue_body()
                     raw = parse_qs(h.rfile.read(length).decode(),keep_blank_values=True, max_num_fields=1000)
                     if any(len(v)!=1 for k,v in raw.items() if k!='art.museums'): raise ValueError()
                     values = {k:(v if k=='art.museums' else v[0]) for k,v in raw.items()}
             except (ValueError, UnicodeError): self.respond(h,400); return
-            if not hmac.compare_digest(values.get('csrf','').encode(),token.encode()) or cookie is not None:
+            if path != '/calibration/upload' and not hmac.compare_digest(values.get('csrf','').encode(),token.encode()):
                 self.respond(h,403); return
         if self.auth.mode=='password' and not session['granted'] and path!='/login': redirect('/login'); return
-        if path=='/security' and self.auth.mode!='password':
-            self.respond(h,403); return
-        if self.auth.mode=='unset' and path not in ('/setup','/setup/skip','/setup/confirm-skip','/login'):
-            path='/setup'
         if path.startswith('/ui-preview/'):
             match = re.fullmatch(r'/ui-preview/(art|weather|solar|spare[0-2])/([0-9a-f]{16})\.png',path)
             if post or not match: self.respond(h,404); return
@@ -361,15 +371,26 @@ class UI:
             if not post: self.respond(h,405); return
             self.auth.invalidate(); session,cookie=self.auth.issue(False); redirect('/login'); return
         if path in ('/setup/skip','/setup/confirm-skip'):
-            if self.auth.mode=='password': redirect('/password'); return
             if not post: self.respond(h,405); return
-            if path.endswith('confirm-skip'):
-                with self.lock:
-                    pending=token in self.skip_pending
-                    self.skip_pending.discard(token)
-                if not pending or values.get('confirm')!='yes': send(400,'Confirmation required','Confirm the warning before continuing.'); return
-                self.auth.none(); redirect('/'); return
-            with self.lock: self.skip_pending.add(token)
+            with self.auth.lock:
+                if session['epoch'] != self.auth.state['epoch']:
+                    self.respond(h,403); return
+                if self.auth.mode != 'unset':
+                    self.respond(h,400); return
+                if path.endswith('confirm-skip'):
+                    if not session.get('setup_skip') or values.get('confirm')!='yes':
+                        send(400,'Confirmation required','Confirm the warning before continuing.'); return
+                    try: self.auth.none()
+                    except OSError:
+                        send(500,'Setup','Unable to save setup. Check service permissions and try again.'); return
+                    session,cookie=self.auth.issue(False)
+                    redirect('/'); return
+                try:
+                    if not self.auth.consume_setup_token(values.get('setup_token','')):
+                        self.respond(h,403); return
+                except OSError:
+                    send(500,'Setup','Unable to validate setup. Check service permissions and try again.'); return
+                cookie = self.auth.sign({**session, 'setup_skip': True})
             send(200,'Network access warning', '<div class="form-card auth"><p>Anyone on this network will be able to view and change settings. Continue only if you trust everyone with network access.</p>'+form('/setup/confirm-skip',token,'<input type="hidden" name="confirm" value="yes">','I understand — continue without a password')+'<a href="/setup">Choose a password instead</a></div>'); return
         if path in ('/setup','/password'):
             change=self.auth.mode=='password'
@@ -377,12 +398,19 @@ class UI:
             error=''
             if post:
                 try:
-                    if change and not self.auth.verify(values.get('current','')): raise ValueError('Current password is incorrect.')
-                    password, confirm = values.get('password',''), values.get('confirm','')
-                    if not password or len(password)>1024 or password!=confirm:
-                        raise ValueError('Passwords must match and contain 1–1024 characters.')
-                    if not change: self.enable_security()
-                    self.auth.set_password(password,confirm)
+                    with self.auth.lock:
+                        if session['epoch'] != self.auth.state['epoch']:
+                            self.respond(h,403); return
+                        if self.auth.mode == 'password' and (not change or not session['granted']):
+                            redirect('/login'); return
+                        if not change and not self.auth.consume_setup_token(values.get('setup_token','')):
+                            self.respond(h,403); return
+                        if change and not self.auth.verify(values.get('current','')): raise ValueError('Current password is incorrect.')
+                        password, confirm = values.get('password',''), values.get('confirm','')
+                        if not change:
+                            validate_password(password,confirm)
+                            self.enable_security()
+                        self.auth.set_password(password,confirm)
                 except ValueError as exc: error=str(exc)
                 except OSError: error='Unable to enable HTTPS; check service permissions and listener port.'
                 else:
@@ -390,8 +418,11 @@ class UI:
                         cookie = None; redirect('/login'); return
                     session,cookie=self.auth.issue(True); redirect('/'); return
             title='Change password' if change else 'Choose a password'
-            body=f'<div class="form-card auth"><p class="error">{e(error)}</p>'+form(path,token,password_fields(change),title)
-            if not change: body+=form('/setup/skip',token,'','Continue without a password…')
+            first_run = self.auth.mode == 'unset'
+            body=f'<div class="form-card auth"><p class="error">{e(error)}</p>'
+            if not change: body+='<p>Enter the setup token printed by the installer or the ventanal setup-token command. If setup fails after the token is accepted, run the command for a new token.</p>'
+            body+=form(path,token,(SETUP_TOKEN_FIELD if not change else '')+password_fields(change),title)
+            if first_run: body+=form('/setup/skip',token,SETUP_TOKEN_FIELD,'Continue without a password…')
             send(400 if error else 200,title,body+'</div>'); return
         if path=='/login':
             if self.auth.mode!='password': redirect('/'); return
@@ -412,14 +443,16 @@ class UI:
                 action=values.get('action')
                 if action in ('regenerate','repair') and not self.security.ready:
                     send(400,'Security','Enable security before rotating its certificate or key.'); return
-                if action in ('enable','regenerate','repair') and values.get('confirm')!='yes':
-                    send(400,'Security','Confirm that the board configuration must be updated.'); return
+                if action in ('enable','regenerate','restore','repair') and values.get('confirm')!='yes':
+                    send(400,'Security','Confirm the security change before continuing.'); return
                 try:
                     if action=='enable':
                         self.enable_security()
                         self.auth.invalidate()
                         cookie=None; redirect('/login'); return
                     elif action=='regenerate': self.security.regenerate()
+                    elif action=='restore':
+                        if not self.security.restore(): error=self.security.NO_PREVIOUS_CERTIFICATE
                     elif action=='repair': self.security.repair()
                     elif action=='reveal': reveal=True
                     else: self.respond(h,400); return
@@ -434,6 +467,8 @@ class UI:
                     body+=f'<p>Copy the PEM as a C++ raw string into VENTANAL_HOST_CERT_PEM. Set VENTANAL_HOST_URL to the HTTPS URL.</p><pre>{e(self.security.certificate)}</pre><label>VENTANAL_DEVICE_KEY<input readonly value="{e(self.security.key.hex())}"></label>'
                 for action,label in [('regenerate','Regenerate certificate'),('repair','Re-pair board (new device key)')]:
                     body+=form('/security',token,f'<input type="hidden" name="action" value="{action}"><label><input type="checkbox" name="confirm" value="yes" required>I understand the board must be updated afterwards.</label>',label)
+                if self.security.can_restore:
+                    body+=form('/security',token,'<input type="hidden" name="action" value="restore"><label><input type="checkbox" name="confirm" value="yes" required>Present the previous certificate to the board again.</label>','Restore previous certificate')
             else:
                 body+=form('/security',token,'<input type="hidden" name="action" value="enable"><label><input type="checkbox" name="confirm" value="yes" required>Enable HTTPS; the board must be updated afterwards.</label>','Enable security')
             send(400 if error else 200,'Security',body+e(error)+'</div>'); return

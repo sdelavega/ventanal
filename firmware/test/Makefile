@@ -121,7 +121,7 @@ build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manife
 # Shared transport headers also invalidate the net/cache builds.
 build/test_net build/test_cache build/test_cache_abort: ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
-build/test_secure_transport: fixtures/extras-server-manifest.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
@@ -241,3 +241,5 @@ build/test_lcd43b_owner: test_lcd43b_owner.cpp ../lcd43b/owner.h ../ventanal/own
 build/test_lcd43b_sync: ../lcd43b/inflate.h ../lcd43b/deferred_save.h
 build/test_lcd43b_persist: ../lcd43b/deferred_save.h
 build/test_lcd43b_owner: ../lcd43b/frame.h ../lcd43b/sha256.h
+
+build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h

@@ -23,6 +23,10 @@ int main() {
     assert(verifyManifest(vector));
     vector["screens"]["art"]["credit"]["title"]="tampered";
     assert(!verifyManifest(vector));
+    std::ifstream controls("fixtures/manifest-controls.json"); assert(controls);
+    std::stringstream controlContents; controlContents << controls.rdbuf();
+    assert(!deserializeJson(vector, controlContents.str()));
+    assert(verifyManifest(vector));
     TransportClient client; HTTPClient http;
     TransportClient otherClient; HTTPClient otherHttp;
     assert(&requestClient(client)==&requestClient(otherClient));

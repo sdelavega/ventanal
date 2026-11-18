@@ -41,7 +41,17 @@ struct FakeFS {
     size_t totalBytes() const { return capacity; }
     size_t usedBytes() const { size_t n=0; for(const auto& f:files) n+=f.second.size(); return n; }
     bool failBegin = false;
-    bool begin(bool,const char*,int,const char*) { return !failBegin; }
+    bool failFormat = false;
+    unsigned formatAttempts = 0;
+    bool begin(bool formatOnFail,const char*,int,const char*) {
+        if(!failBegin) return true;
+        if(!formatOnFail) return false;
+        ++formatAttempts;
+        if(failFormat) return false;
+        files.clear();
+        failBegin=false;
+        return true;
+    }
     void end() {}
     bool exists(const char* p) { return files.count(p); }
     bool exists(const String& p) { return exists(p.c_str()); }

@@ -9,5 +9,6 @@ inline int gpio_set_level(int pin,int level) { assert(pin==21); pwrLevel=level; 
 inline int gpio_set_direction(int pin,int mode) { assert(pin==21 && mode==GPIO_MODE_INPUT_OUTPUT); pwrOutput=true; return 0; }
 inline int gpio_hold_en(int pin) { assert(pin==21 && pwrOutput && pwrLevel==0); pwrHeld=true; return 0; }
 inline void gpio_deep_sleep_hold_en() { assert(pwrHeld); deepHold=true; }
+inline void gpio_deep_sleep_hold_dis() { deepHold=false; }
 inline int gpio_get_level(int pin) { assert(pin==21); return pwrLevel; }
 inline int gpio_hold_dis(int pin) { assert(pin==21); pwrHeld=false; return 0; }
