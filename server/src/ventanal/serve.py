@@ -16,6 +16,7 @@ from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 import fcntl
 from ventanal.config import load_config, normalize_hostname
+from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, omit_board_credits
 from ventanal.owner import OwnerStore, parse_skips
 
 
@@ -121,24 +122,45 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         fcntl.flock(lock, fcntl.LOCK_EX)
                         for skipped, shown in parse_skips(','.join(values)):
                             store.record(skipped, shown, datetime.now(timezone.utc))
-            if ui is not None and path == '/manifest.json':
+            if path == '/manifest.json':
+                target = root / 'manifest.json'
+                if ui is None and target.resolve() != target:
+                    self.send_error(404); return
                 try:
-                    with (root / 'manifest.json').open() as f:
+                    with target.open(encoding='utf-8') as f:
                         manifest = json.load(f)
-                    cfg = load_config(config_path)
-                    from ventanal.solar.licence import verify
-                    if not verify(cfg.cache_dir/'fcc.sqlite3', cfg.ham_call_sign, cfg.zip, datetime.now(timezone.utc)).ok:
-                        manifest.get('screens', {}).pop('solar', None)
-                    from ventanal.extras.publish import filter_manifest
-                    manifest = filter_manifest(manifest,cfg.cache_dir)
-                    full_mv = cfg.battery_full_mv
-                    manifest.pop('battery', None)
-                    if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
+                    if ui is not None:
+                        cfg = load_config(config_path)
+                        from ventanal.solar.licence import verify
+                        if not verify(cfg.cache_dir/'fcc.sqlite3', cfg.ham_call_sign, cfg.zip, datetime.now(timezone.utc)).ok:
+                            manifest.get('screens', {}).pop('solar', None)
+                        from ventanal.extras.publish import filter_manifest
+                        manifest = filter_manifest(manifest,cfg.cache_dir)
+                        full_mv = cfg.battery_full_mv
+                        manifest.pop('battery', None)
+                        if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
+                    omit_board_credits(manifest)
                     if active(): manifest = ui.security.manifest(manifest, root)
                     body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
-                except (OSError, ValueError, KeyError):
+                    if len(body) > MAX_SERVED_MANIFEST_BYTES:
+                        raise ValueError('Manifest exceeds the board response budget')
+                except FileNotFoundError:
+                    self.send_error(404 if ui is None else 503); return
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     self.send_error(503); return
-                ui.respond(self, 200, body, 'application/json'); return
+                if ui is not None:
+                    ui.respond(self, 200, body, 'application/json')
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    try:
+                        self.wfile.write(body)
+                    except (ConnectionError, TimeoutError):
+                        pass
+                return
             if active() and path.startswith('/previews/'):
                 ui.handle(self, path); return
             target = root / path.lstrip('/')

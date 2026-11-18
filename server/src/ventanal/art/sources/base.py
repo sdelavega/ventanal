@@ -18,6 +18,7 @@ import httpx
 from PIL import Image
 
 from ventanal import USER_AGENT
+from ventanal.manifest import CREDIT_FIELD_LIMITS, clean_credit_text
 
 
 @dataclass(frozen=True)
@@ -32,6 +33,11 @@ class Candidate:
     width: int | None
     height: int | None
     kind: str = "other"
+
+    def __post_init__(self):
+        object.__setattr__(self, "title", clean_credit_text(self.title))
+        for field, limit in CREDIT_FIELD_LIMITS.items():
+            object.__setattr__(self, field, clean_credit_text(getattr(self, field), limit))
 
 
 @dataclass(frozen=True)

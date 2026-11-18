@@ -10,7 +10,8 @@ from PIL import Image
 import pytest
 
 from ventanal.frame import encode_frame, frame_id
-from ventanal.manifest import Readout, publish, read_manifest
+from ventanal.art.sources import Candidate
+from ventanal.manifest import Readout, publish, read_manifest, write_manifest
 
 
 NOW = datetime(2026, 11, 15, 14, 30, tzinfo=timezone(timedelta(hours=-5)))
@@ -58,6 +59,27 @@ def test_publish_exact_entry_and_assets(tmp_path):
         assert preview.format == "PNG"
         assert preview.size == (16, 12)
         assert preview.getpixel((0, 0)) == (255, 0, 0)
+
+
+def test_credit_cleaned_at_ingestion_and_publication(tmp_path):
+    controls = ''.join(chr(c) for c in (*range(32), *range(127, 160)))
+    text = controls + 'é' * 130
+    candidate = Candidate('met', '123', 'Title' + controls, text, text, text, '', None, None)
+    assert candidate.title == 'Title'
+    assert candidate.artist == candidate.date == candidate.museum == 'é' * 120
+
+    raw = dict.fromkeys(('title', 'secondary', 'artist', 'date', 'museum'), text)
+    raw.update(source='met', object_id='123', x=28)
+    cleaned = raw | dict.fromkeys(('title', 'secondary'), 'é' * 130)
+    cleaned.update(dict.fromkeys(('artist', 'date', 'museum'), 'é' * 120))
+    art = publish(tmp_path, 'art', frame(), ART, raw, Image.new('RGB', (16, 12)), NOW)
+    assert art['credit'] == cleaned
+    assert raw['artist'] == text
+
+    manifest = read_manifest(tmp_path)
+    manifest['spares'] = [art | {'credit': raw}]  # Simulate an older spare ledger entry.
+    write_manifest(tmp_path, manifest)
+    assert read_manifest(tmp_path)['spares'][0]['credit'] == cleaned
 
 
 def test_publish_prunes(tmp_path):

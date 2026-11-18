@@ -96,7 +96,7 @@ build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manife
 # Shared transport headers also invalidate the net/cache builds.
 build/test_net build/test_cache build/test_cache_abort: ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
-build/test_secure_transport: fixtures/extras-server-manifest.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
+build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 

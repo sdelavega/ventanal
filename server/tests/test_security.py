@@ -7,8 +7,10 @@ import ssl
 from http.client import HTTPConnection, HTTPSConnection
 from threading import Thread
 from pathlib import Path
+from types import SimpleNamespace
 from cryptography import x509
 from cryptography.hazmat.primitives.asymmetric import ec
+import pytest
 from ventanal.security import Security, canonical
 from ventanal.serve import make_server
 
@@ -55,6 +57,96 @@ def test_canonical_signed_frames(tmp_path):
     assert sig==hmac.new(s.key,canonical(signed),hashlib.sha256).hexdigest()
     assert canonical({'b':1,'a':'Á'}) == b'{"a":"\xc3\x81","b":1}'
     assert 'sha256' not in m['screens']['art']
+
+
+def test_cross_language_manifest_controls():
+    fixture = Path(__file__).parents[2] / 'firmware/test/fixtures/manifest-controls.json'
+    controls = ''.join(map(chr, range(32))) + '\x7f'
+    manifest = {
+        'version': 1,
+        'screens': {'art': {
+            'url': '/frames/art.vnf',
+            'sha256': '0' * 64,
+            'credit': {'title': 'Árbol / "x" \\' + controls, 'key' + controls: 'value'},
+        }},
+    }
+    manifest['sig'] = hmac.new(bytes(32), canonical(manifest), hashlib.sha256).hexdigest()
+    assert json.loads(fixture.read_text(encoding='utf-8')) == manifest
+
+
+@pytest.mark.parametrize('mode', ['static', 'plain', 'signed'])
+def test_served_manifest_budget_with_four_long_credits(tmp_path, monkeypatch, mode):
+    from ventanal.extras import registry
+
+    config_path = None
+    cache_dir = None
+    if mode != 'static':
+        config_path = tmp_path / 'settings.toml'
+        cache_dir = tmp_path / 'cache'
+        example = Path(__file__).parents[1] / 'ventanal.example.toml'
+        config_path.write_text(example.read_text().replace('/var/lib/ventanal', str(tmp_path))
+                               .replace('/var/cache/ventanal', str(cache_dir)))
+    extras = ('extra-' + 'x' * 42, 'extra-' + 'y' * 42)
+    monkeypatch.setattr(registry, 'active', lambda *a, **kw: [SimpleNamespace(screens=extras)])
+    monkeypatch.setattr('ventanal.solar.licence.verify', lambda *a: SimpleNamespace(ok=True))
+    (tmp_path / 'frames').mkdir()
+
+    long_credit = dict.fromkeys(('title', 'secondary', 'artist', 'date', 'museum'),
+                               '𐀀' * 200 + '\x00\x1f\x7f\x9f')
+
+    def entry(name, credit=None):
+        ident = 'a' * 16
+        url = f'/frames/{name}-{ident}.vnf'
+        (tmp_path / url.lstrip('/')).write_bytes(b'frame')
+        return {'id': ident, 'url': url, 'size': 960016, 'rendered': '2026-11-15T14:30:00-05:00',
+                'readout': {'x': 1020, 'y': 0, 'w': 580, 'h': 104, 'style': 'shade'}, 'credit': credit}
+
+    order = ('art', 'weather', 'solar', *extras)
+    manifest = {'version': 1, 'screens': {name: entry(name, long_credit if name == 'art' else None)
+                                         for name in order},
+                'screen_order': list(order), 'quiet': {'start': '22:00', 'end': '07:00'},
+                'spares': [entry(f'spare{i}', long_credit) for i in range(3)]}
+    original = json.dumps(manifest)
+    assert len(json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()) > 8192
+    path = tmp_path / 'manifest.json'
+    path.write_text(original)
+    srv = make_server(tmp_path, '127.0.0.1', 0, cache_dir=cache_dir, config_path=config_path,
+                      https_host='127.0.0.1', https_port=0)
+    thread = Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        headers = {}
+        if mode == 'signed':
+            srv.ui.enable_security()
+            srv.ui.auth.set_password('test password', 'test password')
+            ctx = ssl.create_default_context(cadata=srv.ui.security.certificate)
+            conn = HTTPSConnection(*srv.tls_server.server_address, context=ctx)
+            headers = proof(srv.ui.security.key, '/manifest.json', 1)
+        else:
+            conn = HTTPConnection(*srv.server_address)
+        try:
+            conn.request('GET', '/manifest.json', headers=headers)
+            response = conn.getresponse()
+            body = response.read()
+            assert response.status == 200
+            assert int(response.getheader('Content-Length')) == len(body) <= 6144
+        finally:
+            conn.close()
+        served = json.loads(body)
+        assert served['screen_order'] == list(order)
+        assert served['quiet'] == manifest['quiet']
+        assert len(served['spares']) == 3
+        entries = [*served['screens'].values(), *served['spares']]
+        assert all('credit' not in entry for entry in entries)
+        if mode == 'signed':
+            assert all(entry['sha256'] == hashlib.sha256(b'frame').hexdigest() for entry in entries)
+            sig = served.pop('sig')
+            assert sig == hmac.new(srv.ui.security.key, canonical(served), hashlib.sha256).hexdigest()
+        assert path.read_text() == original
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join()
 
 
 def test_https_and_plain_protection(tmp_path):
