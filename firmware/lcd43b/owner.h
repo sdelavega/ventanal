@@ -2,38 +2,15 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 #include "../ventanal/owner.h"
-#include <LittleFS.h>
-#include <esp_heap_caps.h>
 #include <algorithm>
 #include <Preferences.h>
-#include "frame.h"
 
 namespace lcd {
 inline const char* selectedArtId(const OwnerState& owner) {
     return owner.overrideArt.id[0] ? owner.overrideArt.id : owner.mainId;
 }
-// Copy before changing selection, exactly like e-paper. A later spare download
-// must not change the owner's current override. Failed copies leave it intact.
-inline bool copyArtOverride(const char* path, const char* id) {
-    auto* buffer=static_cast<uint8_t*>(ps_malloc(32768));
-    if(!buffer) return false;
-    File source=LittleFS.open(path,"r"), out=LittleFS.open("/override.vnr.tmp","w");
-    bool ok=bool(source) && bool(out) && source.size()==FRAME_BYTES;
-    Sha256 hash;
-    size_t copied=0;
-    while(ok && copied<FRAME_BYTES) {
-        const size_t n=std::min(size_t(32768),FRAME_BYTES-copied);
-        ok=source.read(buffer,n)==n && out.write(buffer,n)==n;
-        if(ok) { hash.update(buffer,n); copied+=n; }
-    }
-    source.close(); out.flush(); out.close(); free(buffer);
-    char digest[17]; const auto* bytes=hash.digest();
-    for(int i=0;i<8;++i) snprintf(digest+2*i,3,"%02x",bytes[i]);
-    ok=ok && !strcmp(digest,id);
-    ok=ok && LittleFS.rename("/override.vnr.tmp","/override.vnr");
-    if(!ok) LittleFS.remove("/override.vnr.tmp");
-    return ok;
-}
+// Pin the copied pixels before changing selection. A failed or deferred
+// copy leaves the previous override and queue intact.
 template<class Copy>
 inline bool swapArt(OwnerState& owner, bool enabled, const bool cached[3], Copy copy) {
     if(!enabled) return false;

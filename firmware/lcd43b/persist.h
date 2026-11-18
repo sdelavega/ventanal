@@ -36,14 +36,16 @@ inline uint32_t settingsChecksum(const uint8_t* b) {
     for(int i=0;i<8;++i) h=(h^b[i])*16777619u;
     return h;
 }
-inline void saveSettings(Preferences& prefs, const DeviceSettings& s) {
-    if(!validSettings(s) || !prefs.begin("lcdset",false)) return;
+inline bool saveSettings(Preferences& prefs, const DeviceSettings& s) {
+    if(!validSettings(s) || !prefs.begin("lcdset",false)) return false;
     uint8_t b[12]={1,s.brightness,s.timeoutMin,
         uint8_t(s.showArt | (s.showWeather<<1) | (s.showSolar<<2)),
         uint8_t(s.batteryFullMv),uint8_t(s.batteryFullMv>>8),0,0};
     const uint32_t hash=settingsChecksum(b);
     for(int i=0;i<4;++i) b[8+i]=uint8_t(hash>>(8*i));
-    prefs.putBytes("settings",b,sizeof b); prefs.end();
+    const bool saved = prefs.putBytes("settings", b, sizeof b) == sizeof b;
+    prefs.end();
+    return saved;
 }
 inline bool loadSettings(Preferences& prefs, DeviceSettings& s) {
     s=defaultSettings(POWER_SOURCE_DETECTABLE);
@@ -69,13 +71,10 @@ constexpr uint16_t QUIET_NONE = 0xFFFF;
 // Persist the (manifest-validated) quiet window; an invalid or absent
 // window clears any previously stored one.
 inline void saveQuiet(Preferences& prefs, const DeviceManifest& manifest) {
-    if (manifest.quietValid()) {
-        prefs.putUShort("quiet-start", uint16_t(manifest.quietStart));
-        prefs.putUShort("quiet-end", uint16_t(manifest.quietEnd));
-    } else {
-        prefs.putUShort("quiet-start", QUIET_NONE);
-        prefs.putUShort("quiet-end", QUIET_NONE);
-    }
+    const uint16_t start = manifest.quietValid() ? uint16_t(manifest.quietStart) : QUIET_NONE;
+    const uint16_t end = manifest.quietValid() ? uint16_t(manifest.quietEnd) : QUIET_NONE;
+    if (prefs.getUShort("quiet-start", QUIET_NONE) != start) prefs.putUShort("quiet-start", start);
+    if (prefs.getUShort("quiet-end", QUIET_NONE) != end) prefs.putUShort("quiet-end", end);
 }
 
 // Load the persisted quiet window into the (freshly booted) manifest.
@@ -93,9 +92,12 @@ inline bool loadQuiet(Preferences& prefs, DeviceManifest& manifest) {
 // can still normalise the selection against the right list. Keep the
 // manifest clock preference alongside it for the same offline boot path.
 inline void savePublishShape(Preferences& prefs, const DeviceManifest& m) {
-    prefs.putUChar("solar-pub", m.screens[2].present ? 1 : 0);
-    prefs.putUChar("spare-count", m.spareCount);
-    prefs.putUChar("clock24h", m.clock24h ? 1 : 0);
+    if (prefs.getUChar("solar-pub", 0) != m.screens[2].present)
+        prefs.putUChar("solar-pub", m.screens[2].present);
+    if (prefs.getUChar("spare-count", 0) != m.spareCount)
+        prefs.putUChar("spare-count", m.spareCount);
+    if (prefs.getUChar("clock24h", 1) != m.clock24h)
+        prefs.putUChar("clock24h", m.clock24h);
 }
 
 inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
@@ -109,7 +111,7 @@ inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
 inline void saveCacheId(Preferences& prefs, int slot, const char* id) {
     char key[8];
     snprintf(key, sizeof key, "id%d", slot);
-    prefs.putString(key, id);
+    if (prefs.getString(key, "") != id) prefs.putString(key, id);
 }
 
 inline bool loadCacheIds(Preferences& prefs, char ids[SCREEN_SLOTS][17]) {
@@ -126,8 +128,10 @@ inline bool loadCacheIds(Preferences& prefs, char ids[SCREEN_SLOTS][17]) {
 
 // The selection keeps the phase-1 keys ("screen", "spare-cursor").
 inline void saveSelection(Preferences& prefs, int screenIndex, int spareCursor) {
-    prefs.putUChar("screen", uint8_t(screenIndex));
-    prefs.putUChar("spare-cursor", uint8_t(spareCursor));
+    if (prefs.getUChar("screen", 255) != uint8_t(screenIndex))
+        prefs.putUChar("screen", uint8_t(screenIndex));
+    if (prefs.getUChar("spare-cursor", 0) != uint8_t(spareCursor))
+        prefs.putUChar("spare-cursor", uint8_t(spareCursor));
 }
 
 // Load the persisted selection (defaults: art, spare0). Returns false

@@ -43,6 +43,14 @@ namespace lcd {
 
 namespace {
 
+// As on e-paper, keep the radio awake during large transfers and restore
+// the configured power-save mode on every exit from the worker pass.
+struct DownloadPower {
+    wifi_ps_type_t previous = WiFi.getSleep();
+    DownloadPower() { WiFi.setSleep(false); }
+    ~DownloadPower() { WiFi.setSleep(previous); }
+};
+
 bool wifiConnect(Watchdog& watchdog) {
     if (WiFi.status() == WL_CONNECTED) return true;
     WiFi.mode(WIFI_STA);
@@ -106,24 +114,29 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     return true;
 }
 
-// Commit a verified frame to its cache file via .tmp + rename so a crash
-// mid-write can never leave a half frame under the real name.
-bool commitFrame(const uint8_t* buffer, const char* slotName) {
-    const String path = String("/") + slotName + ".vnr";
-    const String temporary = path + ".tmp";
+}  // namespace
+
+// Commit an already verified frame via .tmp + rename. Recover scan-out
+// even on errors, since a partial write may also have suspended the cache.
+bool writeCachedFrame(const char* path, const uint8_t* buffer,
+                      FlashDone flashDone) {
+    const uint32_t started = millis();
+    const String temporary = String(path) + ".tmp";
     File out = LittleFS.open(temporary, "w");
-    if (!out) return false;
     size_t written = 0;
-    while (written < FRAME_BYTES) {
+    while (out && written < FRAME_BYTES) {
         const size_t n = out.write(buffer + written, FRAME_BYTES - written);
         if (!n) break;
         written += n;
     }
     out.close();
-    return written == FRAME_BYTES && LittleFS.rename(temporary, path);
+    const bool ok = written == FRAME_BYTES && LittleFS.rename(temporary.c_str(), path);
+    if (!ok) LittleFS.remove(temporary);
+    if (flashDone) flashDone("frame-commit");
+    log("cache commit path=%s ok=%d ms=%lu\n", path, ok,
+        static_cast<unsigned long>(millis() - started));
+    return ok;
 }
-
-}  // namespace
 
 void configureTimezone() {
     // setup() runs this before the first refresh so the persisted local
@@ -132,8 +145,9 @@ void configureTimezone() {
     configTzTime(VENTANAL_TZ, "pool.ntp.org", "time.nist.gov");
 }
 
-bool downloadFrame(const char* hostUrl, const FrameInfo& info,
-                   const char* slotName, uint8_t* buffer, Watchdog& watchdog) {
+static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
+                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                           uint32_t started, bool& retryable) {
     const String url = String(hostUrl) + info.url;
     bool ok = false;
     bool excess = false;
@@ -146,12 +160,14 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
     // socket open, failing every download on the close grace.
     http.setReuse(false);
     http.setTimeout(HTTP_TIMEOUT_MS);
-    const uint32_t started = millis();
+    const uint32_t attemptStarted = millis();
     watchdog.feed();
     const int status = http.GET();
     watchdog.feed();
     if (status == 200 && http.getSize() == int(FRAME_BYTES)) {
         size_t got = 0;
+        uint32_t lastProgress = millis();
+        bool idle = false;
         WiFiClient* stream = http.getStreamPtr();
         while (got < FRAME_BYTES && millis() - started < TRANSFER_BUDGET_MS) {
             watchdog.feed();
@@ -166,8 +182,13 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
                 const int read = stream->readBytes(buffer + got, n);
                 if (read <= 0) break;
                 got += size_t(read);
+                lastProgress = millis();
             } else {
                 if (!http.connected()) break;
+                if (millis() - lastProgress >= BODY_IDLE_MS) {
+                    idle = true;
+                    break;
+                }
                 delay(2);
             }
         }
@@ -196,29 +217,63 @@ bool downloadFrame(const char* hostUrl, const FrameInfo& info,
             }
         }
         ok = closed && !excess
+          && strncmp(info.id, info.sha256, 16) == 0
           && frameVerified(buffer, FRAME_BYTES, info.sha256);
+        retryable = got < FRAME_BYTES;
+        const char* outcome = ok ? "verified" : excess ? "excess"
+            : idle ? "body-idle"
+            : retryable ? (millis() - started >= TRANSFER_BUDGET_MS
+                                       ? "body-timeout" : "short-body")
+            : closed ? "invalid-frame" : "close-timeout";
         log("download slot=%s id=%.16s bytes=%u verified=%d excess=%d"
-            " ms=%lu\n",
+            " ms=%lu outcome=%s\n",
             slotName, info.id, unsigned(got), ok, excess,
-            static_cast<unsigned long>(millis() - started));
+            static_cast<unsigned long>(millis() - attemptStarted), outcome);
     } else {
         log("download slot=%s status=%d size=%d\n", slotName, status,
             http.getSize());
     }
     http.end();
-    if (ok) ok = commitFrame(buffer, slotName);
-    // A failed or committed download must never leave a staging file.
-    LittleFS.remove(String("/") + slotName + ".vnr.tmp");
     return ok;
+}
+
+static bool receiveFrame(const char* hostUrl, const FrameInfo& info,
+                         const char* slotName, uint8_t* buffer, Watchdog& watchdog) {
+    const uint32_t started = millis();
+    bool retryable = false;
+    if (receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable))
+        return true;
+    // A partial or stalled body is a transport failure. Retry once with
+    // a fresh connection, retaining the original frame's overall budget.
+    if (!retryable || millis() - started >= TRANSFER_BUDGET_MS - 2 * HTTP_TIMEOUT_MS)
+        return false;
+    log("download slot=%s retry=body\n", slotName);
+    return receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable);
+}
+
+bool downloadFrame(const char* hostUrl, const FrameInfo& info,
+                   const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                   FlashDone flashDone) {
+    const String path = String("/") + slotName + ".vnr";
+    return receiveFrame(hostUrl, info, slotName, buffer, watchdog)
+        && writeCachedFrame(path.c_str(), buffer, flashDone);
+}
+
+static bool preserveOverride(const ResidentCache* cache, int slot) {
+    if (!cache || slot < SCREEN_SLOTS - SPARE_SLOTS) return true;
+    const uint8_t* frame = cache->protectSpare(slot);
+    return !frame || writeCachedFrame("/override.vnr", frame, cache->flashDone);
 }
 
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
-                const DeviceSettings& settings, const char* skips) {
+                const DeviceSettings& settings, const char* skips,
+                const ResidentCache* cache) {
     result = RefreshResult{};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
+    DownloadPower radio;
     result.timeOk = syncTime(watchdog);
     if (!fetchManifest(hostUrl, deviceId, result.manifest, watchdog, skips)) return;
     result.manifestOk = true;
@@ -238,18 +293,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
                                 settings,slots,SCREEN_SLOTS);
     for(int i=0;i<count;++i) visible[slots[i]]=true;
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
-    uint8_t* buffer = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
-    if (!buffer) {
-        log("download error=allocation\n");
-        // Every slot that required a download this pass just failed it:
-        // the pass reports failure, not manifest-only success.
-        for (int slot = 0; slot < SCREEN_SLOTS; ++slot)
-            if (visible[slot] && published[slot] && published[slot]->present
-                && (strcmp(currentIds[slot],published[slot]->id)
-                    || !LittleFS.exists(String("/")+SLOT_NAMES[slot]+".vnr")))
-                result.frameFailed[slot] = true;
-        return;
-    }
+    uint8_t* buffer = cache ? cache->staging : static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
     for (int slot = 0; slot < SCREEN_SLOTS; ++slot) {
         watchdog.feed();
         const FrameInfo* info = published[slot];
@@ -257,29 +301,52 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             // Dropped screens: erase the cached frame HERE, on the worker —
             // a ~750 KB LittleFS erase takes over a second of flash time
             // and must never stall the touch poll in loop().
+            if (currentIds[slot][0] && !preserveOverride(cache, slot)) {
+                cache->publish(slot, nullptr, nullptr);
+                continue;
+            }
             result.dropSlot[slot] = true;
             const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
             const String temporary = path + ".tmp";
-            if (LittleFS.exists(path)) {
-                LittleFS.remove(path);
+            const bool removed = LittleFS.remove(path);
+            const bool removedTemp = LittleFS.remove(temporary);
+            if (cache && cache->flashDone && (removed || removedTemp || currentIds[slot][0]))
+                cache->flashDone("cache-drop");
+            if (removed)
                 log("cache removed slot=%s\n", SLOT_NAMES[slot]);
-            }
-            LittleFS.remove(temporary);
+            if (cache && currentIds[slot][0]) cache->publish(slot, "", nullptr);
             continue;
         }
         if (!visible[slot]) {
             log("download slot=%s skipped=hidden\n", SLOT_NAMES[slot]);
             continue; // keep hidden cached frames and ids
         }
-        if (!strcmp(currentIds[slot], info->id)
-            && LittleFS.exists(String("/") + SLOT_NAMES[slot] + ".vnr")) {
+        const bool unchanged = !strcmp(currentIds[slot], info->id) &&
+            (cache ? !cache->forceDownloads
+                   : LittleFS.exists(String("/") + SLOT_NAMES[slot] + ".vnr"));
+        if (unchanged) {
             log("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
-        if (downloadFrame(hostUrl, *info, SLOT_NAMES[slot], buffer, watchdog)) {
+        if (!buffer || (cache && !cache->allocated[slot])) {
+            log("download slot=%s skipped=no-psram\n", SLOT_NAMES[slot]);
+            result.frameFailed[slot] = true;
+            continue;
+        }
+        const bool received = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], buffer, watchdog);
+        bool committed = false;
+        if (received) {
+            const String path = String("/") + SLOT_NAMES[slot] + ".vnr";
+            const bool sameId = strcmp(currentIds[slot], info->id) == 0;
+            committed = (sameId || preserveOverride(cache, slot)) &&
+                writeCachedFrame(path.c_str(), buffer, cache ? cache->flashDone : nullptr);
+            if (cache) cache->publish(slot, committed ? info->id : nullptr,
+                                      committed ? buffer : nullptr);
+        }
+        if (committed) {
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
@@ -290,7 +357,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameFailed[slot] = true;
         }
     }
-    free(buffer);
+    if (!cache) free(buffer);
 }
 
 }  // namespace lcd

@@ -3,6 +3,7 @@
 #pragma once
 #include <cstdint>
 #include <cstddef>
+#include <cstring>
 namespace lcd {
 struct DeviceSettings {
     uint8_t brightness = 100; // 25|50|75|100
@@ -33,11 +34,16 @@ inline bool setVisibility(DeviceSettings& s, int which, bool on, bool solarPrese
 // Channel-wise integer scaling, truncating toward black. In-place is safe;
 // callers scale staging pixels, never the cached frame or readout background.
 inline void dimRgb565(const uint16_t* src, uint16_t* dst, size_t n, uint8_t percent) {
-    if(percent>100) percent=100;
+    if (percent >= 100) {
+        if (src != dst) memcpy(dst, src, n * sizeof *src);
+        return;
+    }
+    uint8_t scaled[64];
+    for (unsigned level = 0; level < 64; ++level)
+        scaled[level] = uint8_t(level * percent / 100);
     for(size_t i=0;i<n;++i) {
         const unsigned p=src[i];
-        dst[i]=uint16_t((((p>>11)*percent/100)<<11)
-            | ((((p>>5)&63)*percent/100)<<5) | ((p&31)*percent/100));
+        dst[i]=uint16_t((scaled[p>>11]<<11) | (scaled[(p>>5)&63]<<5) | scaled[p&31]);
     }
 }
 } // namespace lcd

@@ -36,18 +36,5 @@ int main() {
     lcd::saveOwner(prefs,boot); OwnerState acked; assert(lcd::loadOwner(prefs,acked) && !acked.queue.count);
     boot.mainChanged("dddddddddddddddd"); assert(boot.cursor==-1 && !boot.overrideArt.id[0]);
     bool none[3]={}; assert(lcd::swapArt(boot,true,none,copy) && !boot.queue.count);
-    // Production copy: failed IO/hash/rename never changes the committed override.
-    files["/spare0.vnr"]=std::vector<uint8_t>(lcd::FRAME_BYTES,0);
-    Sha256 hash; hash.update(files["/spare0.vnr"].data(),lcd::FRAME_BYTES);
-    char id[17]; const auto* bytes=hash.digest();
-    for(int i=0;i<8;++i) snprintf(id+2*i,3,"%02x",bytes[i]);
-    assert(lcd::copyArtOverride("/spare0.vnr",id));
-    auto saved=files["/override.vnr"];
-    files["/spare0.vnr"][500]=1;
-    assert(!lcd::copyArtOverride("/spare0.vnr",id) && files["/override.vnr"]==saved);
-    files["/spare0.vnr"][500]=0; failWrite=true;
-    assert(!lcd::copyArtOverride("/spare0.vnr",id)); failWrite=false; failRename=true;
-    assert(!lcd::copyArtOverride("/spare0.vnr",id)); failRename=false;
-    assert(files["/override.vnr"]==saved && !files.count("/override.vnr.tmp"));
-    puts("lcd43b owner: shared spare cycle, copy failures, visibility, NVS, snapshot acknowledgement passed");
+    puts("lcd43b owner: shared spare cycle, deferred copy, visibility, NVS, snapshot acknowledgement passed");
 }

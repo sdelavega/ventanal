@@ -114,14 +114,22 @@ public:
         return panel_ && esp_lcd_panel_draw_bitmap(panel_,x,y,x+w,y+h,pixels)==ESP_OK;
     }
 
-    void clear(uint16_t colour) {
-        if (!panel_) return;
+    // This board streams a single cached framebuffer through CPU-filled
+    // bounce buffers. Compose into that buffer to avoid another full
+    // PSRAM copy through draw_bitmap.
+    uint16_t* framebuffer() const {
+        if (!panel_) return nullptr;
         void* buffer = nullptr;
-        if (esp_lcd_rgb_panel_get_frame_buffer(panel_, 1, &buffer) != ESP_OK || !buffer)
-            return;
+        if (esp_lcd_rgb_panel_get_frame_buffer(panel_, 1, &buffer) != ESP_OK)
+            return nullptr;
+        return static_cast<uint16_t*>(buffer);
+    }
+
+    void clear(uint16_t colour) {
+        auto* out = reinterpret_cast<uint32_t*>(framebuffer());
+        if (!out) return;
         const size_t words = size_t(WIDTH) * HEIGHT / 2;
         uint32_t fill = uint32_t(colour) << 16 | colour;
-        uint32_t* out = static_cast<uint32_t*>(buffer);
         for (size_t i = 0; i < words; ++i) out[i] = fill;
     }
 

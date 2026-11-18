@@ -30,6 +30,22 @@ namespace lcd {
 inline const char* const SLOT_NAMES[SCREEN_SLOTS] = {
     "art", "weather", "solar", "spare0", "spare1", "spare2"};
 
+using FlashDone = void (*)(const char* operation);
+
+// Optional hardware hand-off. publish runs after the atomic disk commit
+// and must finish consuming the buffer before the next GET reuses it.
+struct ResidentCache {
+    uint8_t* staging = nullptr;
+    bool allocated[SCREEN_SLOTS] = {};
+    // Before replacing a spare, ask the UI whether it is the selected
+    // override and needs an independent durable copy.
+    const uint8_t* (*protectSpare)(int slot) = nullptr;
+    // A null frame with an empty id means drop; a null id means failure.
+    void (*publish)(int slot, const char* id, const uint8_t* frame) = nullptr;
+    FlashDone flashDone = nullptr;
+    bool forceDownloads = false;
+};
+
 // Budgets (ms). The transfer budget bounds each stalled frame download;
 // the watchdog timeout must exceed the longest blocking call (one HTTP
 // GET with its connect + header timeouts).
@@ -37,6 +53,7 @@ constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
 constexpr uint32_t NTP_TIMEOUT_MS = 10000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 10000;
 constexpr uint32_t TRANSFER_BUDGET_MS = 60000;
+constexpr uint32_t BODY_IDLE_MS = 6000;
 // Bounded completion check for the connection-close framing below: how long
 // a fully received frame waits for the server to hang up before the body
 // is treated as incomplete (fail closed).
@@ -123,7 +140,11 @@ void configureTimezone();
 // delivers nor closes within the grace window is treated as incomplete
 // (fail closed; the previous cache entry stays).
 bool downloadFrame(const char* hostUrl, const FrameInfo& info,
-                   const char* slotName, uint8_t* buffer, Watchdog& watchdog);
+                   const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                   FlashDone flashDone = nullptr);
+
+bool writeCachedFrame(const char* path, const uint8_t* buffer,
+                      FlashDone flashDone);
 
 // One full refresh pass: Wi-Fi, NTP, the device manifest, then every
 // changed frame (unchanged slots stage their current id; absent screens
@@ -132,7 +153,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
                 const DeviceSettings& settings = DeviceSettings{},
-                const char* skips = "");
+                const char* skips = "", const ResidentCache* cache = nullptr);
 
 // Apply a finished pass to the live state (single writer: the main loop).
 // Persists the validated quiet window and publish shape, normalises the

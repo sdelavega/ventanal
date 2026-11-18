@@ -38,6 +38,9 @@ struct CountingWatchdog : lcd::Watchdog {
     void feed() override { ++feeds; }
 };
 
+const uint8_t* protectedSpare;
+std::vector<std::string> cacheEvents;
+
 std::vector<uint8_t> solidFrame(uint16_t rgb565) {
     std::vector<uint8_t> frame;
     frame.insert(frame.end(), {'V', 'N', 'R', '1'});
@@ -115,6 +118,8 @@ void resetFakes() {
     lastConnectionHeader.clear();
     persistentServer = false;
     failAllocation = false;
+    failRename = false;
+    cacheEvents.clear();
     fakeTz.clear();
 }
 
@@ -283,6 +288,58 @@ int main() {
         assert(!result.frameOk[0] && result.frameOk[1] && !result.frameOk[3]);
         assert(requestedUrls.size()==2);
     }
+    {   // An override selected from RAM survives replacing its spare on disk.
+        resetFakes();
+        const auto oldFrame = solidFrame(0xF800);
+        const auto newFrame = solidFrame(0x07E0);
+        const Entry art = makeEntry("art", oldFrame);
+        const Entry weather = makeEntry("weather", newFrame);
+        const Entry spare = makeEntry("spare0", newFrame);
+        assert(lcd::cachedFrameValid(oldFrame.data(), art.info.id));
+        assert(!lcd::cachedFrameValid(newFrame.data(), art.info.id));
+        responseBody = manifestBody(art, weather);
+        responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + spare.body + "]");
+        urlResponses["http://host" + spare.url] = newFrame;
+        sizeFromResponse = true;
+        files["/spare0.vnr"] = oldFrame;
+        char ids[lcd::SCREEN_SLOTS][17]{};
+        strcpy(ids[0], art.info.id);
+        strcpy(ids[1], weather.info.id);
+        strcpy(ids[3], art.info.id);
+        std::vector<uint8_t> staging(lcd::FRAME_BYTES);
+        protectedSpare = oldFrame.data();
+        lcd::ResidentCache cache;
+        cache.staging = staging.data();
+        cache.allocated[3] = true;
+        cache.protectSpare = [](int slot) {
+            assert(slot == 3);
+            cacheEvents.emplace_back("protect");
+            return protectedSpare;
+        };
+        cache.flashDone = [](const char* operation) { cacheEvents.emplace_back(operation); };
+        cache.publish = [](int slot, const char* id, const uint8_t* bytes) {
+            assert(slot == 3);
+            cacheEvents.emplace_back(id ? "publish" : "failed");
+            if (id) {
+                assert(lcd::cachedFrameValid(bytes, id));
+                assert(files.at("/spare0.vnr") == std::vector<uint8_t>(bytes, bytes + lcd::FRAME_BYTES));
+            }
+        };
+        CountingWatchdog watchdog;
+        lcd::RefreshResult result;
+        failRename = true;
+        lcd::runRefresh("http://host", "lcd43b", ids, result, watchdog, {}, "", &cache);
+        assert(result.frameFailed[3] && files.at("/spare0.vnr") == oldFrame);
+        assert(!files.count("/override.vnr.tmp"));
+        assert((cacheEvents == std::vector<std::string>{"protect", "frame-commit", "failed"}));
+
+        cacheEvents.clear();
+        failRename = false;
+        lcd::runRefresh("http://host", "lcd43b", ids, result, watchdog, {}, "", &cache);
+        assert(result.frameOk[3] && !result.frameFailed[3]);
+        assert(files.at("/override.vnr") == oldFrame && files.at("/spare0.vnr") == newFrame);
+        assert((cacheEvents == std::vector<std::string>{"protect", "frame-commit", "frame-commit", "publish"}));
+    }
     {   // Stalled transfers with the watchdog enabled: the manifest itself
         // arrives, every frame transfer gives up after its budget, the
         // whole pass returns bounded, and the watchdog is fed throughout
@@ -314,7 +371,10 @@ int main() {
         assert(!files.count("/art.vnr")); // nothing partial committed
         const uint32_t elapsed = fakeClock - started;
         assert(elapsed < 2 * lcd::TRANSFER_BUDGET_MS + 80000);   // bounded
-        assert(watchdog.feeds > 30000);   // fed during both stalls
+        assert(watchdog.feeds > 5000);   // fed during both attempts on each frame
+        assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + weather.url) == 2);
+        assert(strstr(Serial.output.c_str(), "outcome=body-idle"));
+        assert(strstr(Serial.output.c_str(), "download slot=weather retry=body"));
     }
     {   // Connection-close framing must actually ask for closure: the
         // outgoing request carries Connection: close (keep-alive disabled),
