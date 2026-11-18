@@ -120,8 +120,9 @@ restore a normal build without extra defines promptly.
 
 `state phase=boot-load` logs the NVS record length, actual getBytes return,
 State size, queue count, cursor, override ID and three spare IDs. `retry-load`
-logs the retained RTC snapshot; `save` and `sleep` expose the state on each exit,
-including watchdog/PON limits. IDs are bounded to sixteen characters; no
+logs the retained RTC snapshot; `save` and `sleep` expose the state on the
+application and PON retry paths. The reset-strike limit sleeps before loading
+state. IDs are bounded to sixteen characters; no
 credentials, URLs or configuration settings are logged. Existing incompatible records or reads that fail twice are copied byte-for-byte
 into `state-bad` (replacing any earlier quarantine), with
 `error=state-load quarantined bytes=<n>`. This wake then provisions from defaults

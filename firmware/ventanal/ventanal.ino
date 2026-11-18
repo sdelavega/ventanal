@@ -10,6 +10,8 @@
 #include <esp_system.h>
 #include <esp_task_wdt.h>
 #include <esp_timer.h>
+#include <freertos/FreeRTOS.h>
+#include <freertos/task.h>
 #include <Wire.h>
 #ifndef VENTANAL_HOST_TEST
 #include <system/inkplateSemaphore.h>
@@ -83,8 +85,21 @@ constexpr bool statelostForce=false;
 #error BOOTTIMETEST requires STALLTEST and PWRENTEST off
 #endif
 Inkplate display;
+// Retain the existing wdt-count NVS key so upgrades keep their strikes.
 uint8_t watchdogResets=0;
 namespace {
+bool isWatchdogReset(esp_reset_reason_t reason) {
+    return reason==ESP_RST_TASK_WDT || reason==ESP_RST_INT_WDT || reason==ESP_RST_WDT;
+}
+bool isAbnormalReset(esp_reset_reason_t reason) {
+    switch(reason) {
+        case ESP_RST_POWERON: case ESP_RST_EXT: case ESP_RST_SW:
+        case ESP_RST_DEEPSLEEP: case ESP_RST_SDIO: case ESP_RST_USB: case ESP_RST_JTAG:
+            return false;
+        default:
+            return true;
+    }
+}
 esp_task_wdt_user_handle_t wakeWatchdog;
 void armWakeWatchdog() {
     // A user subscription is never fed by Arduino's loop/task watchdog resets.
@@ -157,6 +172,15 @@ bool quarantineState(size_t length) {
     nvs_close(handle);
     if(ok) Serial.printf("error=state-load quarantined bytes=%u\n",unsigned(length));
     return ok;
+}
+bool canProvisionCache() {
+    // Only an explicit NOT_FOUND for both keys authorizes formatting.
+    nvs_handle_t handle;
+    if(nvs_open("ventanal",NVS_READONLY,&handle)!=ESP_OK) return false;
+    const bool fresh=nvs_find_key(handle,"state13",nullptr)==ESP_ERR_NVS_NOT_FOUND &&
+                     nvs_find_key(handle,"state-bad",nullptr)==ESP_ERR_NVS_NOT_FOUND;
+    nvs_close(handle);
+    return fresh;
 }
 const ScreenInfo& selectedArt(const State& state) {
     return state.owner.overrideArt.id[0]?state.owner.overrideArt:state.art;
@@ -241,8 +265,17 @@ State panelState() {
     return state;
 }
 constexpr uint32_t ponMagic=0x504f4e31;
+constexpr uint32_t panelRecoveryStackBytes=8192; // ESP-IDF task stack sizes are in bytes.
+portMUX_TYPE panelLock=portMUX_INITIALIZER_UNLOCKED;
+TaskHandle_t panelRecoveryTask=nullptr;
+esp_timer_handle_t panelTimer=nullptr;
 uint32_t panelStarted;
+#if VENTANAL_PONRETRYTEST
+uint32_t panelFirstHigh;
+#endif
 bool panelSeenHigh;
+bool panelMonitoring;
+bool panelRecoveryPending;
 void rememberPanel(const State& state, int pct, bool offline, time_t drawnAt,
                    uint8_t kind=0, uint8_t sample=0) {
     pendingPanel.magic=0; pendingPanel.attempts=0;
@@ -253,15 +286,29 @@ void rememberPanel(const State& state, int pct, bool offline, time_t drawnAt,
 }
 void checkPanel(void*) {
     // Never reconfigure BUSYN: the library owns its INPUT_PULLUP mode.
-    const uint32_t elapsed=uint32_t(millis()-panelStarted);
-    // Ignore power-up/reset pulses; only the post-reset PON window counts.
-    const bool high=!statelostForce && elapsed>=500 && elapsed<=3000 && digitalRead(7)==HIGH;
+    bool notify=false;
+    portENTER_CRITICAL(&panelLock);
+    if(panelMonitoring && !panelSeenHigh) {
+        const uint32_t elapsed=uint32_t(millis()-panelStarted);
+        // Ignore power-up/reset pulses; only the post-reset PON window counts.
+        if(!statelostForce && elapsed>=500 && elapsed<=3000 && digitalRead(7)==HIGH) {
+            panelSeenHigh=true;
 #if VENTANAL_PONRETRYTEST
-    if(high && !panelSeenHigh)
-        Serial.printf("panel busy-high ms=%lu\n",static_cast<unsigned long>(elapsed));
+            panelFirstHigh=elapsed;
 #endif
-    panelSeenHigh=panelSeenHigh || high;
-    if(!ponStalled(elapsed,panelSeenHigh)) return;
+        }
+        if(ponStalled(elapsed,panelSeenHigh)) {
+            panelMonitoring=false;
+            panelRecoveryPending=true;
+            notify=true;
+        }
+    }
+    portEXIT_CRITICAL(&panelLock);
+    if(notify) xTaskNotifyGive(panelRecoveryTask);
+}
+void recoverPanel(void*) {
+    ulTaskNotifyTake(pdTRUE,portMAX_DELAY);
+    ESP_ERROR_CHECK(esp_timer_stop(panelTimer));
     if(!nextPonRetry(pendingPanel.attempts)) {
         pendingPanel.magic=0;
         Serial.println("panel pon-retry limit");
@@ -269,12 +316,13 @@ void checkPanel(void*) {
         pinMode(21,OUTPUT); digitalWrite(21,LOW);
         sleepFor(pendingPanel.kind==2 ? 0 : secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
             quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pendingPanel.pct)),panelState());
-        return;
+    } else {
+        pendingPanel.magic=ponMagic;
+        Serial.printf("panel pon-stall restart attempt=%u\n",unsigned(pendingPanel.attempts));
+        Serial.flush();
+        esp_restart();
     }
-    pendingPanel.magic=ponMagic;
-    Serial.printf("panel pon-stall restart attempt=%u\n",unsigned(pendingPanel.attempts));
-    Serial.flush();
-    esp_restart();
+    vTaskDelete(nullptr);
 }
 void refreshPanel() {
 #if VENTANAL_HANGTEST
@@ -282,14 +330,25 @@ void refreshPanel() {
     Serial.flush();
     while(true) delay(1);
 #endif
-    esp_timer_handle_t timer=nullptr;
-    esp_timer_create_args_t args={};
-    args.callback=checkPanel;
-    args.name="panel-pon";
-    ESP_ERROR_CHECK(esp_timer_create(&args,&timer));
+    if(!panelTimer) {
+        esp_timer_create_args_t args={};
+        args.callback=checkPanel;
+        args.name="panel-pon";
+        ESP_ERROR_CHECK(esp_timer_create(&args,&panelTimer));
+        // Keep one worker per boot, including diagnostic runs with many draws.
+        ESP_ERROR_CHECK(xTaskCreate(recoverPanel,"panel-recovery",panelRecoveryStackBytes,nullptr,
+                                   uxTaskPriorityGet(nullptr)+1,&panelRecoveryTask)==pdPASS ? ESP_OK : ESP_ERR_NO_MEM);
+    }
+    portENTER_CRITICAL(&panelLock);
     panelSeenHigh=false;
+#if VENTANAL_PONRETRYTEST
+    panelFirstHigh=0;
+#endif
+    panelRecoveryPending=false;
+    panelMonitoring=true;
     panelStarted=millis();
-    ESP_ERROR_CHECK(esp_timer_start_periodic(timer,50000));
+    portEXIT_CRITICAL(&panelLock);
+    ESP_ERROR_CHECK(esp_timer_start_periodic(panelTimer,50000));
 #if VENTANAL_PONRETRYTEST
     Serial.printf("panel display-start attempt=%u boot_ms=%lu\n",unsigned(pendingPanel.attempts),static_cast<unsigned long>(panelStarted));
 #else
@@ -300,8 +359,19 @@ void refreshPanel() {
         while(true) delay(1);
     }
     display.display();
-    ESP_ERROR_CHECK(esp_timer_stop(timer));
-    ESP_ERROR_CHECK(esp_timer_delete(timer));
+    portENTER_CRITICAL(&panelLock);
+    panelMonitoring=false;
+    const bool recovering=panelRecoveryPending;
+#if VENTANAL_PONRETRYTEST
+    const uint32_t firstHigh=panelFirstHigh;
+#endif
+    portEXIT_CRITICAL(&panelLock);
+    // A claimed stall owns the snapshot and final outcome, even if the driver returns.
+    if(recovering) for(;;) delay(1);
+    ESP_ERROR_CHECK(esp_timer_stop(panelTimer));
+#if VENTANAL_PONRETRYTEST
+    if(firstHigh) Serial.printf("panel busy-high ms=%lu\n",static_cast<unsigned long>(firstHigh));
+#endif
     pendingPanel.magic=0;
     completePonRetry(pendingPanel.attempts);
 }
@@ -309,6 +379,29 @@ void save(Preferences& prefs, const State& state) {
     logState("save",state);
     if(prefs.putBytes("state13", &state, sizeof state) != sizeof state)
         Serial.println("error=nvs-state-write");
+}
+constexpr char chargeMarker[]="charge-drawn";
+bool storeChargeMarker(Preferences& prefs, uint8_t value) {
+    if(prefs.putBytes(chargeMarker,&value,sizeof value)==sizeof value) return true;
+    Serial.println("error=nvs-charge-marker-write");
+    return false;
+}
+void sleepCritical(Preferences& prefs, State& state, int pct, bool chargeAttempted) {
+    // Commit before the high-current refresh. An interrupted draw can leave
+    // an incomplete screen, but must not repeat on the depleted battery.
+    if(!chargeAttempted && storeChargeMarker(prefs,1)) {
+        rememberPanel(state,pct,false,time(nullptr),2);
+        drawChargeMe(display);
+        refreshPanel();
+        clearWatchdogCount(prefs);
+        state.drawn.any=false;
+        save(prefs,state);
+        Serial.println("draw=charge-me timer=disabled");
+    } else {
+        Serial.println("draw skipped=charge-me timer=disabled");
+    }
+    prefs.end();
+    sleepFor(0,state);
 }
 void update(Preferences& prefs, State& state, ScreenInfo& cached,
             const ScreenInfo& incoming, const char* path) {
@@ -411,7 +504,6 @@ void stallRun(Preferences& prefs, const State& state, int pct, bool offline) {
 }
 #endif
 void setup() {
-    armWakeWatchdog();
     const uint32_t wakeStarted=millis();
     bool doublePress=false, longPress=false;
     if(esp_sleep_get_wakeup_cause()==ESP_SLEEP_WAKEUP_EXT0) {
@@ -439,27 +531,56 @@ void setup() {
         ponRetryBoot(reset==ESP_RST_SW,pendingPanel.attempts) &&
         pendingPanel.stateChecksum==panelChecksum();
     if(!ponRetry) { pendingPanel.magic=0; completePonRetry(pendingPanel.attempts); }
-    const bool watchdog=reset==ESP_RST_TASK_WDT || reset==ESP_RST_INT_WDT || reset==ESP_RST_WDT;
-    wake=wakeAfterReset(wake,watchdog);
+    const bool abnormal=isAbnormalReset(reset);
+    wake=wakeAfterReset(wake,abnormal);
     Preferences prefs;
     const bool persisted=prefs.begin("ventanal",false);
-    loadQuiet(prefs);
-    loadBattery(prefs);
     watchdogResets=0;
     if(persisted) prefs.getBytes("wdt-count", &watchdogResets, sizeof watchdogResets);
-    const bool skip=watchdogLimit(watchdog,watchdogResets);
+    const bool skip=watchdogLimit(abnormal,watchdogResets);
 #if VENTANAL_STALLTEST
     (void)skip;
 #endif
     bool recoveryStored=persisted;
-    if(watchdog) {
-        Serial.printf("reset=watchdog count=%u\n",unsigned(watchdogResets));
+    if(abnormal) {
+        Serial.printf("reset=%s count=%u reason=%d\n",isWatchdogReset(reset)?"watchdog":"abnormal",
+                      unsigned(watchdogResets),int(reset));
         if(!persisted || prefs.putBytes("wdt-count", &watchdogResets, sizeof watchdogResets)!=sizeof watchdogResets) {
             // Without durable recovery state, never risk another panel hang.
             Serial.println("error=nvs-watchdog-write");
             recoveryStored=false;
         }
     }
+    uint8_t charge=0;
+    const bool chargeAttempted=persisted &&
+        (prefs.getBytes(chargeMarker,&charge,sizeof charge)==sizeof charge ? charge!=0 : prefs.isKey(chargeMarker));
+    if(abnormal && chargeAttempted) {
+        Serial.println("draw skipped=charge-me timer=disabled");
+        prefs.end();
+        sleepHardware(0);
+        return;
+    }
+    loadQuiet(prefs);
+    loadBattery(prefs);
+    if(
+#if !VENTANAL_STALLTEST
+       skip ||
+#endif
+       (abnormal && !recoveryStored)) {
+        Serial.println("draw skipped=reset-limit");
+        // Seed time from the standalone RTC without initializing the panel.
+#ifndef VENTANAL_HOST_TEST
+        inkplateMutexInit();
+#endif
+        Wire.begin();
+        syncTime();
+        if(persisted) prefs.end();
+        const int pct=batteryCount ? batteryPercent(correctBattery(batteryHistory[batteryCount-1])) : 100;
+        sleepHardware(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
+                      quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct)));
+        return;
+    }
+    armWakeWatchdog();
 #if VENTANAL_WAKETEST == 2 || VENTANAL_SPARESTEST
     if(wake==WakeCause::ColdBoot) testWakeCount=0;
     if(wake==WakeCause::Timer && ++testWakeCount==2) {
@@ -548,25 +669,8 @@ void setup() {
         ponRetry=false;
         wake=WakeCause::ColdBoot; // Provision online even if this was a button wake.
     }
-    if(
-#if !VENTANAL_STALLTEST
-       skip ||
-#endif
-       (watchdog && !recoveryStored)) {
-        Serial.println("draw skipped=watchdog-limit");
-        // Initialize only the I2C bus, then seed time from the standalone RTC.
-        // No panel initialization, power-up, battery read or drawing occurs.
-#ifndef VENTANAL_HOST_TEST
-        inkplateMutexInit();
-#endif
-        Wire.begin();
-        syncTime();
-        if(persisted) prefs.end();
-        const int pct=batteryCount ? batteryPercent(correctBattery(batteryHistory[batteryCount-1])) : 100;
-        sleepFor(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-                 quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct)),state);
-        return;
-    }
+    // An interrupted charge draw may have left the saved frame ID unchanged.
+    if(chargeAttempted) state.drawn.any=false;
     if(ponRetry) {
         Serial.printf("panel pon-retry attempt=%u\n",unsigned(pendingPanel.attempts));
         display.begin();
@@ -594,6 +698,7 @@ void setup() {
         }
         refreshPanel();
         clearWatchdogCount(prefs);
+        if(pendingPanel.kind!=2 && chargeAttempted) storeChargeMarker(prefs,0);
         Serial.println("panel pon-retry complete");
         state.drawn.any=ready;
         if(ready) {
@@ -632,14 +737,7 @@ void setup() {
     int pct=batteryPercent(volts);
     Serial.printf("battery=%.3f pct=%d bat_mv=%d\n",rawVolts,pct,batteryMv);
     if(isCritical(volts)) {
-        rememberPanel(state,pct,false,time(nullptr),2);
-        drawChargeMe(display);
-        refreshPanel();
-        clearWatchdogCount(prefs);
-        state.drawn.any=false;
-        if(persisted) { save(prefs,state); prefs.end(); }
-        Serial.println("draw=charge-me timer=disabled");
-        sleepFor(0,state);
+        sleepCritical(prefs,state,pct,chargeAttempted);
         return;
     }
     if(display.width()!=1600 || display.height()!=1200) {
@@ -647,7 +745,22 @@ void setup() {
         if(persisted) prefs.end();
         sleepFor(60,state); return;
     }
-    const bool mounted=LittleFS.begin(false,"/littlefs",10,"littlefs");
+    bool mounted=LittleFS.begin(false,"/littlefs",10,"littlefs");
+    if(!mounted && persisted && canProvisionCache()) {
+        Serial.println("cache provisioning=mount-failed-no-state");
+        mounted=LittleFS.begin(true,"/littlefs",10,"littlefs");
+        if(!mounted) {
+            // Keep the provisioning path available on the next wake.
+            Serial.println("error=cache-provision");
+            prefs.end();
+            syncTime();
+            sleepFor(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
+                quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct)),state);
+            return;
+        }
+        wake=WakeCause::ColdBoot;
+    }
+    if(!mounted) Serial.println("error=cache-mount");
 #if VENTANAL_ERASE_CACHE
     if(mounted) {
         LittleFS.remove("/art.vnf"); LittleFS.remove("/weather.vnf"); LittleFS.remove("/solar.vnf");
@@ -700,11 +813,9 @@ void setup() {
             if(!persisted) batteryFullMv=manifestBatteryFullMv;
             pct=batteryPercent(correctBattery(rawVolts));
             if(isCritical(correctBattery(rawVolts))) {
-                rememberPanel(state,pct,false,time(nullptr),2);
-                drawChargeMe(display); refreshPanel(); clearWatchdogCount(prefs);
-                state.drawn.any=false;
-                if(persisted) { save(prefs,state); prefs.end(); }
-                sleepFor(0,state); return;
+                if(mounted) LittleFS.end();
+                sleepCritical(prefs,state,pct,chargeAttempted);
+                return;
             }
             if(state.owner.queue.count) Serial.printf("skip reports acknowledged count=%u\n",unsigned(state.owner.queue.count));
             state.owner.queue.acknowledge(true);
@@ -835,6 +946,7 @@ void setup() {
         }
         start=millis(); refreshPanel();
         clearWatchdogCount(prefs);
+        if(chargeAttempted) storeChargeMarker(prefs,0);
         Serial.printf("display ms=%lu\n",static_cast<unsigned long>(millis()-start));
         state.drawn.any=ready;
         if(ready) {

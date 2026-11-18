@@ -127,3 +127,5 @@ build/test_extras: test_extras.cpp test_solar.cpp test_wake.cpp ../ventanal/vent
 build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.ino ../ventanal/owner.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+
+build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h

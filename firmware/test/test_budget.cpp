@@ -41,10 +41,10 @@ int main() {
     frameOK=true;
     // Charge-me PON exhaustion must arm button-only sleep.
     State state{}; rememberPanel(state,0,false,time(nullptr),2);
-    pendingPanel.attempts=3; panelStarted=fakeClock; panelSeenHigh=false; fakeBusy=0;
-    fakeClock+=3000;
+    pendingPanel.attempts=2;
+    displayHook=[] { fakeBusy=0; fakeClock=panelStarted+3000; timerCallback(nullptr); };
     timerUs=0;
-    try { checkPanel(nullptr); assert(false); } catch(const Sleeping&) {}
+    try { refreshPanel(); assert(false); } catch(const Sleeping&) {}
     assert(timerUs==0);
     puts("budget: 8 screens, 30s transfers, durable priority, changing-art fairness, no watchdog feeds, charge-me limit passed");
 }

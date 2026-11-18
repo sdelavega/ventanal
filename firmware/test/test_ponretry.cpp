@@ -30,10 +30,16 @@ int main() {
         assert(!panelSeenHigh);
         fakeBusy=0; fakeClock=panelStarted+2999; timerCallback(nullptr);
         assert(pendingPanel.attempts==0);
-        fakeClock=panelStarted+3000; timerCallback(nullptr); };
+        fakeClock=panelStarted+3000; registeredTimerCallback(nullptr);
+        assert(notifiedTask && timerRunning && pendingPanel.attempts==0);
+        assert(pendingPanel.magic==0 && panelPower==1);
+        registeredTimerCallback(nullptr); // A delayed worker must get only one signal.
+        dispatchNotifiedTask();
+    };
     fakeWake=ESP_SLEEP_WAKEUP_EXT0;
     try { setup(); assert(false); } catch(const Restarting&) {}
     assert(pendingPanel.magic==ponMagic && pendingPanel.attempts==1);
+    assert(taskStackBytes==8192 && !timerRunning);
     assert(panelState().active==Screen::Art);
     const auto timestamp=pendingPanel.drawnAt;
     const auto pct=pendingPanel.pct;

@@ -35,7 +35,9 @@ static void wake(int cause, bool critical=false) {
     assert(critical ? timerUs==0 : timerUs>0);
 }
 int main() {
-    for(auto reason : {ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_WDT}) {
+    for(auto reason : {ESP_RST_TASK_WDT, ESP_RST_INT_WDT, ESP_RST_WDT, ESP_RST_PANIC,
+                       ESP_RST_BROWNOUT, ESP_RST_UNKNOWN, ESP_RST_EFUSE, ESP_RST_PWR_GLITCH, ESP_RST_CPU_LOCKUP}) {
+        assert(isAbnormalReset(reason));
         fakeReset=reason;
         wake(ESP_SLEEP_WAKEUP_EXT0);
         assert(watchdogTimeout==180000 && watchdogArmed);
@@ -46,6 +48,7 @@ int main() {
     guard.putBytes("wdt-count", &watchdogResets, sizeof watchdogResets); guard.end();
     const auto refreshes=display.refreshes;
     const auto begins=display.begins;
+    fakeReset=ESP_RST_PANIC;
     wake(0);
     assert(watchdogResets==3 && display.refreshes==refreshes && display.begins==begins);
     fakeReset=ESP_RST_DEEPSLEEP;
@@ -76,6 +79,7 @@ int main() {
     LittleFS.failBegin=false;
     wake(ESP_SLEEP_WAKEUP_TIMER);
     assert(downloads==priorDownloads && readouts==priorReadouts+1);
+    assert(LittleFS.formatAttempts==0);
 
     // NVS failure degrades to a usable draw without changing persisted state.
     const auto savedPreferences=preferences;
@@ -90,6 +94,70 @@ int main() {
 
     display.voltage=3.3f; batteryCount=0;
     int before=connections; wake(0,true); assert(charges==1 && connections==before && timerUs==0);
-    puts("wake cycle: one refresh, ID skipping/retry, button offline, waiting/recovery, mount/NVS failures, normal timers, critical passed");
+
+    // A replacement draw clears the marker and permits a future critical episode.
+    display.voltage=3.92f; batteryCount=0;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(preferences.at(chargeMarker).at(0)==0);
+    display.voltage=3.3f; batteryCount=0;
+    struct Brownout {};
+    displayHook=[] {
+        assert(preferences.at(chargeMarker).at(0)==1);
+        throw Brownout{};
+    };
+    try { setup(); assert(false); } catch(const Brownout&) {}
+    assert(charges==2 && timerRunning);
+    displayHook={};
+    // Simulate boot losing RTC battery history and a misleading recovered ADC value.
+    timerRunning=false; panelTimer=nullptr; panelRecoveryTask=nullptr;
+    batteryCount=0; display.voltage=3.92f; fakeReset=ESP_RST_BROWNOUT;
+    before=connections;
+    const auto afterBrownout=display.begins;
+    wake(0,true);
+    assert(charges==2 && connections==before && display.begins==afterBrownout);
+    assert(preferences.at("wdt-count").at(0)==1);
+    batteryCount=0; display.voltage=3.3f; fakeReset=ESP_RST_DEEPSLEEP;
+    wake(ESP_SLEEP_WAKEUP_EXT0,true);
+    assert(charges==2 && connections==before);
+    const auto beforeReplacement=display.refreshes;
+    batteryCount=0; display.voltage=3.92f;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(display.refreshes==beforeReplacement+1 && preferences.at(chargeMarker).at(0)==0);
+    batteryCount=0; display.voltage=3.3f;
+    preferences.erase(chargeMarker);
+    Preferences::failWriteKey=chargeMarker;
+    wake(ESP_SLEEP_WAKEUP_EXT0,true);
+    assert(charges==2 && !preferences.count(chargeMarker));
+    Preferences::failWriteKey="wdt-count";
+    fakeReset=ESP_RST_BROWNOUT;
+    const auto beforeFailedStrike=display.begins;
+    wake(0);
+    assert(display.begins==beforeFailedStrike);
+    Preferences::failWriteKey.clear();
+
+    // A failed first format keeps the next boot eligible to provision.
+    preferences.clear(); files.clear();
+    fakeReset=ESP_RST_POWERON; display.voltage=3.92f; batteryCount=0;
+    LittleFS.failBegin=LittleFS.failFormat=true;
+    priorDownloads=downloads;
+    wake(0);
+    assert(LittleFS.formatAttempts==1 && !preferences.count("state13") && downloads==priorDownloads);
+    LittleFS.failFormat=false;
+    wake(ESP_SLEEP_WAKEUP_EXT0);
+    assert(LittleFS.formatAttempts==2 && downloads==priorDownloads+2 && blitted=="/weather.vnf");
+
+    // Quarantined state, inaccessible NVS, and an uncertain key lookup all protect flash.
+    const auto cachedFiles=files;
+    preferences.clear(); preferences["state-bad"]={1};
+    LittleFS.failBegin=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles);
+    preferences.clear(); Preferences::failBegin=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles);
+    Preferences::failBegin=false; failKeyLookup=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==2 && files==cachedFiles);
+    puts("wake cycle: cache provisioning and preservation, reset strikes, charge latch and normal draw passed");
     return 0;
 }
