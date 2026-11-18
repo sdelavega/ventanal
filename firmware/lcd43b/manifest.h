@@ -15,6 +15,7 @@
 #include <cstdint>
 #include <cstring>
 
+#include "../common/ota_state.h"
 #include "frame.h"
 #include "clock.h"
 
@@ -104,6 +105,26 @@ inline bool parseDeviceManifest(JsonVariantConst doc, DeviceManifest& out) {
 inline bool parseDeviceManifest(const char* body, DeviceManifest& out) {
     JsonDocument doc;
     return !deserializeJson(doc, body) && parseDeviceManifest(doc.as<JsonVariantConst>(), out);
+}
+
+inline bool parseFirmwareOffer(JsonVariantConst doc, FirmwareOffer& out) {
+    out = {};
+    auto copy = [](JsonVariantConst value, auto& field) {
+        const auto text = value.as<JsonString>();
+        if (text.isNull() || !text.size() || text.size() >= sizeof field
+            || memchr(text.c_str(), '\0', text.size())) return false;
+        memcpy(field, text.c_str(), text.size() + 1);
+        return true;
+    };
+    if (!doc.is<JsonObjectConst>()) return false;
+    FirmwareOffer offer{};
+    if (!copy(doc["release"], offer.release) || !copy(doc["sig"], offer.signature)
+        || !copy(doc["path"], offer.path)) return false;
+    if (!doc["approval"].isNull()
+        && (!copy(doc["approval"], offer.approval) || !validOtaApproval(offer.approval)))
+        return false;
+    out = offer;
+    return true;
 }
 
 // Quiet hours: equal endpoints disable quiet; a wrapped window (start after

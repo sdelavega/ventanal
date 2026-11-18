@@ -23,6 +23,13 @@ int main(int argc,char** argv) {
     assert(hitSettings(770,316,false,false)==SettingsHit::None);
     assert(hitSettings(400,380,true,false)==SettingsHit::None);
     assert(hitSettings(-1,100,true,true)==SettingsHit::None);
+    assert(inUpdateControl(UPDATE_MENU, 500, 55));
+    assert(hitUpdates(640, 130, true, false, false) == UpdateHit::HostInstall);
+    assert(hitUpdates(640, 130, true, false, true) == UpdateHit::None);
+    assert(hitUpdates(640, 235, true, false, false) == UpdateHit::None);
+    assert(hitUpdates(640, 235, true, true, false) == UpdateHit::GithubInstall);
+    assert(hitUpdates(300, 335, false, false, false) == UpdateHit::Check);
+    assert(hitUpdates(660, 410, true, true, true) == UpdateHit::Later);
     auto s=defaultSettings(false);
     assert(applySettingsHit(s,SettingsHit::Brightness25,false,-1) && s.brightness==25);
     assert(applySettingsHit(s,SettingsHit::Timeout15,false,-1) && s.timeoutMin==15);
@@ -43,6 +50,10 @@ int main(int argc,char** argv) {
     for(int y=374;y<426;++y) for(int x=150;x<580;++x) assert(px[1+y*WIDTH+x]==0);
     drawSettingsPage(px.data()+1,s,true,true,"VENTANAL · TEST · OFFLINE · v1.0.0");
     assert(px[1+400*WIDTH+360]!=0); // generic calibration control is drawn
+    drawUpdatePage(px.data()+1, "65535.65535.65535", "2.0.0", "Checked within the last week", false);
+    assert(px.front()==0x1234 && px.back()==0x1234);
+    assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < UPDATE_MENU.w - 10);
+    assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < HOST_INSTALL.x - 150);
     // Independent server draw_lcd_frame fixture, labels omitted consistently.
     drawSettingsChrome(px.data()+1,false);
     FILE* fixture=fopen("fixtures/lcd43b-settings-chrome.rle","rb"); assert(fixture);

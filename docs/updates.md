@@ -14,18 +14,27 @@ eligibility, image size and SHA-256 digest before starting the new image. The
 target must be newer than the running version and the running version must meet
 the release's minimum. The Inkplate only installs with at least 50% battery
 and outside quiet hours. It can pick up an approved update on a later connected
-wake when those conditions are met. After three failed attempts for the same
-approval, the Inkplate reports `failed:attempts`. Select **Install** again to
-retry that version, or approve a newer one. Automatic GitHub checks by a standalone
-board are outside this release. The Inkplate's direct GitHub check is available
-with its [diagnostic build flag](../firmware/README.md#toolchain).
+wake when those conditions are met.
+
+On the LCD, open **Settings → Firmware updates** and select **Install** beside
+the host-approved version, or **Later** to return to Settings. A host approval
+makes an offer available on that LCD. The local Install action starts it
+without another prompt. **Check for updates** looks for a release on GitHub
+from the LCD and allows a separate install. A completed GitHub check and its
+offer are saved for a week between checks.
+
+After three failed attempts for the same host approval, the board reports
+`failed:attempts`. Select **Install** again on the host to grant a new approval,
+or approve a newer version. The LCD has a separate three-attempt budget for each
+GitHub version. The Inkplate's direct GitHub check is available with its
+[diagnostic build flag](../firmware/README.md#toolchain).
 
 ## Rollback
 
 The board writes to its spare app slot and leaves the running slot intact.
 An interrupted transfer leaves the existing image bootable. After switching,
-the new image must connect to Wi-Fi, verify the host manifest and complete a
-frame refresh before it is marked healthy. If it resets before confirmation,
+the new image must connect to Wi-Fi, verify the host manifest and draw a frame
+before it is marked healthy. If it resets before confirmation,
 the bootloader returns to the previous image. The next check-in reports the
 result on **Status**. A successful install or rollback clears the host's
 approval for that version. After rollback, inspect the result and use a fixed,
@@ -52,10 +61,18 @@ apply changed private settings deliberately, compile it with
 revision applies once, so use a new revision for each later reprovisioning.
 The replay counter stays in its existing NVS namespace.
 
+On the LCD, the first wired build with a private installation header provisions
+Wi-Fi, the host origin, timezone, display profile and optional pairing and
+TLS values. Generic builds read that installation from NVS. An unprovisioned
+generic LCD displays a waiting screen. To revise a provisioned installation,
+add `-DVENTANAL_FORCE_PROVISION=1` to the PlatformIO private build flags, using
+a new revision for each change. Brightness, sleep settings and the pairing
+counter keep their existing storage.
+
 | Board | Wired migration |
 | --- | --- |
 | Inkplate 13SPECTRA (`inkplate13spectra`) | Follow the [Inkplate build and upload instructions](../firmware/README.md#toolchain) using the board's private settings. Use the project upload helper, which puts the app at `0x20000` and OTA metadata at `0xf000`. NVS stays at `0x9000`, 24 KiB. |
-| Waveshare 4.3B (`lcd43b`) | Once the OTA-capable LCD firmware is available, build its configured PlatformIO `normal` target and upload it over USB with the LCD project's documented procedure. Use its OTA partition table with app at `0x10000` and OTA metadata at `0xe000`. NVS stays at `0x9000`, 20 KiB. |
+| Waveshare 4.3B (`lcd43b`) | Build the configured `normal` target and follow the [LCD wired upload instructions](../firmware/lcd43b/README.md#private-configuration-and-building). The initial application is at `0x10000` and OTA metadata is at `0xe000`. NVS stays at `0x9000`, 20 KiB. |
 
 ## Owner signing key
 
@@ -123,5 +140,6 @@ server/.venv/bin/python tools/release/build.py 1.2.3 --output build/ventanal-1.2
 Use the same clean checkout and toolchain as CI. The script stages tracked
 firmware sources, uses the public Inkplate example configuration and emits
 unsigned assets. Add `--dry-run` to inspect the commands and output names.
+Use `--board lcd43b` for only the LCD and `--pio` to select a local PlatformIO executable.
 The default minimum running version is `0.0.0`. Local builds can set
 `--min-from-version` before generating and signing the metadata.

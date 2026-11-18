@@ -37,6 +37,7 @@ struct ResidentCache {
     // info pointer means drop; otherwise body contains the verified wire bytes.
     bool (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
+    void (*manifestVerified)() = nullptr;
     // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
     void (*reclaimWireMemory)() = nullptr;
 };
@@ -73,6 +74,7 @@ struct RefreshResult {
     bool timeOk = false;
     bool manifestOk = false;
     DeviceManifest manifest{};
+    FirmwareOffer firmware{};
     // Per cache slot: a verified frame was published (with its new id), or
     // the screen vanished from the manifest (drop the cached frame). A
     // failed download stages neither — the previous cache entry stays —
@@ -123,6 +125,7 @@ inline bool redrawNeeded(bool requested, bool newContent, bool drawn,
 // to evaluate the persisted LOCAL quiet hours in UTC, keeping the panel
 // lit through the night (pinned by test_lcd43b_sync).
 void configureTimezone();
+bool connectForUpdates(Watchdog& watchdog);
 
 // Receive and verify exactly the advertised wire bytes. The caller owns a
 // buffer at least info.size bytes long. Check connection close so even a
@@ -143,7 +146,8 @@ void sweepCacheTemps();
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
-                const DeviceSettings& settings, const char* skips, const ResidentCache& cache);
+                const DeviceSettings& settings, const char* skips, const ResidentCache& cache,
+                const char* otaReport = "", const char* otaApproval = "");
 
 // Apply a finished pass to the live state (single writer: the main loop).
 // Persists the validated quiet window and publish shape, normalises the

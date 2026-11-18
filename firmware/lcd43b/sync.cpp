@@ -11,13 +11,7 @@
 #include "scanout_diag.h"
 #include <vector>
 
-#include "build_config.h"
-#include "transport.h"
-
-#include <WiFi.h>
-#ifndef VENTANAL_HOST_TEST
-#include <WiFiClientSecure.h>
-#endif
+#include "host_request.h"
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
 
@@ -26,42 +20,6 @@
 namespace lcd {
 
 namespace {
-
-struct Request {
-    WiFiClient plain;
-#ifndef VENTANAL_HOST_TEST
-    WiFiClientSecure tls;
-#endif
-    HTTPClient http;
-
-    bool begin(const char* origin, const String& path, const std::string& key) {
-        const String url = String(origin) + path;
-        const bool secured = strncmp(origin, "https://", 8) == 0;
-        if (secured) {
-            if (!VENTANAL_HOST_CERT_PEM[0] || key.size() != 32) return false;
-#ifdef VENTANAL_HOST_TEST
-            if (!http.begin(plain, url)) return false;
-#else
-            // The trust bundle contains the current self-signed leaf and,
-            // during rotation, may also contain the previous leaf.
-            tls.setCACert(VENTANAL_HOST_CERT_PEM);
-            tls.setHandshakeTimeout(5);
-            if (!http.begin(tls, url)) return false;
-#endif
-            if (!addPairedHeaders(http, key, VENTANAL_PAIRING_ID, path.c_str())) return false;
-        } else {
-            if (strncmp(origin, "http://", 7) != 0 || VENTANAL_HOST_CERT_PEM[0]
-                || VENTANAL_DEVICE_KEY[0] || VENTANAL_PAIRING_ID[0]) return false;
-            if (!http.begin(plain, url)) return false;
-        }
-        // The bounded body readers rely on connection-close framing.
-        http.setReuse(false);
-        http.setTimeout(HTTP_TIMEOUT_MS);
-        return true;
-    }
-
-    ~Request() { http.end(); }
-};
 
 // As on e-paper, keep the radio awake during large transfers and restore
 // the configured power-save mode on every exit from the worker pass.
@@ -74,7 +32,7 @@ struct DownloadPower {
 bool wifiConnect(Watchdog& watchdog) {
     if (WiFi.status() == WL_CONNECTED) return true;
     WiFi.mode(WIFI_STA);
-    WiFi.begin(VENTANAL_WIFI_SSID, VENTANAL_WIFI_PASSWORD);
+    WiFi.begin(installation.ssid, installation.password);
     const uint32_t started = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_TIMEOUT_MS) {
         watchdog.feed();
@@ -86,7 +44,7 @@ bool wifiConnect(Watchdog& watchdog) {
 }
 
 bool syncTime(Watchdog& watchdog) {
-    configTzTime(VENTANAL_TZ, "pool.ntp.org", "time.nist.gov");
+    configTzTime(installation.timezone, "pool.ntp.org", "time.nist.gov");
     const uint32_t started = millis();
     while (millis() - started < NTP_TIMEOUT_MS) {
         watchdog.feed();
@@ -101,14 +59,18 @@ bool syncTime(Watchdog& watchdog) {
 }
 
 bool fetchManifest(const char* hostUrl, const char* deviceId,
-                   DeviceManifest& out, Watchdog& watchdog, const char* skips) {
-    Request request;
+                   RefreshResult& result, Watchdog& watchdog, const char* skips,
+                   const char* otaReport, const char* otaApproval) {
+    HostRequest request;
     auto& http = request.http;
     // Skip ids are 16 lowercase hex digits (including restored owner state).
     // The comma and tilde separators are permitted literally in a query.
-    const String path = String("/devices/") + deviceId
-                     + "/manifest.json" + (skips[0] ? String("?skips=")+skips : String());
-    const auto key = decodeDeviceKey(VENTANAL_DEVICE_KEY);
+    String path = String("/devices/") + deviceId + "/manifest.json?board=" + BOARD_ID
+                  + "&fw=" + FIRMWARE_VERSION;
+    if (skips[0]) path += String("&skips=") + skips;
+    if (otaReport[0]) path += String("&ota=") + otaReport;
+    if (otaApproval[0]) path += String("&ota_approval=") + otaApproval;
+    const auto key = decodeDeviceKey(installation.deviceKey);
     if (!request.begin(hostUrl, path, key)) {
         log("manifest transport=unavailable\n");
         return false;
@@ -116,20 +78,23 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     watchdog.feed();
     const int status = http.GET();
     watchdog.feed();
-    if (status != 200 || http.getSize() <= 0 || http.getSize() > 8192) {
+    if (status != 200 || http.getSize() <= 0 || http.getSize() > 6144) {
         log("manifest status=%d\n", status);
         return false;
     }
     const String body = http.getString();
     const bool secured = !key.empty();
-    DeviceManifest parsed;
-    const bool ok = secured ? parseSignedDeviceManifest(body.c_str(), key, parsed)
-                            : parseDeviceManifest(body.c_str(), parsed);
+    JsonDocument doc;
+    const bool ok = body.length() == unsigned(http.getSize())
+        && !deserializeJson(doc, body)
+        && (!secured || verifyManifestSignature(doc, key))
+        && parseDeviceManifest(doc.as<JsonVariantConst>(), result.manifest);
     if (!ok) {
         log("manifest parsed=0 secured=%d\n", secured);
         return false;
     }
-    out = parsed;
+    parseFirmwareOffer(doc["firmware"], result.firmware);
+    const auto& out = result.manifest;
     log("manifest parsed=1 screens=%d%d%d spares=%u quiet=%04d-%04d secured=%d\n",
         out.screens[0].present, out.screens[1].present, out.screens[2].present,
         out.spareCount, out.quietValid() ? out.quietStart : -1,
@@ -240,7 +205,11 @@ void configureTimezone() {
     // setup() runs this before the first refresh so the persisted local
     // quiet window evaluates in the configured zone even when the board
     // never reaches Wi-Fi (offline reboot with retained RTC time).
-    configTzTime(VENTANAL_TZ, "pool.ntp.org", "time.nist.gov");
+    configTzTime(installation.timezone, "pool.ntp.org", "time.nist.gov");
+}
+
+bool connectForUpdates(Watchdog& watchdog) {
+    return wifiConnect(watchdog) && (time(nullptr) >= 1704067200 || syncTime(watchdog));
 }
 
 static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
@@ -248,9 +217,9 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
                            uint32_t started, bool& retryable) {
     bool ok = false;
     bool excess = false;
-    Request request;
+    HostRequest request;
     auto& http = request.http;
-    if (!request.begin(hostUrl, String(info.url), decodeDeviceKey(VENTANAL_DEVICE_KEY)))
+    if (!request.begin(hostUrl, String(info.url), decodeDeviceKey(installation.deviceKey)))
         return false;
     const uint32_t attemptStarted = millis();
     watchdog.feed();
@@ -355,14 +324,15 @@ void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
                 const DeviceSettings& settings, const char* skips,
-                const ResidentCache& cache) {
+                const ResidentCache& cache, const char* otaReport, const char* otaApproval) {
     result = RefreshResult{};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
     DownloadPower radio;
     result.timeOk = syncTime(watchdog);
-    if (!fetchManifest(hostUrl, deviceId, result.manifest, watchdog, skips)) return;
+    if (!fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval)) return;
     result.manifestOk = true;
+    if (cache.manifestVerified) cache.manifestVerified();
 
     // One pass over every cache slot: download when the published id
     // changed, skip when it did not, stage a drop when the screen is

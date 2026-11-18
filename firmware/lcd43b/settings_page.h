@@ -4,6 +4,7 @@
 #include "settings.h"
 #include "overlay.h"
 #include "lcars_geometry.h"
+#include <cstdio>
 
 namespace lcd {
 enum class SettingsHit { None, Brightness25, Brightness50, Brightness75, Brightness100,
@@ -140,4 +141,63 @@ inline void drawSettingsPage(uint16_t* px,const DeviceSettings& s,bool solarList
     }
     settingsFooter(px,footer,150,447,light);
 }
+// Firmware controls use the same chrome and leave the clock patch clear.
+inline constexpr ReadoutRect UPDATE_MENU{345,29,430,50};
+inline constexpr ReadoutRect HOST_INSTALL{594,112,180,52};
+inline constexpr ReadoutRect GITHUB_INSTALL{594,209,180,52};
+inline constexpr ReadoutRect GITHUB_CHECK{150,311,300,52};
+inline constexpr ReadoutRect UPDATE_BACK{594,384,180,56};
+
+inline bool inUpdateControl(ReadoutRect r, int x, int y) {
+    return x >= r.x && x < r.x + r.w && y >= r.y && y < r.y + r.h;
+}
+
+enum class UpdateHit { None, HostInstall, GithubInstall, Check, Later };
+
+inline UpdateHit hitUpdates(int x, int y, bool host, bool github, bool busy) {
+    if (inUpdateControl(UPDATE_BACK, x, y)) return UpdateHit::Later;
+    if (busy) return UpdateHit::None;
+    if (host && inUpdateControl(HOST_INSTALL, x, y)) return UpdateHit::HostInstall;
+    if (github && inUpdateControl(GITHUB_INSTALL, x, y)) return UpdateHit::GithubInstall;
+    if (inUpdateControl(GITHUB_CHECK, x, y)) return UpdateHit::Check;
+    return UpdateHit::None;
+}
+
+inline void updateButton(uint16_t* pixels, ReadoutRect rect, const char* label, bool enabled = true) {
+    const auto fill = enabled ? rgb565(255,119,0) : rgb565(58,58,74);
+    const auto ink = enabled ? 0 : rgb565(153,150,186);
+    settingsBox(pixels, rect, fill, rect.h / 2);
+    const int x = rect.x + (rect.w - textWidth(ClockTime, label)) / 2;
+    drawText(pixels, WIDTH, HEIGHT, ClockTime, label, x, rect.y + rect.h / 2 + 8, ink);
+}
+
+inline void updateTitle(char (&label)[48], const char* version) {
+    snprintf(label, sizeof label, "Update %s available", version);
+}
+
+inline void drawUpdatePage(uint16_t* pixels, const char* host, const char* github,
+                           const char* status, bool busy) {
+    const auto gold = rgb565(255,170,0);
+    const auto light = rgb565(153,150,186);
+    drawSettingsChrome(pixels, false);
+    drawText(pixels, WIDTH, HEIGHT, StatusFont, "FIRMWARE UPDATES", 150, 63, gold);
+    drawText(pixels, WIDTH, HEIGHT, ArtDate, host[0] ? "APPROVED BY HOST" : "HOST",
+             150, 118, light);
+    char label[48];
+    if (host[0]) updateTitle(label, host);
+    drawText(pixels, WIDTH, HEIGHT, ClockTime, host[0] ? label : "No approved update",
+             150, 150, gold);
+    if (host[0]) updateButton(pixels, HOST_INSTALL, "Install", !busy);
+
+    drawText(pixels, WIDTH, HEIGHT, ArtDate, "GITHUB", 150, 215, light);
+    if (github[0]) updateTitle(label, github);
+    drawText(pixels, WIDTH, HEIGHT, ClockTime, github[0] ? label : "No update offered",
+             150, 247, gold);
+    if (github[0]) updateButton(pixels, GITHUB_INSTALL, "Install", !busy);
+
+    updateButton(pixels, GITHUB_CHECK, "Check for updates", !busy);
+    drawText(pixels, WIDTH, HEIGHT, ArtDate, status, 150, 399, light);
+    updateButton(pixels, UPDATE_BACK, host[0] || github[0] ? "Later" : "Back");
+}
+
 } // namespace lcd

@@ -145,6 +145,24 @@ int main() {
         manifest.quietStart = -1;                           // no window stored
         assert(!lcd::quietApplies(2026, 1410, manifest));
     }
+    {
+        JsonDocument doc;
+        doc["release"] = "signed metadata";
+        doc["sig"] = "test signature";
+        doc["path"] = "/firmware/lcd43b-2.0.0.bin";
+        doc["approval"] = "0123456789abcdef";
+        FirmwareOffer offer{};
+        assert(lcd::parseFirmwareOffer(doc.as<JsonVariantConst>(), offer));
+        assert(!strcmp(offer.approval, "0123456789abcdef"));
+        doc["approval"] = "wrong";
+        assert(!lcd::parseFirmwareOffer(doc.as<JsonVariantConst>(), offer) && !offer.release[0]);
+        doc.remove("approval");
+        assert(lcd::parseFirmwareOffer(doc.as<JsonVariantConst>(), offer) && !offer.approval[0]);
+        doc["release"] = std::string(2049, 'x');
+        assert(!lcd::parseFirmwareOffer(doc.as<JsonVariantConst>(), offer));
+        doc["release"] = std::string("prefix\0suffix", 13);
+        assert(!lcd::parseFirmwareOffer(doc.as<JsonVariantConst>(), offer));
+    }
     puts("lcd43b manifest: schema, spares, quiet hours, pre-sync, rejection"
          " passed");
     return 0;

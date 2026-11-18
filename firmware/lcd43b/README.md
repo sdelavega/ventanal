@@ -102,7 +102,8 @@ when that check and the configured solar schedule allow it.
 
 Never commit network credentials, host addresses, location or licence details.
 Keep the header outside the repository. [config.example.h](config.example.h)
-documents the keys and the defaults used by an unconfigured build.
+documents the installation fields. An unprovisioned generic build displays
+a waiting screen.
 
 The LCD project uses PlatformIO Core 6.2.0 and pins
 [pioarduino 55.03.312-1](https://github.com/pioarduino/platform-espressif32/releases/tag/55.03.312-1)
@@ -129,6 +130,10 @@ For a secure override, add
 `'-DVENTANAL_LCD_SECURITY_CONFIG="/absolute/path/to/pairing_override.h"'`
 under `private_flags`. The same options apply to both environments.
 See the firmware guide for [LCD pairing](../README.md#waveshare-lcd-pairing).
+The first wired private build stores these installation values in NVS. Later
+generic builds reuse them. For a certificate or settings change, add
+`-DVENTANAL_FORCE_PROVISION=1` to the private flags and use a distinct nonzero
+revision for each subsequent change.
 
 From the repository root:
 
@@ -150,10 +155,29 @@ the local file.
 
 Each build writes `firmware.bin` and `partitions.bin` in
 `firmware/lcd43b/.pio/build/<environment>/`. The [partition table](partitions.csv)
-defines a **4 MiB factory app** at `0x10000` and **11.9 MiB LittleFS** at
-`0x410000`. The project selects QIO flash, 16 MB flash capacity and 80 MHz octal
-PSRAM. The boot log reports PSRAM size, XIP, data cache line size and VSYNC
+defines two **4 MiB OTA slots**, at `0x10000` and `0x410000`, and LittleFS at
+`0x810000`. For the initial wired migration, the uploader writes the new
+bootloader, partition table, OTA metadata and first app as individual images.
+Use the upload command above to preserve NVS at `0x9000`. The combined
+`firmware.factory.bin` spans that region. The board rebuilds its frame cache
+on first boot.
+
+The project selects QIO flash, 16 MB flash capacity and 80 MHz octal PSRAM. The boot log reports PSRAM size, XIP, data cache line size and VSYNC
 cadence. Keep configured binaries and build output private.
+
+### Firmware updates
+
+Use **Settings → Firmware updates** to install an approved host offer or to
+check GitHub directly. See the [update guide](../../docs/updates.md) for the
+owner signing and approval workflow.
+
+For local direct-update testing, a `diag` build can set
+`VENTANAL_LCD_OTA_BASE_URL` to a quoted HTTP test origin with no trailing
+slash. The mirror serves `/repos/sdelavega/ventanal/releases/latest` with
+GitHub's release listing fields and serves the assets under
+`/sdelavega/ventanal/releases/download/vX.Y.Z/`. The installer still requires
+the normal signed release metadata. Normal builds use GitHub over HTTPS with
+the ESP-IDF certificate bundle.
 
 ## Anti-aliased fonts and rendering
 

@@ -91,10 +91,14 @@ def build(args):
         raise ValueError("--min-from-version must be older than the release")
     if args.output.exists():
         raise ValueError("Choose a new output directory")
-    has_lcd = (ROOT / LCD / "platformio.ini").is_file()
-    if not has_lcd:
+    lcd_exists = (ROOT / LCD / "platformio.ini").is_file()
+    if args.board == "lcd43b" and not lcd_exists:
+        raise ValueError(f"Missing {LCD}/platformio.ini")
+    has_lcd = lcd_exists and args.board != "inkplate13spectra"
+    has_inkplate = args.board != "lcd43b"
+    if not lcd_exists and args.board is None:
         print(f"Skipping lcd43b: {LCD}/platformio.ini is absent.", flush=True)
-    if not args.dry_run:
+    if has_inkplate and not args.dry_run:
         check_inkplate_toolchain()
 
     epoch = subprocess.check_output(["git", "log", "-1", "--format=%ct"], cwd=ROOT, text=True).strip()
@@ -106,8 +110,8 @@ def build(args):
         build_dir = work / "inkplate-build"
         assets = work / "assets"
         defines = work / "release_build.h"
+        stage_sources(work, has_lcd)
         if not args.dry_run:
-            stage_sources(work, has_lcd)
             assets.mkdir()
             defines.write_text(
                 '#define VENTANAL_RELEASE_BUILD 1\n'
@@ -118,8 +122,8 @@ def build(args):
                 encoding="ascii",
             )
         else:
-            print(f"Would stage tracked firmware, use the public Inkplate example configuration, "
-                  f"and compile version {args.version} with VENTANAL_RELEASE_BUILD enabled.")
+            print(f"Would compile staged firmware at version {args.version} "
+                  f"with VENTANAL_RELEASE_BUILD enabled.")
 
         def compile_board(command, image, board):
             print(shlex.join(command), flush=True)
@@ -131,24 +135,25 @@ def build(args):
 
         prefix_map = f'"-ffile-prefix-map={work}=."'
         cpp_flags = f'{prefix_map} -include "{defines}" "-I{sketch}"'
-        compile_board([
-            *env, "arduino-cli", "compile", "--fqbn", FQBN, "--build-path", str(build_dir),
-            "--build-property", "upload.maximum_size=4194304",
-            "--build-property", "recipe.hooks.objcopy.postobjcopy.3.pattern=/usr/bin/true",
-            "--build-property", "recipe.hooks.objcopy.postobjcopy.4.pattern=/usr/bin/true",
-            # elf2image embeds the ELF digest. Discard debug paths before hashing.
-            "--build-property", "compiler.c.elf.extra_flags=-Wl,--strip-debug",
-            "--build-property", f"compiler.S.extra_flags={prefix_map}",
-            "--build-property", f"compiler.c.extra_flags={prefix_map}",
-            "--build-property", f"compiler.cpp.extra_flags={cpp_flags}",
-            str(sketch),
-        ], build_dir / "ventanal.ino.bin", "inkplate13spectra")
+        if has_inkplate:
+            compile_board([
+                *env, "arduino-cli", "compile", "--fqbn", FQBN, "--build-path", str(build_dir),
+                "--build-property", "upload.maximum_size=4194304",
+                "--build-property", "recipe.hooks.objcopy.postobjcopy.3.pattern=/usr/bin/true",
+                "--build-property", "recipe.hooks.objcopy.postobjcopy.4.pattern=/usr/bin/true",
+                # elf2image embeds the ELF digest. Discard debug paths before hashing.
+                "--build-property", "compiler.c.elf.extra_flags=-Wl,--strip-debug",
+                "--build-property", f"compiler.S.extra_flags={prefix_map}",
+                "--build-property", f"compiler.c.extra_flags={prefix_map}",
+                "--build-property", f"compiler.cpp.extra_flags={cpp_flags}",
+                str(sketch),
+            ], build_dir / "ventanal.ino.bin", "inkplate13spectra")
         if has_lcd:
             project = work / LCD
             compile_board([
                 *env, f"PLATFORMIO_BUILD_FLAGS={prefix_map} -Wl,--strip-debug",
                 f'PLATFORMIO_BUILD_SRC_FLAGS=-include "{defines}"',
-                "pio", "run", "--project-dir", str(project), "--environment", "normal",
+                args.pio, "run", "--project-dir", str(project), "--environment", "normal",
             ], project / ".pio/build/normal/firmware.bin", "lcd43b")
         if not args.dry_run:
             shutil.copytree(assets, args.output)
@@ -160,6 +165,9 @@ def main():
     parser.add_argument("version", help="Release version without the v prefix")
     parser.add_argument("--min-from-version", default="0.0.0")
     parser.add_argument("--output", type=Path, required=True, help="New directory for the unsigned assets")
+    parser.add_argument("--board", choices=("inkplate13spectra", "lcd43b"),
+                        help="Build one board (default: all available boards)")
+    parser.add_argument("--pio", default="pio", help="Path to the PlatformIO executable")
     parser.add_argument("--dry-run", action="store_true", help="Show builds and asset names without compiling")
     args = parser.parse_args()
     try:

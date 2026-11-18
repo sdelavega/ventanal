@@ -46,7 +46,8 @@ int rejectStageSlot = -1;
 
 void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SLOTS][17],
              lcd::RefreshResult& result, CountingWatchdog& watchdog,
-             const lcd::DeviceSettings& settings = {}, const char* skips = "") {
+             const lcd::DeviceSettings& settings = {}, const char* skips = "",
+             const char* ota = "", const char* approval = "") {
     std::vector<uint8_t> staging(lcd::FRAME_BYTES);
     lcd::ResidentCache cache;
     cache.staging = staging.data();
@@ -57,7 +58,7 @@ void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SL
         else stagedBodies[slot] = body;
         return true;
     };
-    lcd::runRefresh(host, device, ids, result, watchdog, settings, skips, cache);
+    lcd::runRefresh(host, device, ids, result, watchdog, settings, skips, cache, ota, approval);
 }
 
 std::vector<uint8_t> compressFrame(const std::vector<uint8_t>& frame) {
@@ -253,7 +254,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         urlResponses["http://host" + weather.url] = weatherFrame;
@@ -446,7 +447,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         // Full-length bodies so the advertised size passes the gate; the
         // stall flag keeps any body byte from ever arriving.
@@ -502,7 +503,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         // Weather's server answer truncates: no full body ever arrives.
@@ -531,7 +532,7 @@ int main() {
         Entry art = makeEntry("art", artFrame);
         Entry weather = makeEntry("weather", weatherFrame);
         responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json"] =
+        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
         urlResponses["http://host" + weather.url] = weatherFrame;
@@ -550,14 +551,25 @@ int main() {
         resetFakes();
         const auto frame=solidFrame(0xffff);
         const auto art=makeEntry("art",frame), weather=makeEntry("weather",frame);
-        responseBody=manifestBody(art,weather);
+        JsonDocument manifest;
+        assert(!deserializeJson(manifest, manifestBody(art, weather)));
+        manifest["firmware"]["release"] = "test metadata";
+        manifest["firmware"]["sig"] = "test signature";
+        manifest["firmware"]["path"] = "/firmware/lcd43b-3.0.0.bin";
+        manifest["firmware"]["approval"] = "0123456789abcdef";
+        serializeJson(manifest, responseBody);
         sizeFromResponse=true;
         char ids[lcd::SCREEN_SLOTS][17]={};
         lcd::RefreshResult result; CountingWatchdog watchdog;
-        refresh("http://host","lcd43b",ids,result,watchdog,lcd::DeviceSettings{},
-                        "aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb");
+        refresh("http://host/","lcd43b",ids,result,watchdog,lcd::DeviceSettings{},
+                "aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb", "rolled_back:2.0.0", "fedcba9876543210");
         assert(result.manifestOk);
-        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb");
+        assert(!strcmp(result.firmware.path, "/firmware/lcd43b-3.0.0.bin"));
+        assert(!strcmp(result.firmware.approval, "0123456789abcdef"));
+        assert(lastUserAgent == "Ventanal/1.0.0");
+        assert(requestedUrls[0]=="http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0"
+                                "&skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb"
+                                "&ota=rolled_back:2.0.0&ota_approval=fedcba9876543210");
     }
     {   // Manifest failure: nothing staged, nothing downloaded.
         resetFakes();
