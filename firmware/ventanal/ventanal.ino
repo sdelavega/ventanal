@@ -18,12 +18,7 @@
 #endif
 #include <driver/rtc_io.h>
 #include <driver/gpio.h>
-#ifdef VENTANAL_HOST_TEST
-#include "config.example.h"
-#else
-#include "config.h"
-#endif
-#include "security_config.h"
+#include "settings.h"
 #ifndef VENTANAL_HOST_TEST
 // TLS certificate rejection uses more stack than a successful connection.
 // Reserve margin for mbedTLS verification and the existing wake State.
@@ -87,6 +82,7 @@ constexpr bool statelostForce=false;
 Inkplate display;
 // Retain the existing wdt-count NVS key so upgrades keep their strikes.
 uint8_t watchdogResets=0;
+bool otaPendingBoot=false;
 namespace {
 bool isWatchdogReset(esp_reset_reason_t reason) {
     return reason==ESP_RST_TASK_WDT || reason==ESP_RST_INT_WDT || reason==ESP_RST_WDT;
@@ -320,8 +316,8 @@ void recoverPanel(void*) {
         Serial.println("panel pon-retry limit");
         // Do not call the driver's powerOff(), which waits on stuck BUSYN.
         pinMode(21,OUTPUT); digitalWrite(21,LOW);
-        sleepFor(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-            quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pendingPanel.pct)),panelState());
+        sleepFor(secondsUntilNextWake(time(nullptr),installation.wakeMinutes,
+            quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pendingPanel.pct)),panelState());
     } else {
         pendingPanel.magic=ponMagic;
         Serial.printf("panel pon-stall restart attempt=%u\n",unsigned(pendingPanel.attempts));
@@ -413,7 +409,7 @@ void update(Preferences& prefs, State& state, ScreenInfo& cached,
         Serial.printf("download path=%s skipped=unchanged\n",path);
         return;
     }
-    const String url=String(VENTANAL_HOST_URL)+incoming.url;
+    const String url=String(installation.host)+incoming.url;
     if(fetchFrame(url.c_str(),path)) {
         cached=incoming;
         save(prefs,state); // An ID advances only after an atomic frame commit.
@@ -454,6 +450,7 @@ void sleepHardware(uint32_t seconds, bool allowWake) {
     }
     Serial.printf("stack min-free bytes=%u\n",unsigned(uxTaskGetStackHighWaterMark(nullptr)));
     Serial.flush();
+    if(otaPendingBoot) rollbackOtaBoot();
     esp_deep_sleep_start();
 }
 #if VENTANAL_STALLTEST
@@ -495,7 +492,7 @@ void stallRun(Preferences& prefs, const State& state, int pct, bool offline) {
         State sampleState=state;
         sampleState.active=art?Screen::Art:Screen::Weather;
         rememberPanel(sampleState,pct,offline,time(nullptr),0,i);
-        drawReadout(display,selected.readout,pct,offline,isLow(pct),pendingPanel.drawnAt,VENTANAL_CLOCK_24H);
+        drawReadout(display,selected.readout,pct,offline,isLow(pct),pendingPanel.drawnAt,installation.clock24h);
 #if VENTANAL_BOOTTIMETEST
         const uint32_t gate=VENTANAL_BOOT_CONFIRM_MS ? VENTANAL_BOOT_CONFIRM_MS : 4000U+1500U*((i-1)/8);
         while(millis()<gate) delay(1);
@@ -543,14 +540,18 @@ void setup() {
     WakeCause wake=raw==ESP_SLEEP_WAKEUP_EXT0 ? WakeCause::Button :
                    raw==ESP_SLEEP_WAKEUP_TIMER ? WakeCause::Timer : WakeCause::ColdBoot;
     const auto reset=esp_reset_reason();
-    bool ponRetry=pendingPanel.magic==ponMagic && pendingPanel.kind!=2 &&
+    const bool configured=initializeSettings();
+    Preferences prefs;
+    const bool persisted=prefs.begin("ventanal",false);
+    auto otaBoot=readOtaBoot(prefs,persisted);
+    otaPendingBoot=otaBoot.pending;
+    bool ponRetry=!otaBoot.rolledBack && !otaPendingBoot && pendingPanel.magic==ponMagic && pendingPanel.kind!=2 &&
         ponRetryBoot(reset==ESP_RST_SW,pendingPanel.attempts) &&
         pendingPanel.stateChecksum==panelChecksum();
     if(!ponRetry) { pendingPanel.magic=0; completePonRetry(pendingPanel.attempts); }
-    const bool abnormal=isAbnormalReset(reset);
+
+    const bool abnormal=isAbnormalReset(reset) && !otaBoot.rolledBack && !otaBoot.pending;
     wake=wakeAfterReset(wake,abnormal);
-    Preferences prefs;
-    const bool persisted=prefs.begin("ventanal",false);
     watchdogResets=0;
     if(persisted) prefs.getBytes("wdt-count", &watchdogResets, sizeof watchdogResets);
     const bool skip=watchdogLimit(abnormal,watchdogResets);
@@ -592,8 +593,8 @@ void setup() {
         syncTime();
         if(persisted) prefs.end();
         const int pct=batteryCount ? batteryPercent(correctBattery(batteryHistory[batteryCount-1])) : 100;
-        sleepHardware(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-                      quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct)));
+        sleepHardware(secondsUntilNextWake(time(nullptr),installation.wakeMinutes,
+                      quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pct)));
         return;
     }
     armWakeWatchdog();
@@ -627,7 +628,7 @@ void setup() {
 #endif
     Serial.printf("wake=%s\n",wake==WakeCause::Button?"button":wake==WakeCause::Timer?"timer":"cold");
     if(wake==WakeCause::Button) Serial.printf("press=%s\n",longPress?"long":doublePress?"double":"single");
-    setenv("TZ",VENTANAL_TZ,1); tzset();
+    setenv("TZ",installation.timezone,1); tzset();
     static const State defaults={Screen::Weather,{{},{},{1020,0,580,104,false}},
                  {{},{},{1236,30,334,136,true}},{{},{},0,false}};
     State state=defaults;
@@ -693,13 +694,13 @@ void setup() {
     if(ponRetry) {
         Serial.printf("panel pon-retry attempt=%u\n",unsigned(pendingPanel.attempts));
         display.begin();
-        display.setRotation(VENTANAL_ROTATION);
+        display.setRotation(installation.rotation);
         const bool mounted=LittleFS.begin(false,"/littlefs",10,"littlefs");
         state=panelState();
         logState("retry-load",state);
         const auto& selected=selectedScreen(state);
         bool ready=false;
-        if(pendingPanel.kind==1) drawWaiting(display,VENTANAL_HOST_URL);
+        if(pendingPanel.kind==1) drawWaiting(display,installation.host);
         else {
             ready=mounted && blitFrame(selectedPath(state),display);
             if(!ready) {
@@ -707,12 +708,12 @@ void setup() {
                 pendingPanel.magic=0;
                 pinMode(21,OUTPUT); digitalWrite(21,LOW);
                 syncTime();
-                sleepFor(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-                    quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pendingPanel.pct)),state);
+                sleepFor(secondsUntilNextWake(time(nullptr),installation.wakeMinutes,
+                    quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pendingPanel.pct)),state);
                 return;
             }
             drawReadout(display,selected.readout,pendingPanel.pct,pendingPanel.offline,
-                        isLow(pendingPanel.pct),pendingPanel.drawnAt,VENTANAL_CLOCK_24H);
+                        isLow(pendingPanel.pct),pendingPanel.drawnAt,installation.clock24h);
         }
         refreshPanel();
         clearWatchdogCount(prefs);
@@ -744,11 +745,11 @@ void setup() {
         if(persisted) prefs.end();
         if(mounted) LittleFS.end();
         sleepFor(secondsUntilNextWake(time(nullptr),
-            VENTANAL_WAKE_MINUTES,quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pendingPanel.pct)),state);
+            installation.wakeMinutes,quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pendingPanel.pct)),state);
         return;
     }
     display.begin();
-    display.setRotation(VENTANAL_ROTATION);
+    display.setRotation(installation.rotation);
     const float rawVolts=smoothVolts(batteryHistory,batteryCount,display.readBattery());
     const int batteryMv=static_cast<int>(std::lround(rawVolts*1000));
     const float volts=correctBattery(rawVolts);
@@ -763,20 +764,43 @@ void setup() {
         if(persisted) prefs.end();
         sleepFor(60,state); return;
     }
+    if(!configured) {
+        Serial.println("setup=provisioning-required");
+        rememberPanel(state,pct,true,time(nullptr),1);
+        drawWaiting(display,"");
+        refreshPanel();
+        clearWatchdogCount(prefs);
+        if(persisted) prefs.end();
+        sleepFor(0,state);
+        return;
+    }
     bool mounted=LittleFS.begin(false,"/littlefs",10,"littlefs");
-    if(!mounted && persisted && canProvisionCache()) {
-        Serial.println("cache provisioning=mount-failed-no-state");
+    // A wired migration moves LittleFS but preserves the cached NVS state.
+    // Allow initialization at the new offset once, then preserve mount failures.
+    constexpr char cacheLayoutKey[]="cache-ota";
+    const bool newCacheLayout=persisted && otaCacheLayout() && !prefs.isKey(cacheLayoutKey);
+    if(!mounted && persisted && (newCacheLayout || canProvisionCache())) {
+        Serial.println(newCacheLayout?"cache provisioning=ota-layout":"cache provisioning=mount-failed-no-state");
         mounted=LittleFS.begin(true,"/littlefs",10,"littlefs");
         if(!mounted) {
             // Keep the provisioning path available on the next wake.
             Serial.println("error=cache-provision");
             prefs.end();
             syncTime();
-            sleepFor(secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-                quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct)),state);
+            sleepFor(secondsUntilNextWake(time(nullptr),installation.wakeMinutes,
+                quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pct)),state);
             return;
         }
         wake=WakeCause::ColdBoot;
+    }
+    if(mounted && newCacheLayout) {
+        const uint8_t initialized=1;
+        if(prefs.putBytes(cacheLayoutKey,&initialized,sizeof initialized)!=sizeof initialized)
+            Serial.println("error=cache-layout-save");
+    }
+    if(mounted && state.owner.overrideArt.id[0] && !LittleFS.exists("/override.vnf")) {
+        state.owner.overrideArt={};
+        state.owner.cursor=-1;
     }
     if(!mounted) Serial.println("error=cache-mount");
 #if VENTANAL_ERASE_CACHE
@@ -813,20 +837,24 @@ void setup() {
     }
 #endif
     bool offline=false;
+    bool manifestOk=false;
     uint32_t start=millis();
-    if(wake!=WakeCause::Button || longPress) {
+    if(wake!=WakeCause::Button || longPress || otaPendingBoot) {
         const bool online=wifiConnect();
         Serial.printf("wifi ms=%lu\n",static_cast<unsigned long>(millis()-start));
-        start=millis(); syncTime();
+        start=millis(); const bool timeSynced=syncTime();
         Serial.printf("time ms=%lu\n",static_cast<unsigned long>(millis()-start));
         start=millis();
         ScreenInfo art{},weather{};
         // Report the frame currently on the panel, before any downloads/draw.
         setBoardReport(pct,screenName(state),
-                       state.drawn.any?selectedDrawn(state):"",batteryMv);
+                       state.drawn.any?selectedDrawn(state):"",batteryMv,otaBoot.record,
+                       strcmp(otaBoot.record.version,otaBoot.attempts.version)==0 ? otaBoot.attempts.approval : "");
         state.owner.queue.query(manifestSkipQuery,sizeof manifestSkipQuery);
-        offline=!(online && fetchManifest(art,weather));
-        if(!offline) {
+        manifestOk=online && fetchManifest(art,weather);
+        offline=!manifestOk;
+        if(manifestOk) {
+            if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
             if(persisted && !storeBattery(prefs,manifestBatteryFullMv)) Serial.println("error=battery-calibration-save");
             if(!persisted) batteryFullMv=manifestBatteryFullMv;
             pct=batteryPercent(correctBattery(rawVolts));
@@ -843,6 +871,9 @@ void setup() {
         Serial.printf("manifest ok=%d ms=%lu\n",!offline,static_cast<unsigned long>(millis()-start));
         start=millis();
         if(!offline && persisted && quietHours.valid()) storeQuiet(prefs,quietHours);
+        if(online && persisted && mounted)
+            tryOta(prefs,otaBoot,manifestOk,timeSynced,pct,
+                   quietStart(installation.quietStart),quietEnd(installation.quietEnd));
         if(!offline && mounted) {
             // All eight slots share an absolute wake deadline, measured from
             // watchdog arming. Never feed the watchdog, including during display.
@@ -944,14 +975,14 @@ void setup() {
     const bool cached=mounted && LittleFS.exists(path);
     const bool redraw=longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));
     start=millis();
-    if(!cached || redraw) {
+    if(!cached || redraw || otaPendingBoot) {
         const bool ready=cached && blitFrame(path,display);
         Serial.printf("blit ms=%lu valid=%d\n",static_cast<unsigned long>(millis()-start),ready);
         if(ready) {
             const time_t drawnAt=time(nullptr);
             rememberPanel(state,pct,offline,drawnAt);
             const uint32_t overlayStart=millis();
-            drawReadout(display,selected.readout,pct,offline,isLow(pct),drawnAt,VENTANAL_CLOCK_24H);
+            drawReadout(display,selected.readout,pct,offline,isLow(pct),drawnAt,installation.clock24h);
             Serial.printf("readout ms=%lu\n",static_cast<unsigned long>(millis()-overlayStart));
             char local[40]; tm now{}; localtime_r(&drawnAt,&now);
             strftime(local,sizeof local,"%Y-%m-%d %H:%M:%S",&now);
@@ -959,12 +990,15 @@ void setup() {
                           selected.readout.x,selected.readout.y,selected.readout.w,selected.readout.h);
         } else {
             rememberPanel(state,pct,offline,time(nullptr),1);
-            drawWaiting(display,VENTANAL_HOST_URL);
+            drawWaiting(display,installation.host);
             Serial.println("draw=waiting-for-host");
         }
         start=millis(); refreshPanel();
-        clearWatchdogCount(prefs);
-        if(chargeAttempted) storeChargeMarker(prefs,0);
+        if(otaPendingBoot && confirmOtaBoot(prefs,otaBoot,manifestOk,ready)) otaPendingBoot=false;
+        if(!otaPendingBoot) {
+            clearWatchdogCount(prefs);
+            if(chargeAttempted) storeChargeMarker(prefs,0);
+        }
         Serial.printf("display ms=%lu\n",static_cast<unsigned long>(millis()-start));
         state.drawn.any=ready;
         if(ready) {
@@ -986,8 +1020,8 @@ void setup() {
         prefs.end();
     }
     if(mounted) LittleFS.end();
-    const uint32_t seconds=secondsUntilNextWake(time(nullptr),VENTANAL_WAKE_MINUTES,
-                              quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END),isLow(pct));
+    const uint32_t seconds=secondsUntilNextWake(time(nullptr),installation.wakeMinutes,
+                              quietStart(installation.quietStart),quietEnd(installation.quietEnd),isLow(pct));
 #if VENTANAL_STATELOSTTEST
     if(wake==WakeCause::Timer) Serial.println("diagnostic=statelost-done");
 #endif

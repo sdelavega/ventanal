@@ -241,10 +241,23 @@ class Security:
                 raise ValueError('Unknown LCD pairing ID.')
             return entry['profile'], entry['device_key']
 
+    @staticmethod
+    def key_identity(key):
+        return hmac.new(key, b'ventanal pairing identity', hashlib.sha256).hexdigest()
+
+    def pairing_identities(self):
+        with self.lock:
+            if not self.ready:
+                return {}
+            return {None: self.key_identity(self.key), **{
+                device: self.key_identity(bytes.fromhex(entry['device_key']))
+                for device, entry in self.state.get('lcd_devices', {}).items()
+            }}
+
     def accept(self,method,path,headers):
         return self.authenticate(method, path, headers) is not None
 
-    def authenticate(self, method, path, headers, profile=None):
+    def authenticate(self, method, path, headers, profile=None, *, firmware=False):
         """Return the key that authenticated this request, for manifest signing."""
         counter=headers.get('X-Ventanal-Counter','')
         auth=headers.get('Authorization','')
@@ -252,13 +265,15 @@ class Security:
         if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return None
         if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return None
         with self.lock:
-            if profile is None:
+            if not self.ready:
+                return None
+            if profile is None and not (firmware and device is not None):
                 if device is not None:
                     return None
                 entry = self.state
             else:
                 entry = self.state.get('lcd_devices', {}).get(device)
-                if entry is None or entry['profile'] != profile:
+                if entry is None or (profile is not None and entry['profile'] != profile):
                     return None
             key = bytes.fromhex(entry['device_key'])
             expected = hmac.new(key, f'{method}\n{path}\n{counter}'.encode(), hashlib.sha256).hexdigest()
@@ -272,7 +287,7 @@ class Security:
                 return None
             return key
 
-    def manifest(self, manifest, root, *, key=None, profile=None):
+    def manifest(self, manifest, root, *, key=None, profile=None, device=None):
         result=copy.deepcopy(manifest); result.pop('sig',None)
         reject_manifest_floats(result)
         frame_route = (r'/frames/[A-Za-z0-9_-]+\.vnf' if profile is None else
@@ -287,5 +302,8 @@ class Security:
             if profile is not None and (entry['id'] != digest[:16] or entry['sha256'] != digest):
                 raise ValueError('LCD frame differs from its published hash')
             entry['sha256'] = digest
-        result['sig'] = hmac.new(self.key if key is None else key, canonical(result), hashlib.sha256).hexdigest()
+        with self.lock:
+            if key is not None and self.pairing_identities().get(device) != self.key_identity(key):
+                raise ValueError('Board pairing changed during manifest request')
+            result['sig'] = hmac.new(self.key if key is None else key, canonical(result), hashlib.sha256).hexdigest()
         return result

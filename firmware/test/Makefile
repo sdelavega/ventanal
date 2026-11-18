@@ -3,6 +3,8 @@
 CXX = c++
 .DEFAULT_GOAL := test
 ARDUINOJSON ?= $(HOME)/Library/Arduino15/ventanal-sketchbook/libraries/ArduinoJson/src
+SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
+SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean check_lcd43b_chrome
@@ -13,7 +15,7 @@ check_lcd43b_chrome:
 	$(PYTHON) ../lcd43b/tools/lcars_geometry.py --check
 	$(PYTHON) ../../tools/aa_fonts.py --check
 
-test: build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist
+test: build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist
 	./build/test_lcd43b_owner
 	./build/test_lcd43b_power_session
 	./build/test_lcd43b_power
@@ -21,6 +23,9 @@ test: build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_
 	./build/test_lcd43b_settings
 	./build/test_lcd43b_clock
 	./build/test_lcd43b_battery
+	./build/test_settings
+	./build/test_ota
+	./build/test_release
 	./build/test_budget
 	./build/test_extras
 	./build/test_longpress
@@ -54,6 +59,18 @@ test: build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_
 	./build/test_lcd43b_touch
 	./build/test_lcd43b_sync
 	./build/test_lcd43b_persist
+
+build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_settings.cpp $(LDFLAGS) -o $@
+
+build/test_ota: test_ota.cpp ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_ota.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+
+build/test_release: test_release.cpp ../common/release.h ../common/release_key.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG $(SODIUM_CFLAGS) -I"$(ARDUINOJSON)" test_release.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
@@ -114,12 +131,12 @@ build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ve
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manifest_security.h ../lcd43b/transport.h ../lcd43b/manifest.h $(wildcard fakes/*.h) Makefile
+build/test_security: test_security.cpp ../ventanal/settings.h ../ventanal/security.h ../ventanal/manifest_security.h ../lcd43b/transport.h ../lcd43b/manifest.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) -o $@
 
 # Shared transport headers also invalidate the net/cache builds.
-build/test_net build/test_cache build/test_cache_abort: ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
+build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../ventanal/settings.h ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
 build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -247,3 +264,6 @@ build/test_budget build/test_extras build/test_longpress build/test_solar build/
 SECURITY_HEADERS = ../ventanal/security_protocol.h ../ventanal/manifest_signature.h
 build/test_security build/test_secure_transport build/test_lcd43b_sync: $(SECURITY_HEADERS)
 build/test_lcd43b_sync: ../lcd43b/build_config.h ../lcd43b/transport.h
+build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h
+
+build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h

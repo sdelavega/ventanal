@@ -1,0 +1,260 @@
+[
+  {
+    "name": "good",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4,
+    "image": "test",
+    "image_matches": true
+  },
+  {
+    "name": "image too short",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4,
+    "image": "tes",
+    "image_matches": false
+  },
+  {
+    "name": "image digest mismatch",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4,
+    "image": "text",
+    "image_matches": false
+  },
+  {
+    "name": "good LCD",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"lcd43b\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "6z+stk2hB8fj/uZCh5mLOEzLYdwq9FEeG4Sw33EFJZm8No2upgLYq9LO1Ur9PknmU/6INHZBzjrNYlIvN7U2Dg==",
+    "board": "lcd43b",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "canonical notes escapes",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"\\\"\\\\\\b\\f\\n\\r\\t\\u0000\\u0001\\u001f\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "oDUDyTfPZ3tjOq49GbSYzC4ZDG7UoLbKs3AJlUfzgUDxf8AhNdPgUnNgO6g06BHH18F6p+J0JgtT4zjYJn8VDg==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "max version and size",
+    "verdict": "Ok",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4294967295,\"version\":\"65535.65535.65535\"}",
+    "signature": "wBnj3UQRb9ZyCtRgBZJIQH4Uaqq8lyuWyWyBujzWqknKBZhzwwY45nEJIiWDvdC/6VjkypF5YXP1dlpiPyW+AA==",
+    "board": "inkplate13spectra",
+    "running": "65535.65535.65534",
+    "slot_size": 4294967295
+  },
+  {
+    "name": "bad signature",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "Af6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "other key",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "orV77psswo7dBDPigtRJKH1hfYc0sfhpl4p4RRtCrVRMrpoE++l4OqHeqfwd/c9edIfkmxPN7wxh8aqSKDErAg==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "modified bytes",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "extra signature whitespace",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==\n",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "noncanonical base64",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAx==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "wrong board",
+    "verdict": "WrongBoard",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "lcd43b",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "equal version",
+    "verdict": "NotNewer",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.10.3",
+    "slot_size": 4
+  },
+  {
+    "name": "older version",
+    "verdict": "NotNewer",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.11.0",
+    "slot_size": 4
+  },
+  {
+    "name": "invalid running version",
+    "verdict": "NotNewer",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.010.0",
+    "slot_size": 4
+  },
+  {
+    "name": "running below minimum",
+    "verdict": "TooOld",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.0",
+    "slot_size": 4
+  },
+  {
+    "name": "size exceeds slot",
+    "verdict": "BadSize",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "kf6ECA4IB77lA8B4FAjQD/MgbUa7ijaImcv9YurxhQT5Pz3CzXTaleVPYt2EKThTh0s+Y6X0Vki9WJrM4AphAw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 3
+  },
+  {
+    "name": "empty image",
+    "verdict": "BadSize",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":0,\"version\":\"2.10.3\"}",
+    "signature": "2oSA34thGrvxnQNn2fN5/F30R5EBQnEwM6wFTgiMIri06OLvypFMcy3KzrQvONU6JriZ5h5BGa5UkDXDD6HYAg==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "malformed JSON",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"",
+    "signature": "JJnCoNuHu9Y74/YybLJOGxLGdO4E0KR73z+laW4OgefIciADFAgrU7wVBETspixpZkgw/Rj1k51/1J4U71W6AQ==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "float present",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4.0,\"version\":\"2.10.3\"}",
+    "signature": "LpQCB05okb9zcTsvGV0wCs6I1CKysUBir4TipKr16d6JmeaSZYQNHJSbqTCmIXsF/1GONwDDzS93ww2EJStfBQ==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "boolean size",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":true,\"version\":\"2.10.3\"}",
+    "signature": "kSdtMzHWYrR9mn19K1atE43TM9WN8ZAKtVRAoXhQLI1ZLUKkXtvNZcr/SggJkQc/gd7eEGFoAqoYIh1BZBZFAA==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "duplicate field",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "QKc1gTuzTKfhWKMNFB378iMBI0EkvINWgh0OBEUSGareRNhqFZW8ChbusgcqybZPb3nP1xK+AJ1VfWrt5VqHAg==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "extra field",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\",\"x\":1}",
+    "signature": "EBEHUTdaCOGwLIE6NIM/i41qRBTLKqnt92qFX2JQ8bf+eZSpSaYbq7eCdAySICsKucwKM0pauUldXRs51psKDQ==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "oversized integer",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4294967296,\"version\":\"2.10.3\"}",
+    "signature": "JpSi51mNVEgeaVHXRQ9Y3PrPfrsBgnSV1CeHZ0hlnAiUqygHZUrxW38j77V5zck11XPYhUrahZ4DNGCSUO6QDQ==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "oversized version",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"65536.0.0\"}",
+    "signature": "f1xBzIDcVyJfaWExXhdON8Gh/2XTdLUA8ANHET5yww/xIYqcNKCibqdkRK6XxtFvCAdyLXppRDXheFb4UU3sBw==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "noncanonical notes encoding",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/ma\\u00f1ana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "+RMTkpp21DtK1dTiLh3oG8zsrDo4a1S/75PCLNJzEqw6UMJDdED4yDVnD8GGUtO7FS3uM8ySJyq61TjUJYsnCA==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "unpaired surrogate",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/ma\\ud800ana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}",
+    "signature": "ZPPKAUPL1QRxX30g7qQY58M2wvpKtXs1j1Fg9oqfYw7hbwsFxdYZbKcoiIfmQ8gI+IY88bShUci0cb8HXazkCg==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  },
+  {
+    "name": "trailing newline",
+    "verdict": "BadSignature",
+    "metadata": "{\"board\":\"inkplate13spectra\",\"min_from_version\":\"2.9.1\",\"notes_url\":\"https://example.invalid/mañana/雪/🎨\",\"sha256\":\"9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08\",\"size\":4,\"version\":\"2.10.3\"}\n",
+    "signature": "uOTVzVzltHq3G3kiGdGfUEGiZve86CL+hnMHjhUsyY6TXiAgvo6+yl35BHJmWkxMUA2YVgsLvOWypItQ95DyDA==",
+    "board": "inkplate13spectra",
+    "running": "2.9.1",
+    "slot_size": 4
+  }
+]

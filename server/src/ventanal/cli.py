@@ -30,6 +30,80 @@ CACHE_WRITERS = ('tick', 'serve', 'render-art', 'render-weather', 'skipped',
                  'setup-token', *CERTIFICATE_COMMANDS)
 
 
+def _release_command(parser, args):
+    import hashlib
+    import os
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric.ed25519 import (
+        Ed25519PrivateKey, Ed25519PublicKey,
+    )
+    from ventanal import release
+
+    def write_new(path, data, mode):
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, mode)
+        try:
+            try:
+                with os.fdopen(fd, 'wb', closefd=False) as output:
+                    output.write(data)
+            finally:
+                os.close(fd)
+        except BaseException:
+            path.unlink()
+            raise
+
+    try:
+        if args.release_command == 'keygen':
+            key = Ed25519PrivateKey.generate()
+            write_new(args.private_key, key.private_bytes(
+                serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                serialization.NoEncryption(),
+            ), 0o600)
+            try:
+                write_new(args.public_key, key.public_key().public_bytes(
+                    serialization.Encoding.PEM, serialization.PublicFormat.SubjectPublicKeyInfo,
+                ), 0o644)
+            except BaseException:
+                args.private_key.unlink()
+                raise
+            return
+
+        json_bytes = args.metadata.read_bytes()
+        signature_path = args.signature or args.metadata.with_suffix(args.metadata.suffix + '.sig')
+        if args.release_command == 'sign':
+            key = serialization.load_pem_private_key(args.key.read_bytes(), password=None)
+            if not isinstance(key, Ed25519PrivateKey):
+                raise ValueError('Expected an Ed25519 private key')
+            sig = release.sign_release(json_bytes, key)
+            write_new(signature_path, sig.encode('ascii'), 0o644)
+            return
+
+        key = release.RELEASE_PUBLIC_KEY
+        if args.key is not None:
+            key = serialization.load_pem_public_key(args.key.read_bytes())
+            if not isinstance(key, Ed25519PublicKey):
+                raise ValueError('Expected an Ed25519 public key')
+        sig = signature_path.read_bytes().decode('ascii')
+        policy = (args.board, args.running, args.slot_size)
+        if all(value is None for value in policy):
+            info = release.verify_release(json_bytes, sig, key)
+        elif any(value is None for value in policy):
+            raise ValueError('--board, --running and --slot-size must be used together')
+        else:
+            info = release.check_release(json_bytes, sig, args.board, args.running, key, args.slot_size)
+        if args.image is not None:
+            image_hash = hashlib.sha256()
+            size = 0
+            with args.image.open('rb') as image:
+                while chunk := image.read(65536):
+                    image_hash.update(chunk)
+                    size += len(chunk)
+            if not info.matches_image(size, image_hash.digest()):
+                raise ValueError('Image size or SHA-256 mismatch')
+        print(f'Verified {info.board} {info.version}')
+    except (OSError, ValueError, TypeError) as exc:
+        parser.error(str(exc))
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog='ventanal')
     parser.add_argument('--config', type=Path, default=Path('/etc/ventanal/ventanal.toml'))
@@ -60,7 +134,25 @@ def main(argv=None):
             command.add_argument('--paper', help='White paper rectangle x,y,width,height in photo pixels')
         if name.startswith('render-'):
             command.add_argument('--out', type=Path, required=True)
+    release_parser = commands.add_parser('release', help='Manage firmware release signatures offline')
+    release_commands = release_parser.add_subparsers(dest='release_command', required=True)
+    keygen = release_commands.add_parser('keygen', help='Create an Ed25519 release keypair')
+    keygen.add_argument('private_key', type=Path, help='New private PEM file to keep offline')
+    keygen.add_argument('public_key', type=Path, help='New public PEM file')
+    sign = release_commands.add_parser('sign', help='Sign canonical release metadata')
+    verify = release_commands.add_parser('verify', help='Verify signed release metadata')
+    for command in (sign, verify):
+        command.add_argument('metadata', type=Path, help='Canonical release JSON file')
+        command.add_argument('--signature', type=Path, help='Signature file (defaults to JSON path + .sig)')
+    sign.add_argument('--key', type=Path, required=True, help='Ed25519 private PEM file')
+    verify.add_argument('--key', type=Path, help='Ed25519 public PEM file (defaults to embedded key)')
+    verify.add_argument('--image', type=Path, help='Firmware image to check against the signed digest')
+    verify.add_argument('--board', choices=('inkplate13spectra', 'lcd43b'))
+    verify.add_argument('--running', help='Currently installed firmware version')
+    verify.add_argument('--slot-size', type=int, help='OTA slot size in bytes')
     args = parser.parse_args(argv)
+    if args.command == 'release':
+        return _release_command(release_parser, args)
     logging.basicConfig(level=logging.INFO, format='%(levelname)s %(message)s')
     logging.getLogger('httpx').setLevel(logging.WARNING)
     try:

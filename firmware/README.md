@@ -7,6 +7,9 @@ readout, applies battery and local-time scheduling, and sleeps between updates.
 A fresh installation starts on weather; a short WAKE press cycles cached screens
 without starting Wi-Fi.
 
+See [wireless firmware updates](../docs/updates.md) for update approval,
+rollback and release signing.
+
 ## Toolchain
 
 Install Arduino CLI and Soldered's board index (from the board repository README):
@@ -50,13 +53,20 @@ skip those unused artifacts (used during this task's verification).
 32 MB flash, OPI flash at 80 MHz, OPI PSRAM (16 MB fitted), UART0 serial,
 CDC on boot disabled. `PartitionScheme=custom` selects the sketch's CSV;
 the build's application-size limit is overridden to 4194304 below to match its
-4 MiB factory slot.
+4 MiB OTA slots.
 
 The local `partitions.csv` overrides the menu partition table. NVS: 0x9000/24K;
-otadata: 0xf000/8K; factory app: 0x20000/4M; LittleFS: 0x420000/0x1bd0000
-(27.8125 MiB); coredump: 0x1ff0000/64K. End: 0x2000000 (32 MiB).
-The gap before app0 permits 64K app alignment. No OTA app slot is provided.
-LittleFS explicitly mounts the `littlefs` label, using the required `spiffs` subtype.
+otadata at 0xf000/8K, `ota_0` at 0x20000/4M, `ota_1` at 0x420000/4M,
+LittleFS at 0x820000/0x17d0000, and coredump at 0x1ff0000/64K.
+Moving from the factory layout requires a wired upload to seed `ota_0`.
+The device initializes the relocated LittleFS and downloads its frames again.
+Pairing and counters stay in NVS.
+
+`VENTANAL_OTA_GITHUB=1` enables diagnostic checks of the latest GitHub release
+at most once a week. It uses the ESP-IDF certificate bundle and applies the
+same signed-image checks and battery and quiet-hours gates as host offers.
+The first boot of an updated image requires Wi-Fi, a valid host manifest, and
+a completed frame refresh.
 
 ## Modes and hardware checks
 
@@ -236,6 +246,8 @@ Settings → Security before trusting it. Use **Reveal board values** to copy
 `VENTANAL_HOST_CERT_PEM` (the complete PEM, as a C++ raw string) and
 `VENTANAL_DEVICE_KEY` (64 lowercase hex characters) into private `config.h`.
 Change `VENTANAL_HOST_URL` to the displayed HTTPS URL and build/upload normally.
+If the board already has provisioned settings, use a new force-provision
+revision as described in the [wired setup guide](../docs/updates.md#one-time-wired-setup).
 Keep these values out of logs and version control. Regeneration requires updating
 the certificate on the board. The device key stays valid until you explicitly
 choose **Re-pair board** and copy the new key. See the
@@ -273,7 +285,8 @@ handshake/header and total transfer timings without keys or proof contents.
 For an isolated diagnostic build only, pass
 `--build-property compiler.cpp.extra_flags=-DVENTANAL_SECURITY_CONFIG=/absolute/path/diagnostic.h`.
 That private header can `#undef VENTANAL_HOST_URL` and supply disposable TLS/key
-values without editing `config.h`. Omit this property for the production build.
+values without editing `config.h`. Use a new force-provision revision if the diagnostic build needs to replace
+stored settings. Omit the diagnostic header for a release build.
 
 ### Waveshare LCD pairing
 

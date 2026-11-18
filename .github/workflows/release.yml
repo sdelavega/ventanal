@@ -1,0 +1,64 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+name: Draft firmware release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - uses: arduino/setup-arduino-cli@81d310742121c928ea9c8bbd407b4217b432ae02 # v2.0.0
+        with:
+          version: '1.6.0'
+      - name: Install pinned Inkplate core and libraries
+        run: |
+          board_index=https://github.com/SolderedElectronics/Inkplate-Board-Definitions-for-Arduino-IDE/raw/refs/heads/main/package_Inkplate_Boards_index.json
+          arduino-cli config add board_manager.additional_urls "$board_index"
+          arduino-cli core update-index
+          arduino-cli core install soldered-inkplate-boards:esp32@4.0.0
+          arduino-cli lib install --no-deps 'InkplateLibrary@11.2.1' 'ArduinoJson@7.4.3'
+      - name: Install release metadata dependency
+        run: python -m pip install 'cryptography==50.0.2'
+      - name: Install PlatformIO for LCD
+        if: ${{ hashFiles('firmware/lcd43b/platformio.ini') != '' }}
+        run: python -m pip install 'pioarduino==6.2.0'
+      - name: Build unsigned OTA assets
+        env:
+          PYTHONPATH: server/src
+        run: python tools/release/build.py "${GITHUB_REF_NAME#v}" --output build/release-assets
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: firmware-release-assets
+          path: build/release-assets/
+          if-no-files-found: error
+
+  draft:
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5.0.0
+        with:
+          name: firmware-release-assets
+          path: release-assets
+      - name: Attach unsigned assets to a new draft
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" release-assets/*.bin release-assets/*.json \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --generate-notes
