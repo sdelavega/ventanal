@@ -7,18 +7,20 @@ from http.client import HTTPConnection, HTTPSConnection
 import json
 from pathlib import Path
 import re
+import sqlite3
 import ssl
 from threading import Event, Thread, get_ident
 from types import SimpleNamespace
 from urllib.parse import urlencode
 
-from cryptography.hazmat.primitives.serialization import load_pem_private_key
+from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PublicKey
+from cryptography.hazmat.primitives.serialization import load_pem_private_key, load_pem_public_key
 import httpx
 import pytest
 
 from test_security import proof
 from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, encode_board_manifest
-from ventanal.ota import FirmwareStore, OPEN_DEVICE, poll_github, verified_metadata
+from ventanal.ota import DEVICE_RETENTION, FirmwareStore, OPEN_DEVICE, poll_github, verified_metadata
 from ventanal.ota_ui import MAX_UPLOAD, PART_LIMITS
 from ventanal.release import canonical_release_json, sign_release, ReleaseError
 from ventanal.security import canonical
@@ -31,6 +33,15 @@ IMAGE = b"\x00\xff\x80\r\nfirmware\n"
 IMAGE_PATH = f"/firmware/{BOARD}-2.0.0.bin"
 CHECKIN = f"/manifest.json?board={BOARD}&fw=1.0.0"
 EXAMPLE = Path(__file__).parents[1] / "ventanal.example.toml"
+
+
+@pytest.fixture(autouse=True)
+def allow_test_release_key(monkeypatch):
+    public = Path(__file__).parent / "fixtures/release/release-test-only.pub"
+    monkeypatch.setattr("ventanal.ota.RELEASE_PUBLIC_KEY", load_pem_public_key(public.read_bytes()))
+    monkeypatch.setattr("ventanal.release.TEST_RELEASE_KEY_ACTIVE", True)
+    monkeypatch.setattr("ventanal.ui.TEST_RELEASE_KEY_ACTIVE", True)
+    monkeypatch.setenv("VENTANAL_ALLOW_TEST_KEY", "1")
 
 
 @pytest.fixture
@@ -173,6 +184,45 @@ def test_reapproved_version_clears_after_a_second_rollback(tmp_path, signed, ide
     assert store.checkin(BOARD, device, "1.0.0", None) is None
 
 
+@pytest.mark.parametrize("outcome", ["ok", "rolled_back"])
+def test_open_completion_requires_current_approval(tmp_path, signed, outcome):
+    store = FirmwareStore(tmp_path)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
+    store.approve(BOARD, OPEN_DEVICE, "2.0.0")
+    approval = store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)["approval"]
+    running = "2.0.0" if outcome == "ok" else "1.0.0"
+    for invalid in (None, "0" * 16):
+        store.checkin(BOARD, OPEN_DEVICE, running, f"{outcome}:2.0.0", invalid)
+        state = store.boards(OPEN_DEVICE)[0][0]
+        assert state["pending"] == "2.0.0" and state["rolled_back"] is None
+    assert store.checkin(BOARD, OPEN_DEVICE, running, f"{outcome}:2.0.0", approval) is None
+    assert store.boards(OPEN_DEVICE)[0][0]["pending"] is None
+
+
+def test_old_test_signature_is_rejected_after_installing_owner_key(tmp_path, signed, monkeypatch):
+    store = FirmwareStore(tmp_path)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
+    store.approve(BOARD, OPEN_DEVICE, "2.0.0")
+    monkeypatch.setattr("ventanal.release.TEST_RELEASE_KEY_ACTIVE", False)
+    monkeypatch.setattr("ventanal.ota.RELEASE_PUBLIC_KEY", Ed25519PublicKey.from_public_bytes(bytes(range(32))))
+    assert store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None) is None
+    assert store.image(IMAGE_PATH.removeprefix("/firmware/")) is None
+
+
+def test_missing_transport_ages_device_rows(tmp_path, signed):
+    store = FirmwareStore(tmp_path)
+    store.cache(verified_metadata(*signed()), IMAGE)
+    store.checkin(BOARD, "pair-A", "1.0.0", None)
+    store.approve(BOARD, "pair-A", "2.0.0")
+    now = datetime.now(timezone.utc)
+    store.retain_devices((), now=now)
+    assert store.boards("pair-A")[0][0]["pending"] == "2.0.0"
+    store.retain_devices((), now=now + DEVICE_RETENTION + timedelta(seconds=1))
+    assert not store.boards("pair-A")
+
+
 def test_cache_prunes_old_images_and_retains_pending_and_last_upload(tmp_path, signed):
     store = FirmwareStore(tmp_path)
     store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
@@ -258,6 +308,42 @@ def multipart(parts):
     return b"".join(chunks)
 
 
+def test_upload_rejects_missing_session_before_reading_body(web, monkeypatch):
+    server, request, _ = web
+    server.ui.auth.none()
+
+    def unexpected_body(*args):
+        pytest.fail("Attempted to read an unsigned-in upload")
+
+    monkeypatch.setattr("ventanal.ota_ui.upload", unexpected_body)
+    headers = {
+        "Content-Type": "multipart/form-data; boundary=test-boundary",
+        "Content-Length": str(MAX_UPLOAD),
+        "Expect": "100-continue",
+    }
+    assert request("/updates/upload", data=b"", headers=headers)[0] == 403
+
+
+def test_test_key_disabled_blocks_cached_upload_and_offer(web, signed, monkeypatch):
+    server, request, _ = web
+    server.ui.auth.none()
+    store = server.ui.firmware
+    store.cache(verified_metadata(*signed()), IMAGE)
+    request(CHECKIN)
+    store.approve(BOARD, OPEN_DEVICE, "2.0.0")
+    assert "firmware" in json.loads(request(CHECKIN)[1])
+    monkeypatch.delenv("VENTANAL_ALLOW_TEST_KEY", raising=False)
+    with pytest.raises(ReleaseError, match="TEST RELEASE KEY"):
+        verified_metadata(*signed())
+    assert request(IMAGE_PATH)[0] == 404
+    assert "firmware" not in json.loads(request(CHECKIN + "&test_release_key=1")[1])
+    status, page, _ = request("/")
+    assert status == 200 and b"TEST RELEASE KEY" in page and b"Board reports TEST RELEASE KEY" in page
+    assert b"Upload signed release" not in page
+    monkeypatch.setenv("VENTANAL_ALLOW_TEST_KEY", "1")
+    assert "firmware" in json.loads(request(CHECKIN)[1])
+
+
 def test_upload_rejects_oversized_content_length_without_a_body(web):
     server, request, _ = web
     server.ui.auth.none()
@@ -317,7 +403,8 @@ def test_firmware_download_finishes_after_its_image_is_pruned(web, signed, monke
     download.start()
     try:
         assert started.wait(2)
-        store.checkin(BOARD, OPEN_DEVICE, "2.0.0", "ok:2.0.0")
+        approval = store.boards(OPEN_DEVICE)[0][0]["approval"]
+        store.checkin(BOARD, OPEN_DEVICE, "2.0.0", "ok:2.0.0", approval)
         store.cache(verified_metadata(*signed(version="6.0.0")), IMAGE)
         assert request(IMAGE_PATH)[0] == 404
     finally:
@@ -346,6 +433,7 @@ def test_open_status_upload_install_and_result(web, signed):
     assert request(IMAGE_PATH)[:2] == (200, IMAGE)
     page = request("/", headers=headers)[1]
     assert b"Update available: 2.0.0" in page and b"Release notes" in page
+    assert page.count(b"Install automatically") == 1 and b"Confirm installation on the LCD" in page
     assert not re.search(rb'name="automatic"[^>]*checked', page)
     assert "firmware" not in json.loads(request(CHECKIN)[1])
     values = {"board": BOARD, "csrf": csrf, "version": "2.0.0"}
@@ -353,6 +441,10 @@ def test_open_status_upload_install_and_result(web, signed):
     assert request("/updates/install", data=urlencode(values), headers=post_headers)[0] == 303
     offer = json.loads(request(CHECKIN)[1])["firmware"]
     approval = offer.pop("approval")
+    assert request(CHECKIN + "&ota=failed:attempts:download")[0] == 200
+    page = request("/", headers=headers)[1]
+    assert b"failed:attempts:download" in page
+    assert b'action="/updates/install"' in page
     assert re.fullmatch(r"[0-9a-f]{16}", approval)
     assert offer == {"release": metadata.decode(), "sig": sig.decode(), "path": IMAGE_PATH}
     assert "firmware" not in json.loads(request("/manifest.json?board=lcd43b&fw=1.0.0")[1])
@@ -452,6 +544,52 @@ def test_manual_check_runs_in_background_and_displays_error(web, monkeypatch):
         finish.set()
     assert done.wait(2)
     assert b"GitHub returned HTTP 403" in request("/", headers=headers)[1]
+
+
+def test_poll_cache_error_backs_off_if_record_write_fails(web, monkeypatch):
+    server, _, _ = web
+    ui = server.ui
+    ui.auth.none()
+    attempts = []
+
+    def due(now):
+        attempts.append(now)
+        raise sqlite3.OperationalError("locked")
+
+    def record(now, error):
+        raise sqlite3.OperationalError("locked")
+
+    monkeypatch.setattr(ui.firmware, "poll_due", due)
+    monkeypatch.setattr(ui.firmware, "record_poll", record)
+    monkeypatch.setattr("ventanal.ui.Thread", lambda *, target, daemon: SimpleNamespace(start=target))
+    ui.start_firmware_check(force=False)
+    assert not ui.firmware_checking
+    ui.start_firmware_check(force=False)
+    assert len(attempts) == 1
+    assert ui.firmware_poll_error and ui.firmware_retry_at > 0
+
+
+def test_poll_skips_out_of_range_versions(tmp_path, signed):
+    store = FirmwareStore(tmp_path)
+    store.checkin(BOARD, OPEN_DEVICE, "1.0.0", None)
+    metadata, signature = signed()
+    assets = {f"ventanal-{BOARD}-2.0.0{suffix}": value for suffix, value in (
+        (".bin", IMAGE), (".json", metadata), (".json.sig", signature),
+    )}
+
+    def fetch(request):
+        asset = request.url.path.rsplit("/", 1)[-1]
+        if asset == "releases":
+            return httpx.Response(200, json=[
+                {"tag_name": "v70000.0.0", "assets": []},
+                {"tag_name": "v2.0.0", "assets": [{"name": name} for name in assets]},
+            ])
+        return httpx.Response(200, content=assets[asset])
+
+    with httpx.Client(transport=httpx.MockTransport(fetch)) as client:
+        poll_github(store, client, OPEN_DEVICE)
+    assert store.last_poll()["error"] == ""
+    assert store.image(IMAGE_PATH.removeprefix("/firmware/")) == IMAGE
 
 
 def test_daily_check_removes_stale_device_rows(web, signed, monkeypatch):

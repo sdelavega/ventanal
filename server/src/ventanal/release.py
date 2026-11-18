@@ -5,6 +5,7 @@
 import base64
 from dataclasses import dataclass
 import json
+import os
 import re
 
 from cryptography.exceptions import InvalidSignature
@@ -16,10 +17,16 @@ VERSION = re.compile(r"(?:0|[1-9][0-9]{0,4})(?:\.(?:0|[1-9][0-9]{0,4})){2}")
 SHA256 = re.compile(r"[0-9a-f]{64}")
 SIGNATURE = re.compile(r"[A-Za-z0-9+/]{86}==")
 
-# TEST KEY. Replace together with firmware/common/release_key.h for production.
-RELEASE_PUBLIC_KEY = Ed25519PublicKey.from_public_bytes(bytes.fromhex(
-    "8e60d1c05ba577843e1df225fae9a39351ea69de2d53c8c6b70dbd89167fd3ed"
-))
+# Active key. Install together with the firmware release public key.
+RELEASE_PUBLIC_KEY_HEX = "8e60d1c05ba577843e1df225fae9a39351ea69de2d53c8c6b70dbd89167fd3ed"
+TEST_RELEASE_PUBLIC_KEY_HEX = "8e60d1c05ba577843e1df225fae9a39351ea69de2d53c8c6b70dbd89167fd3ed"
+RELEASE_PUBLIC_KEY = Ed25519PublicKey.from_public_bytes(bytes.fromhex(RELEASE_PUBLIC_KEY_HEX))
+TEST_RELEASE_KEY_ACTIVE = RELEASE_PUBLIC_KEY_HEX == TEST_RELEASE_PUBLIC_KEY_HEX
+TEST_RELEASE_KEY_WARNING = "TEST RELEASE KEY"
+
+
+def firmware_updates_enabled():
+    return not TEST_RELEASE_KEY_ACTIVE or os.getenv("VENTANAL_ALLOW_TEST_KEY") == "1"
 
 
 class ReleaseError(ValueError):

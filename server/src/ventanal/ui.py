@@ -25,7 +25,9 @@ from ventanal.security import PreviousCertificateHeld
 from ventanal.settings import ConfigWriteError, FIELDS, SOURCE_REGISTRY, MUSEUMS, MUSEUM_LABELS, FIELD_HELP, OPTION_LABELS, READ_ONLY, ADVANCED, season_count, save_settings, read_document
 from ventanal.status import BoardStore, next_wake, showing, preview
 from ventanal.ota import FirmwareStore, OPEN_DEVICE, poll_github, verified_metadata
-from ventanal.release import BOARDS, ReleaseError
+from ventanal.release import (
+    BOARDS, TEST_RELEASE_KEY_ACTIVE, TEST_RELEASE_KEY_WARNING, ReleaseError, firmware_updates_enabled,
+)
 
 
 def e(value): return escape(str(value), quote=True)
@@ -60,6 +62,8 @@ class UI:
         self.store = BoardStore(cache_dir)
         self.firmware = FirmwareStore(cache_dir)
         self.firmware_checking = False
+        self.firmware_retry_at = 0
+        self.firmware_poll_error = ""
         # Backfill roles for frames published before this feature was installed.
         cfg = load_config(config_path)
         manifest = read_manifest(cfg.output_dir)
@@ -99,7 +103,9 @@ class UI:
 
     def start_firmware_check(self, *, force):
         with self.lock:
-            if self.firmware_checking:
+            if not firmware_updates_enabled() or self.firmware_checking or (
+                not force and time.monotonic() < self.firmware_retry_at
+            ):
                 return
             self.firmware_checking = True
 
@@ -112,8 +118,17 @@ class UI:
                     if device is not None:
                         with httpx.Client(timeout=15, trust_env=False) as client:
                             poll_github(self.firmware, client, device)
+                self.firmware_poll_error = ""
+                self.firmware_retry_at = 0
             except (OSError, sqlite3.Error):
-                logging.getLogger(__name__).warning('Firmware release check could not access the cache')
+                error = 'Firmware release check could not access the cache'
+                logging.getLogger(__name__).warning(error)
+                self.firmware_poll_error = error
+                self.firmware_retry_at = time.monotonic() + 15 * 60
+                try:
+                    self.firmware.record_poll(datetime.now(timezone.utc), error)
+                except (OSError, sqlite3.Error):
+                    pass  # The in-memory deadline also covers a failed error write.
             finally:
                 with self.lock:
                     self.firmware_checking = False
@@ -121,6 +136,8 @@ class UI:
         Thread(target=run, daemon=True).start()
 
     def firmware_action(self, path, values):
+        if not firmware_updates_enabled():
+            raise ReleaseError(f'{TEST_RELEASE_KEY_WARNING}: firmware updates are disabled')
         device = self.firmware_device()
         if device is None:
             raise ReleaseError('Finish board transport setup before managing firmware')
@@ -324,9 +341,19 @@ class UI:
             picture = f'<img src="/ui-preview/{screen}/{entry["id"]}.png" alt="{e(screen)} panel preview">' if entry else '<div class="empty">No frame published</div>'
             body += f'<div class="pv"><div class="lbl{" w" if screen=="weather" else ""}"><span>{e(title)}</span><span>{e(label)}</span></div>{picture}</div>'
         body += '</div>'
+        if TEST_RELEASE_KEY_ACTIVE:
+            state = "Bench mode enabled" if firmware_updates_enabled() else "Firmware updates disabled"
+            body += f'<p class="error" role="status">{TEST_RELEASE_KEY_WARNING} · {state}</p>'
+        if board and board.get('test_release_key') == '1':
+            body += f'<p class="error" role="status">Board reports {TEST_RELEASE_KEY_WARNING}</p>'
+        if self.firmware_poll_error:
+            body += f'<p class="error" role="status">{e(self.firmware_poll_error)}</p>'
         if (device := self.firmware_device()) is not None:
             from ventanal.ota_ui import body as firmware_body
-            body += firmware_body(self.firmware, device, token, self.firmware_checking)
+            try:
+                body += firmware_body(self.firmware, device, token, self.firmware_checking)
+            except sqlite3.Error:
+                body += '<p class="error" role="status">The firmware cache is unavailable.</p>'
         body += '<div class="log">'
         for row in self.store.recent():
             at = datetime.fromisoformat(row['time']).astimezone(ZoneInfo(cfg.timezone))
@@ -363,6 +390,8 @@ class UI:
         except CookieError: session=None
         cookie = None
         if session is None:
+            if post and path == '/updates/upload' and self.auth.mode != 'password':
+                self.respond(h,403); return
             session,cookie = self.auth.issue(False)
         token = session['csrf']
         def send(status,title,body): self.respond(h,status,self.page(path,session,title,body),cookie=cookie)
@@ -390,6 +419,8 @@ class UI:
                     h.continue_body()
                     values = upload(h,length)
                 elif path == '/updates/upload':
+                    if not firmware_updates_enabled():
+                        self.respond(h,403); return
                     from ventanal.ota_ui import MAX_UPLOAD, upload
                     if length > MAX_UPLOAD:
                         self.respond(h,413); return

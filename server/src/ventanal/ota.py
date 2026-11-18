@@ -19,7 +19,7 @@ import httpx
 
 from ventanal.release import (
     BOARDS, VERSION, RELEASE_PUBLIC_KEY, ReleaseError, ReleaseInfo, check_update,
-    verify_release, version_tuple,
+    TEST_RELEASE_KEY_WARNING, firmware_updates_enabled, verify_release, version_tuple,
 )
 
 OPEN_DEVICE = "open"
@@ -27,6 +27,7 @@ SLOT_SIZE = 4 * 1024 * 1024
 MAX_METADATA = 2048
 RETAIN_RELEASES = 3
 POLL_INTERVAL = timedelta(days=1)
+DEVICE_RETENTION = timedelta(days=30)
 GITHUB_REPO = "https://github.com/sdelavega/ventanal"
 GITHUB_RELEASES = "https://api.github.com/repos/sdelavega/ventanal/releases"
 ASSET_HOSTS = {"release-assets.githubusercontent.com", "objects.githubusercontent.com"}
@@ -60,6 +61,8 @@ class CachedRelease:
 
 
 def verified_metadata(metadata, signature):
+    if not firmware_updates_enabled():
+        raise ReleaseError(f"{TEST_RELEASE_KEY_WARNING}: firmware updates are disabled")
     if len(metadata) > MAX_METADATA:
         raise ReleaseError("Release metadata exceeds the size limit")
     try:
@@ -91,8 +94,12 @@ class FirmwareStore:
                     id INTEGER PRIMARY KEY CHECK (id = 1), checked TEXT NOT NULL,
                     error TEXT NOT NULL);""")
             db.execute("BEGIN IMMEDIATE")
-            if not any(column["name"] == "approval" for column in db.execute("PRAGMA table_info(firmware_devices)")):
+            columns = {column["name"] for column in db.execute("PRAGMA table_info(firmware_devices)")}
+            if "approval" not in columns:
                 db.execute("ALTER TABLE firmware_devices ADD COLUMN approval TEXT")
+            if "last_seen" not in columns:
+                db.execute("ALTER TABLE firmware_devices ADD COLUMN last_seen TEXT")
+                db.execute("UPDATE firmware_devices SET last_seen=?", (datetime.now(timezone.utc).isoformat(),))
 
     def connect(self):
         db = sqlite3.connect(self.path, timeout=1)
@@ -101,12 +108,18 @@ class FirmwareStore:
 
     @staticmethod
     def _releases(db, board):
-        releases = [
-            CachedRelease(ReleaseInfo(**json.loads(row["metadata"])), row["metadata"], row["signature"], row["uploaded"])
-            for row in db.execute(
-                "SELECT metadata, signature, uploaded FROM firmware_releases WHERE board=?", (board,)
-            )
-        ]
+        if not firmware_updates_enabled():
+            return []
+        releases = []
+        for row in db.execute(
+            "SELECT version, metadata, signature, uploaded FROM firmware_releases WHERE board=?", (board,)
+        ):
+            try:
+                info = verify_release(row["metadata"].encode(), row["signature"], RELEASE_PUBLIC_KEY)
+            except ReleaseError:
+                continue
+            if (info.board, info.version) == (board, row["version"]):
+                releases.append(CachedRelease(info, row["metadata"], row["signature"], row["uploaded"]))
         return sorted(releases, key=lambda release: version_tuple(release.info.version), reverse=True)
 
     @staticmethod
@@ -133,7 +146,7 @@ class FirmwareStore:
             )
 
     def cache(self, release, image, *, manual=False):
-        info = release.info
+        info = verified_metadata(release.metadata.encode(), release.signature.encode()).info
         if not info.matches_image(len(image), hashlib.sha256(image).digest()):
             raise ReleaseError("Image size or SHA-256 does not match signed metadata")
         uploaded = datetime.now(timezone.utc).isoformat() if manual else None
@@ -144,7 +157,13 @@ class FirmwareStore:
                 (info.board, info.version),
             ).fetchone()
             if row and (row["metadata"], row["signature"]) != (release.metadata, release.signature):
-                raise ReleaseError("A different signed release already uses that board and version")
+                try:
+                    verify_release(row["metadata"].encode(), row["signature"], RELEASE_PUBLIC_KEY)
+                except ReleaseError:
+                    db.execute("DELETE FROM firmware_releases WHERE board=? AND version=?", (info.board, info.version))
+                    row = None
+                else:
+                    raise ReleaseError("A different signed release already uses that board and version")
             if row is None:
                 db.execute(
                     "INSERT INTO firmware_releases VALUES (?,?,?,?,?,?)",
@@ -157,13 +176,21 @@ class FirmwareStore:
                 )
             self._prune(db)
 
-    def retain_devices(self, active_devices):
+    def retain_devices(self, active_devices, *, now=None):
         with closing(self.connect()) as db, db:
             db.execute("BEGIN IMMEDIATE")
-            known = {row["device"] for row in db.execute("SELECT DISTINCT device FROM firmware_devices")}
-            stale = known.difference(active_devices)
-            if stale:
-                db.executemany("DELETE FROM firmware_devices WHERE device=?", [(device,) for device in stale])
+            if active_devices:
+                known = {row["device"] for row in db.execute("SELECT DISTINCT device FROM firmware_devices")}
+                removed = sum(
+                    db.execute("DELETE FROM firmware_devices WHERE device=?", (device,)).rowcount
+                    for device in known.difference(active_devices)
+                )
+            else:
+                cutoff = (now or datetime.now(timezone.utc)) - DEVICE_RETENTION
+                removed = db.execute(
+                    "DELETE FROM firmware_devices WHERE last_seen < ?", (cutoff.isoformat(),)
+                ).rowcount
+            if removed:
                 self._prune(db)
 
     def cached_metadata(self, release):
@@ -175,13 +202,22 @@ class FirmwareStore:
 
     def image(self, name):
         match = IMAGE_NAME.fullmatch(name)
-        if match is None:
+        if match is None or not firmware_updates_enabled():
             return None
         with closing(self.connect()) as db:
             row = db.execute(
-                "SELECT image FROM firmware_releases WHERE board=? AND version=?", match.groups()
+                "SELECT metadata, signature, image FROM firmware_releases WHERE board=? AND version=?", match.groups()
             ).fetchone()
-            return row["image"] if row else None
+            if row is None:
+                return None
+            try:
+                info = verify_release(row["metadata"].encode(), row["signature"], RELEASE_PUBLIC_KEY)
+            except ReleaseError:
+                return None
+            image = row["image"]
+            if (info.board, info.version) == match.groups() and info.matches_image(len(image), hashlib.sha256(image).digest()):
+                return image
+            return None
 
     def boards(self, device):
         with closing(self.connect()) as db:
@@ -205,11 +241,13 @@ class FirmwareStore:
             ):
                 raise ReleaseError("This firmware update is no longer available for the board")
             db.execute(
-                "UPDATE firmware_devices SET pending=?, pending_auto=0, approval=? WHERE board=? AND device=?",
+                "UPDATE firmware_devices SET pending=?, pending_auto=0, approval=?, result=NULL WHERE board=? AND device=?",
                 (release_version, secrets.token_hex(8), board, device),
             )
 
     def set_automatic(self, board, device, enabled):
+        if board == "lcd43b" and enabled:
+            raise ReleaseError("Confirm LCD firmware updates on the board")
         with closing(self.connect()) as db, db:
             updated = db.execute(
                 """UPDATE firmware_devices SET automatic=?,
@@ -236,21 +274,23 @@ class FirmwareStore:
             completed = False
             if result:
                 outcome, detail = result.split(":", 1)
-                if outcome == "rolled_back" and (
+                identified = approval is not None and result_approval == approval
+                legacy = device != OPEN_DEVICE and result_approval is None
+                if outcome == "rolled_back" and (identified or legacy) and (
                     rolled_back is None or version_tuple(detail) > version_tuple(rolled_back)
                 ):
                     rolled_back = detail
-                # Two installs of the same version can report identical results.
-                # New clients identify the approval so stale retries cannot clear a new one.
-                if (outcome in ("ok", "rolled_back") and detail == pending
-                        and (result_approval is None or result_approval == approval)):
+                # An open-mode completion needs the current approval ID, including
+                # when running telemetry would make the pending version ineligible.
+                if outcome in ("ok", "rolled_back") and detail == pending and (identified or legacy):
                     pending, pending_auto = None, 0
                     completed = True
             running_now = running or state["running"]
+            enabled = firmware_updates_enabled()
             eligible = {r.info.version: r for r in self._releases(db, board) if r.supports(running_now)}
-            if pending not in eligible:
+            if enabled and device != OPEN_DEVICE and pending not in eligible:
                 pending, pending_auto = None, 0
-            if pending is None and state["automatic"] and running and not completed:
+            if pending is None and board != "lcd43b" and state["automatic"] and running and not completed:
                 pending = next((
                     v for v in eligible if rolled_back is None or version_tuple(v) > version_tuple(rolled_back)
                 ), None)
@@ -260,11 +300,12 @@ class FirmwareStore:
             if pending is None:
                 approval = None
             db.execute(
-                """UPDATE firmware_devices SET running=?, result=?, pending=?, pending_auto=?, rolled_back=?, approval=?
+                """UPDATE firmware_devices SET running=?, result=?, pending=?, pending_auto=?, rolled_back=?, approval=?, last_seen=?
                    WHERE board=? AND device=?""",
-                (running_now, result or state["result"], pending, pending_auto, rolled_back, approval, board, device),
+                (running_now, result or state["result"], pending, pending_auto, rolled_back, approval,
+                 datetime.now(timezone.utc).isoformat(), board, device),
             )
-            return eligible[pending].manifest_entry(approval) if running and pending is not None else None
+            return eligible[pending].manifest_entry(approval) if running and pending in eligible else None
 
     def last_poll(self):
         with closing(self.connect()) as db:
@@ -319,7 +360,11 @@ def _github_releases(client):
             if not isinstance(item, dict) or not isinstance(item.get("tag_name"), str):
                 raise ValueError
             tag = item["tag_name"]
-            if not tag.startswith("v") or not VERSION.fullmatch(tag[1:]):
+            if not tag.startswith("v"):
+                continue
+            try:
+                order = version_tuple(tag[1:])
+            except ValueError:
                 continue
             if item.get("draft") or item.get("prerelease"):
                 continue
@@ -328,8 +373,9 @@ def _github_releases(client):
                 not isinstance(asset, dict) or not isinstance(asset.get("name"), str) for asset in assets
             ):
                 raise ValueError
-            candidates.append((tag[1:], {asset["name"] for asset in assets}))
-        return sorted(candidates, key=lambda candidate: version_tuple(candidate[0]), reverse=True)
+            candidates.append((order, tag[1:], {asset["name"] for asset in assets}))
+        candidates.sort(key=lambda candidate: candidate[0], reverse=True)
+        return [(tag, assets) for _, tag, assets in candidates]
     except (ValueError, RecursionError) as exc:
         if isinstance(exc, ReleaseError):
             raise
@@ -349,6 +395,8 @@ def _poll_error(exc):
 def poll_github(store, client, device, *, now=None):
     """Check recent public releases, retaining last-known-good images on errors."""
     now = now or datetime.now(timezone.utc)
+    if not firmware_updates_enabled():
+        return
     errors = []
     try:
         boards = store.boards(device)
@@ -379,6 +427,8 @@ def poll_github(store, client, device, *, now=None):
                     errors.append(f"{stem}: {exc}")
     except (httpx.HTTPError, ReleaseError) as exc:
         errors.append(_poll_error(exc))
+    except (OSError, sqlite3.Error):
+        errors.append("Firmware release check could not access the cache")
     error = "; ".join(errors[:5])
     if errors:
         log.warning("Firmware release check: %s", error)

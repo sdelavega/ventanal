@@ -118,10 +118,9 @@ def _clock(value, key):
     if not isinstance(value, str) or not re.fullmatch(r"[0-9]{2}:[0-9]{2}", value):
         raise ConfigError(f"{key}: expected HH:MM")
     try:
-        time.fromisoformat(value)
+        return time(*map(int, value.split(":")))
     except ValueError as exc:
         raise ConfigError(f"{key}: invalid time") from exc
-    return value
 
 
 def read_config_document(path: Path, backup_dir: Path | None = None) -> tuple[str, dict, Path | None]:
@@ -197,14 +196,10 @@ def validate_config(data: dict) -> Config:
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ConfigError("location.timezone: expected an IANA timezone") from exc
 
-    slots = []
-    for value in _strings(schedule.get("art_slots"), "schedule.art_slots"):
-        if not re.fullmatch(r"[0-9]{2}:[0-9]{2}", value):
-            raise ConfigError("schedule.art_slots: expected HH:MM times")
-        try:
-            slots.append(time.fromisoformat(value))
-        except ValueError as exc:
-            raise ConfigError("schedule.art_slots: invalid time") from exc
+    slots = [
+        _clock(value, "schedule.art_slots")
+        for value in _strings(schedule.get("art_slots"), "schedule.art_slots")
+    ]
 
     ignored = art.get("ignored", [])
     if not isinstance(ignored, list) or any(
@@ -293,8 +288,8 @@ def validate_config(data: dict) -> Config:
         screen_fit_only=art.get('screen_fit_only', False),
         credentials=credentials,
         https_host=shost, https_port=int(sport),
-        quiet_start=_clock(schedule.get("quiet_start", "23:00"), "schedule.quiet_start"),
-        quiet_end=_clock(schedule.get("quiet_end", "06:00"), "schedule.quiet_end"),
+        quiet_start=_clock(schedule.get("quiet_start", "23:00"), "schedule.quiet_start").isoformat(timespec="minutes"),
+        quiet_end=_clock(schedule.get("quiet_end", "06:00"), "schedule.quiet_end").isoformat(timespec="minutes"),
         ignored=tuple(ignored),
         zip=zip_code,
         latitude=latitude,

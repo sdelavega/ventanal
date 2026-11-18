@@ -33,6 +33,8 @@ CACHE_WRITERS = ('tick', 'serve', 'render-art', 'render-weather', 'skipped',
 def _release_command(parser, args):
     import hashlib
     import os
+    import re
+    from tempfile import NamedTemporaryFile
     from cryptography.hazmat.primitives import serialization
     from cryptography.hazmat.primitives.asymmetric.ed25519 import (
         Ed25519PrivateKey, Ed25519PublicKey,
@@ -51,6 +53,51 @@ def _release_command(parser, args):
             path.unlink()
             raise
 
+    def install_public_key():
+        key = serialization.load_pem_public_key(args.public_key.read_bytes())
+        if not isinstance(key, Ed25519PublicKey):
+            raise ValueError('Expected an Ed25519 public PEM file')
+        raw = key.public_bytes_raw()
+        if raw.hex() == release.TEST_RELEASE_PUBLIC_KEY_HEX:
+            raise ValueError('The public test key cannot be installed as an owner key')
+        root = Path.cwd()
+        header = root / 'firmware/common/release_key.h'
+        server = root / 'server/src/ventanal/release.py'
+        old_header = header.read_text()
+        old_server = server.read_text()
+        header_key = re.search(r'(?<=VENTANAL_RELEASE_PUBLIC_KEY\[32\] = \{\n)[^}]+', old_header)
+        server_key = re.search(r'^RELEASE_PUBLIC_KEY_HEX = "([0-9a-f]{64})"$', old_server, re.MULTILINE)
+        if not header_key or not server_key:
+            raise ValueError('Could not locate both active key declarations in this checkout')
+        old_firmware_key = ''.join(re.findall(r'0x([0-9a-f]{2})', header_key[0]))
+        if old_firmware_key != server_key[1] and raw.hex() not in (old_firmware_key, server_key[1]):
+            raise ValueError('The firmware and server use different active keys; check the source files first')
+        # Re-running with the same public key also completes an interrupted install.
+        rows = ''.join(
+            '    ' + ', '.join(f'0x{byte:02x}' for byte in raw[i:i+8]) + ',\n'
+            for i in range(0, len(raw), 8)
+        )
+        updated_header = old_header[:header_key.start()] + rows + old_header[header_key.end():]
+        updated_server = old_server[:server_key.start(1)] + raw.hex() + old_server[server_key.end(1):]
+        def replace(path, content):
+            with NamedTemporaryFile(dir=path.parent, mode='w', delete=False, encoding='utf-8') as tmp:
+                staging = Path(tmp.name)
+                try:
+                    tmp.write(content)
+                    tmp.close()
+                    staging.chmod(path.stat().st_mode & 0o777)
+                    staging.replace(path)
+                finally:
+                    staging.unlink(missing_ok=True)
+
+        replace(header, updated_header)
+        try:
+            replace(server, updated_server)
+        except OSError:
+            replace(header, old_header)
+            raise
+        print(f'Installed public key in {header.relative_to(root)} and {server.relative_to(root)}')
+
     try:
         if args.release_command == 'keygen':
             key = Ed25519PrivateKey.generate()
@@ -65,7 +112,10 @@ def _release_command(parser, args):
             except BaseException:
                 args.private_key.unlink()
                 raise
+            print(f'Wrote offline private PEM {args.private_key} and public PEM {args.public_key}')
             return
+        if args.release_command == 'install-public-key':
+            return install_public_key()
 
         json_bytes = args.metadata.read_bytes()
         signature_path = args.signature or args.metadata.with_suffix(args.metadata.suffix + '.sig')
@@ -139,6 +189,10 @@ def main(argv=None):
     keygen = release_commands.add_parser('keygen', help='Create an Ed25519 release keypair')
     keygen.add_argument('private_key', type=Path, help='New private PEM file to keep offline')
     keygen.add_argument('public_key', type=Path, help='New public PEM file')
+    install = release_commands.add_parser(
+        'install-public-key', help='Install the owner public key in firmware and server from the checkout root',
+    )
+    install.add_argument('public_key', type=Path, help='Ed25519 public PEM from keygen')
     sign = release_commands.add_parser('sign', help='Sign canonical release metadata')
     verify = release_commands.add_parser('verify', help='Verify signed release metadata')
     for command in (sign, verify):

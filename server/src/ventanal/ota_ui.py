@@ -7,6 +7,7 @@ from email.policy import default
 from urllib.parse import urlsplit
 
 from ventanal.ota import MAX_METADATA, SLOT_SIZE
+from ventanal.release import firmware_updates_enabled
 from ventanal.ui import e, form
 
 MAX_UPLOAD = SLOT_SIZE + 16384
@@ -63,7 +64,9 @@ def body(store, device, token, checking):
         parts.append(f"<p>Last GitHub check {e(checked)} UTC</p>")
         if last["error"]:
             parts.append(f'<p class="error" role="status">{e(last["error"])}</p>')
-    parts.append(form("/updates/check", token, "", "Check for updates"))
+    enabled = firmware_updates_enabled()
+    if enabled:
+        parts.append(form("/updates/check", token, "", "Check for updates"))
     boards = store.boards(device)
     if not boards:
         parts.append("<p>No board has checked in with a board ID.</p>")
@@ -75,7 +78,7 @@ def body(store, device, token, checking):
             parts.append(f'<p>Last OTA result {e(state["result"])}</p>')
         if state["pending"]:
             parts.append(f'<p>Approved to install {e(state["pending"])}</p>')
-        if releases:
+        if enabled and releases:
             latest = releases[0]
             uploaded = max((r for r in releases if r.uploaded), key=lambda r: r.uploaded, default=None)
             choices = [("Update available", latest)]
@@ -84,12 +87,18 @@ def body(store, device, token, checking):
             for label, release in choices:
                 available = release.info.version
                 parts.append(f'<p>{label}: {e(available)}{notes_link(release.info.notes_url)}</p>')
-                if available != state["pending"]:
+                exhausted = (state["result"] or "").startswith("failed:attempts")
+                if available != state["pending"] or exhausted:
                     install = fields + f'<input type="hidden" name="version" value="{e(available)}">'
                     parts.append(form("/updates/install", token, install, "Install"))
-        checked = " checked" if state["automatic"] else ""
-        auto = fields + f'<label class="checkbox-row"><input type="checkbox" name="automatic" value="yes"{checked}><span>Install automatically</span></label>'
-        parts.append(form("/updates/automatic", token, auto, "Save update preference"))
+        if board == "lcd43b":
+            parts.append("<p>Confirm installation on the LCD.</p>")
+        elif enabled:
+            checked = " checked" if state["automatic"] else ""
+            auto = fields + f'<label class="checkbox-row"><input type="checkbox" name="automatic" value="yes"{checked}><span>Install automatically</span></label>'
+            parts.append(form("/updates/automatic", token, auto, "Save update preference"))
+    if not enabled:
+        return "".join(parts) + "</section>"
     parts.append(
         '<form method="post" action="/updates/upload" enctype="multipart/form-data">'
         f'<input type="hidden" name="csrf" value="{e(token)}">'

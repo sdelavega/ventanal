@@ -51,7 +51,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
 
     from ventanal.status import BoardStore, parse_board
     if config_path is not None:
-        from ventanal.ota import OPEN_DEVICE
         from ventanal.ui import UI
         cfg = load_config(config_path)
         ui = UI(config_path, cache_dir, rerender)
@@ -153,13 +152,17 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     report = parse_board(query)
                     board_store.checkin(self.client_address[0], report, timeout=1)
                     if ui is not None:
-                        device = self.pairing_id
-                        if device is None and ui.auth.mode == 'none':
-                            device = OPEN_DEVICE
-                        firmware = ui.firmware.checkin(
-                            report.get('board'), device, report.get('fw'), report.get('ota'),
-                            report.get('ota_approval'),
-                        )
+                        # Share the identity locks with stale approval cleanup.
+                        with ui.auth.lock, ui.security.lock:
+                            device = ui.firmware_device()
+                            valid_transport = self.pairing_id == device or (
+                                self.pairing_id is None and ui.auth.mode == 'none'
+                            )
+                            if device is not None and valid_transport:
+                                firmware = ui.firmware.checkin(
+                                    report.get('board'), device, report.get('fw'), report.get('ota'),
+                                    report.get('ota_approval'),
+                                )
                 except sqlite3.Error:
                     logging.getLogger(__name__).warning('Unable to record board check-in')
             if path == '/manifest.json':
