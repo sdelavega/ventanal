@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 #include "logic.h"
+#include "ota.h"
 #include <cstdio>
 bool wifiConnect(uint32_t timeoutMs = 15000);
 bool syncTime();
@@ -12,10 +13,13 @@ struct ManifestExtras { ScreenInfo solar{}; ScreenInfo spares[3]{}; uint8_t coun
 inline ManifestExtras manifestExtras;
 inline char manifestSkipQuery[280]{};
 
-inline constexpr char VENTANAL_FIRMWARE_VERSION[] = "1.0.0";
+#ifndef VENTANAL_FIRMWARE_VERSION
+#define VENTANAL_FIRMWARE_VERSION "1.0.0"
+#endif
 inline constexpr char VENTANAL_BOARD_ID[] = "inkplate13spectra";
-inline char manifestBoardQuery[160]{};
-inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0) {
+inline char manifestBoardQuery[192]{};
+inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0,
+                           const OtaRecord& ota={}) {
     if(pct<0 || pct>100 || (strcmp(screen,"art") && strcmp(screen,"weather") && strcmp(screen,"solar") && strncmp(screen,"extra-",6))) {
         manifestBoardQuery[0]=0; return;
     }
@@ -27,5 +31,11 @@ inline void setBoardReport(int pct, const char* screen, const char* frame, int m
     if(millivolts>0) {
         const size_t used=strlen(manifestBoardQuery);
         snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&bat_mv=%d",millivolts);
+    }
+    char report[otaReportCapacity];
+    formatOtaReport(report,ota);
+    if(report[0]) {
+        const size_t used=strlen(manifestBoardQuery);
+        snprintf(manifestBoardQuery+used,sizeof manifestBoardQuery-used,"&ota=%s",report);
     }
 }

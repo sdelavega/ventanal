@@ -87,6 +87,7 @@ constexpr bool statelostForce=false;
 Inkplate display;
 // Retain the existing wdt-count NVS key so upgrades keep their strikes.
 uint8_t watchdogResets=0;
+bool otaPendingBoot=false;
 namespace {
 bool isWatchdogReset(esp_reset_reason_t reason) {
     return reason==ESP_RST_TASK_WDT || reason==ESP_RST_INT_WDT || reason==ESP_RST_WDT;
@@ -454,6 +455,7 @@ void sleepHardware(uint32_t seconds, bool allowWake) {
     }
     Serial.printf("stack min-free bytes=%u\n",unsigned(uxTaskGetStackHighWaterMark(nullptr)));
     Serial.flush();
+    if(otaPendingBoot) rollbackOtaBoot();
     esp_deep_sleep_start();
 }
 #if VENTANAL_STALLTEST
@@ -543,14 +545,17 @@ void setup() {
     WakeCause wake=raw==ESP_SLEEP_WAKEUP_EXT0 ? WakeCause::Button :
                    raw==ESP_SLEEP_WAKEUP_TIMER ? WakeCause::Timer : WakeCause::ColdBoot;
     const auto reset=esp_reset_reason();
-    bool ponRetry=pendingPanel.magic==ponMagic && pendingPanel.kind!=2 &&
+    Preferences prefs;
+    const bool persisted=prefs.begin("ventanal",false);
+    auto otaBoot=readOtaBoot(prefs,persisted);
+    otaPendingBoot=otaBoot.pending;
+    bool ponRetry=!otaBoot.rolledBack && !otaPendingBoot && pendingPanel.magic==ponMagic && pendingPanel.kind!=2 &&
         ponRetryBoot(reset==ESP_RST_SW,pendingPanel.attempts) &&
         pendingPanel.stateChecksum==panelChecksum();
     if(!ponRetry) { pendingPanel.magic=0; completePonRetry(pendingPanel.attempts); }
-    const bool abnormal=isAbnormalReset(reset);
+
+    const bool abnormal=isAbnormalReset(reset) && !otaBoot.rolledBack && !otaBoot.pending;
     wake=wakeAfterReset(wake,abnormal);
-    Preferences prefs;
-    const bool persisted=prefs.begin("ventanal",false);
     watchdogResets=0;
     if(persisted) prefs.getBytes("wdt-count", &watchdogResets, sizeof watchdogResets);
     const bool skip=watchdogLimit(abnormal,watchdogResets);
@@ -764,8 +769,12 @@ void setup() {
         sleepFor(60,state); return;
     }
     bool mounted=LittleFS.begin(false,"/littlefs",10,"littlefs");
-    if(!mounted && persisted && canProvisionCache()) {
-        Serial.println("cache provisioning=mount-failed-no-state");
+    // A wired migration moves LittleFS but preserves the cached NVS state.
+    // Allow initialization at the new offset once, then preserve mount failures.
+    constexpr char cacheLayoutKey[]="cache-ota";
+    const bool newCacheLayout=persisted && otaCacheLayout() && !prefs.isKey(cacheLayoutKey);
+    if(!mounted && persisted && (newCacheLayout || canProvisionCache())) {
+        Serial.println(newCacheLayout?"cache provisioning=ota-layout":"cache provisioning=mount-failed-no-state");
         mounted=LittleFS.begin(true,"/littlefs",10,"littlefs");
         if(!mounted) {
             // Keep the provisioning path available on the next wake.
@@ -777,6 +786,15 @@ void setup() {
             return;
         }
         wake=WakeCause::ColdBoot;
+    }
+    if(mounted && newCacheLayout) {
+        const uint8_t initialized=1;
+        if(prefs.putBytes(cacheLayoutKey,&initialized,sizeof initialized)!=sizeof initialized)
+            Serial.println("error=cache-layout-save");
+    }
+    if(mounted && state.owner.overrideArt.id[0] && !LittleFS.exists("/override.vnf")) {
+        state.owner.overrideArt={};
+        state.owner.cursor=-1;
     }
     if(!mounted) Serial.println("error=cache-mount");
 #if VENTANAL_ERASE_CACHE
@@ -813,8 +831,9 @@ void setup() {
     }
 #endif
     bool offline=false;
+    bool manifestOk=false;
     uint32_t start=millis();
-    if(wake!=WakeCause::Button || longPress) {
+    if(wake!=WakeCause::Button || longPress || otaPendingBoot) {
         const bool online=wifiConnect();
         Serial.printf("wifi ms=%lu\n",static_cast<unsigned long>(millis()-start));
         start=millis(); syncTime();
@@ -823,10 +842,12 @@ void setup() {
         ScreenInfo art{},weather{};
         // Report the frame currently on the panel, before any downloads/draw.
         setBoardReport(pct,screenName(state),
-                       state.drawn.any?selectedDrawn(state):"",batteryMv);
+                       state.drawn.any?selectedDrawn(state):"",batteryMv,otaBoot.record);
         state.owner.queue.query(manifestSkipQuery,sizeof manifestSkipQuery);
-        offline=!(online && fetchManifest(art,weather));
-        if(!offline) {
+        manifestOk=online && fetchManifest(art,weather);
+        offline=!manifestOk;
+        if(manifestOk) {
+            if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
             if(persisted && !storeBattery(prefs,manifestBatteryFullMv)) Serial.println("error=battery-calibration-save");
             if(!persisted) batteryFullMv=manifestBatteryFullMv;
             pct=batteryPercent(correctBattery(rawVolts));
@@ -843,6 +864,9 @@ void setup() {
         Serial.printf("manifest ok=%d ms=%lu\n",!offline,static_cast<unsigned long>(millis()-start));
         start=millis();
         if(!offline && persisted && quietHours.valid()) storeQuiet(prefs,quietHours);
+        if(online && persisted && mounted)
+            tryOta(prefs,otaBoot,manifestOk,pct,
+                   quietStart(VENTANAL_QUIET_START),quietEnd(VENTANAL_QUIET_END));
         if(!offline && mounted) {
             // All eight slots share an absolute wake deadline, measured from
             // watchdog arming. Never feed the watchdog, including during display.
@@ -944,7 +968,7 @@ void setup() {
     const bool cached=mounted && LittleFS.exists(path);
     const bool redraw=longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));
     start=millis();
-    if(!cached || redraw) {
+    if(!cached || redraw || otaPendingBoot) {
         const bool ready=cached && blitFrame(path,display);
         Serial.printf("blit ms=%lu valid=%d\n",static_cast<unsigned long>(millis()-start),ready);
         if(ready) {
@@ -963,8 +987,11 @@ void setup() {
             Serial.println("draw=waiting-for-host");
         }
         start=millis(); refreshPanel();
-        clearWatchdogCount(prefs);
-        if(chargeAttempted) storeChargeMarker(prefs,0);
+        if(otaPendingBoot && confirmOtaBoot(prefs,otaBoot,manifestOk,ready)) otaPendingBoot=false;
+        if(!otaPendingBoot) {
+            clearWatchdogCount(prefs);
+            if(chargeAttempted) storeChargeMarker(prefs,0);
+        }
         Serial.printf("display ms=%lu\n",static_cast<unsigned long>(millis()-start));
         state.drawn.any=ready;
         if(ready) {

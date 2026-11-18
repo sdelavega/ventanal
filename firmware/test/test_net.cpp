@@ -35,6 +35,22 @@ int main() {
     assert(lastUrl.find("bat=0&screen=weather&fw=1.0.0")!=std::string::npos);
     assert(lastUrl.find("frame=")==std::string::npos);
     assert(lastUserAgent == "Ventanal/1.0.0");
+
+    OtaRecord result{OtaResult::RolledBack, OtaFailure::None, 0x11, "65535.65535.65535"};
+    setBoardReport(50, "weather", "", 3800, result);
+    assert(fetchManifest(a,w));
+    assert(lastUrl.find("&bat_mv=3800&ota=rolled_back:65535.65535.65535")!=std::string::npos);
+    responseBody.insert(1, R"("firmware":{"release":"{\"board\":\"inkplate13spectra\"}","sig":"signed","path":"/firmware/inkplate13spectra-2.0.0.bin"},)");
+    advertisedSize=responseBody.size();
+    assert(fetchManifest(a,w));
+    assert(!strcmp(manifestFirmware.release,R"({"board":"inkplate13spectra"})"));
+    assert(!strcmp(manifestFirmware.signature,"signed"));
+    assert(!strcmp(manifestFirmware.path,"/firmware/inkplate13spectra-2.0.0.bin"));
+    responseBody=replace(responseBody, "signed", R"(sig\u0000ned)");
+    advertisedSize=responseBody.size();
+    assert(fetchManifest(a,w) && !manifestFirmware.release[0]);
+    manifest(art,screen);
+    assert(fetchManifest(a,w) && !manifestFirmware.release[0]);
     assert(!a.readout.lcars && w.readout.lcars && w.readout.x==1236);
     assert(a.readout.x==1020 && a.readout.y==0 && a.readout.w==580 && a.readout.h==104);
     assert(std::string(w.id)=="0123456789abcdef");

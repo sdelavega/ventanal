@@ -50,13 +50,20 @@ skip those unused artifacts (used during this task's verification).
 32 MB flash, OPI flash at 80 MHz, OPI PSRAM (16 MB fitted), UART0 serial,
 CDC on boot disabled. `PartitionScheme=custom` selects the sketch's CSV;
 the build's application-size limit is overridden to 4194304 below to match its
-4 MiB factory slot.
+4 MiB OTA slots.
 
 The local `partitions.csv` overrides the menu partition table. NVS: 0x9000/24K;
-otadata: 0xf000/8K; factory app: 0x20000/4M; LittleFS: 0x420000/0x1bd0000
-(27.8125 MiB); coredump: 0x1ff0000/64K. End: 0x2000000 (32 MiB).
-The gap before app0 permits 64K app alignment. No OTA app slot is provided.
-LittleFS explicitly mounts the `littlefs` label, using the required `spiffs` subtype.
+otadata at 0xf000/8K, `ota_0` at 0x20000/4M, `ota_1` at 0x420000/4M,
+LittleFS at 0x820000/0x17d0000, and coredump at 0x1ff0000/64K.
+Moving from the factory layout requires a wired upload to seed `ota_0`.
+The device initializes the relocated LittleFS and downloads its frames again.
+Pairing and counters stay in NVS.
+
+`VENTANAL_OTA_GITHUB=1` enables diagnostic checks of the latest GitHub release
+at most once a week. It uses the ESP-IDF certificate bundle and applies the
+same signed-image checks and battery and quiet-hours gates as host offers.
+The first boot of an updated image requires Wi-Fi, a valid host manifest, and
+a completed frame refresh.
 
 ## Modes and hardware checks
 

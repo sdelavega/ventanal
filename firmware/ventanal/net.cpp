@@ -93,6 +93,9 @@ bool parseScreen(JsonVariantConst value, ScreenInfo& result) {
 }
 
 bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
+    manifestFirmware.release[0] = '\0';
+    manifestFirmware.signature[0] = '\0';
+    manifestFirmware.path[0] = '\0';
     TransportClient localClient;
     auto& client=requestClient(localClient);
     HTTPClient localHttp;
@@ -186,6 +189,18 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather) {
     else if(doc["battery"]["full_mv"].is<int>() && validBatteryFull(doc["battery"]["full_mv"].as<int>()))
         manifestBatteryFullMv=doc["battery"]["full_mv"].as<int>();
     else manifestBatteryFullMv=batteryFullMv;
+    const auto firmware = doc["firmware"];
+    auto copyField = [&](const char* key, char* dst, size_t capacity) {
+        const auto value = firmware[key].as<JsonString>();
+        if (value.isNull() || !value.size() || value.size() >= capacity
+            || strlen(value.c_str()) != value.size()) return false;
+        memcpy(dst, value.c_str(), value.size() + 1);
+        return true;
+    };
+    if (copyField("release", manifestFirmware.release, sizeof manifestFirmware.release)
+        && (!copyField("sig", manifestFirmware.signature, sizeof manifestFirmware.signature)
+            || !copyField("path", manifestFirmware.path, sizeof manifestFirmware.path)))
+        manifestFirmware.release[0] = '\0';
     manifestExtras=extras;
     art = a;
     weather = w;

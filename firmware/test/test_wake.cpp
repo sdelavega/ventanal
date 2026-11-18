@@ -6,6 +6,7 @@
 #include "../ventanal/overlay.h"
 #include <Preferences.h>
 #include <esp_sleep.h>
+#include <esp_system.h>
 #include <vector>
 static int connections=0, manifests=0, downloads=0, readouts=0, waiting=0, charges=0;
 static bool online=true, frameOK=true, offlineDraw=false;
@@ -26,6 +27,19 @@ static int readoutPct=0;
 void drawReadout(Inkplate&,const ReadoutRect& rect,int pct,bool offline,bool,time_t at,bool) { lastReadout=rect; ++readouts;offlineDraw=offline;readoutTime=at;readoutPct=pct; }
 void drawWaiting(Inkplate&,const char*) { ++waiting; }
 void drawChargeMe(Inkplate&) { ++charges; }
+static OtaBoot simulatedOtaBoot;
+static bool otaLayout=false;
+static unsigned otaConfirmations=0;
+OtaBoot readOtaBoot(Preferences&, bool) { return simulatedOtaBoot; }
+void acknowledgeOtaReport(Preferences&, OtaBoot&) {}
+bool confirmOtaBoot(Preferences&, OtaBoot& boot, bool manifestOk, bool screenDrawn) {
+    if(!otaCanConfirm(boot.pending,boot.matching,manifestOk,screenDrawn)) return false;
+    ++otaConfirmations;
+    return true;
+}
+void rollbackOtaBoot() { esp_restart(); }
+bool otaCacheLayout() { return otaLayout; }
+void tryOta(Preferences&, const OtaBoot&, bool, int, int, int) {}
 #include "../ventanal/ventanal.ino"
 static void simulateBoot(esp_reset_reason_t reason) {
     fakeReset=reason;
@@ -215,6 +229,54 @@ int main() {
     wake(0);
     assert(LittleFS.formatAttempts==4 && preferences.count("state13"));
     assert(downloads==priorDownloads+2 && blitted=="/weather.vnf");
+    // A wired move initializes the new cache even with the old NVS state.
+    otaLayout=true;
+    State oldCacheState{};
+    memcpy(&oldCacheState,preferences.at("state13").data(),sizeof oldCacheState);
+    oldCacheState.active=Screen::Art;
+    oldCacheState.owner.overrideArt=art;
+    oldCacheState.owner.cursor=1;
+    std::vector<uint8_t> oldStateBytes(sizeof oldCacheState);
+    memcpy(oldStateBytes.data(),&oldCacheState,sizeof oldCacheState);
+    preferences["state13"]=oldStateBytes;
+    LittleFS.failBegin=true;
+    simulateBoot(ESP_RST_POWERON);
+    wake(0);
+    assert(LittleFS.formatAttempts==5 && preferences.count("cache-ota"));
+    assert(preferences.count("state13") && files.count("/weather.vnf"));
+    State migratedState{};
+    memcpy(&migratedState,preferences.at("state13").data(),sizeof migratedState);
+    assert(blitted=="/art.vnf" && !migratedState.owner.overrideArt.id[0]);
+    LittleFS.failBegin=true;
+    wake(0);
+    assert(LittleFS.formatAttempts==5);
+    LittleFS.failBegin=false;
+
+    // Confirm after a completed frame refresh on the new slot.
+    simulatedOtaBoot.pending=simulatedOtaBoot.matching=true;
+    simulateBoot(ESP_RST_SW);
+    displayHook=[] { assert(otaConfirmations==0); };
+    wake(0);
+    displayHook={};
+    assert(otaConfirmations==1 && !otaPendingBoot);
+
+    // A cached frame drawn offline can't confirm the new app.
+    online=false;
+    preferences["wdt-count"]={1};
+    simulateBoot(ESP_RST_SW);
+    try { wake(0); assert(false); } catch(const Restarting&) {}
+    assert(otaConfirmations==1 && otaPendingBoot && preferences.at("wdt-count").at(0)==1);
+    online=true;
+
+    // The old slot must recover even when the failed image tripped a watchdog
+    // and the stored count would otherwise block a normal draw.
+    simulatedOtaBoot={};
+    simulatedOtaBoot.rolledBack=true;
+    preferences["wdt-count"]={2};
+    simulateBoot(ESP_RST_TASK_WDT);
+    before=connections;
+    wake(0);
+    assert(connections==before+1 && preferences.at("wdt-count").at(0)==0);
     puts("wake cycle: cache provisioning and preservation, reset strikes, charge latch and normal draw passed");
     return 0;
 }
