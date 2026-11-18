@@ -21,6 +21,7 @@ from ventanal.owner import SkipQueue, parse_skips
 
 
 MAX_TLS_CONNECTIONS = 32
+DEVICE_PATH = re.compile(r'/devices/([a-z0-9-]{1,15})/')
 
 
 def allowed_host(headers, names):
@@ -101,6 +102,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 super().handle_expect_100()
 
         def transport(self):
+            self.proof_key = None
+            self.pairing_id = None
             if not active(): return True
             path = unquote(urlsplit(self.path).path)
             board = (path == '/manifest.json' or path.startswith('/frames/')
@@ -114,13 +117,20 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     authority = f'[{hostname}]' if ':' in hostname else hostname
                     ui.respond(self, 308, location=f'https://{authority}:{server.tls_server.server_address[1]}'+self.path)
                 return False
-            if board and (len(self.headers.get_all('Authorization', [])) != 1 or
-                          len(self.headers.get_all('X-Ventanal-Counter', [])) != 1 or
-                          not ui.security.accept(self.command, self.path, self.headers)):
-                logging.getLogger(__name__).info('Board proof rejected')
-                self.send_error(403); return False
             if board:
-                logging.getLogger(__name__).info('Board proof accepted counter=%s', self.headers['X-Ventanal-Counter'])
+                profile = DEVICE_PATH.match(path)
+                if (len(self.headers.get_all('Authorization', [])) == 1
+                        and len(self.headers.get_all('X-Ventanal-Counter', [])) == 1
+                        and len(self.headers.get_all('X-Ventanal-Device', [])) == (1 if profile else 0)
+                        and (profile or not path.startswith('/devices/'))):
+                    self.proof_key = ui.security.authenticate(
+                        self.command, self.path, self.headers, profile[1] if profile else None)
+                if self.proof_key is None:
+                    logging.getLogger(__name__).info('Board proof rejected')
+                    self.send_error(403)
+                    return False
+                self.pairing_id = self.headers.get('X-Ventanal-Device')
+                logging.getLogger(__name__).info('Board proof accepted')
             return True
 
         def do_GET(self):
@@ -132,8 +142,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnf|previews/[A-Za-z0-9_-]+\.png|devices/[a-z0-9-]+/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnr))', path):
                 self.send_error(404)
                 return
-            if (cache_dir is not None and (path == '/manifest.json'
-                    or re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path))):
+            device_manifest = re.fullmatch(r'/devices/([a-z0-9-]+)/manifest\.json', path)
+            if cache_dir is not None and (path == '/manifest.json' or device_manifest):
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                 values = query.get('skips', [])
                 if values:
@@ -144,7 +154,11 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         self.send_error(503)
                         return
                 try:
-                    board_store.checkin(self.client_address[0], parse_board(query), timeout=1)
+                    if device_manifest:
+                        board_store.checkin_lcd(self.pairing_id or device_manifest[1],
+                                               self.client_address[0], parse_board(query), timeout=1)
+                    else:
+                        board_store.checkin(self.client_address[0], parse_board(query), timeout=1)
                 except sqlite3.Error:
                     logging.getLogger(__name__).warning('Unable to record board check-in')
             if path == '/manifest.json':
@@ -165,7 +179,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         manifest.pop('battery', None)
                         if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
                     omit_board_credits(manifest)
-                    if active(): manifest = ui.security.manifest(manifest, root)
+                    if self.proof_key is not None:
+                        manifest = ui.security.manifest(manifest, root, key=self.proof_key)
                     body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
                 except FileNotFoundError:
                     self.send_error(404 if ui is None else 503); return
@@ -189,8 +204,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     except (ConnectionError, TimeoutError):
                         pass
                 return
-            if (ui is not None and config_path is not None
-                    and re.fullmatch(r'/devices/[a-z0-9-]+/manifest\.json', path)):
+            if ui is not None and device_manifest:
                 # Device manifests re-check the ham licence on every
                 # request, fail closed like the main manifest above: a
                 # solar screen published while authorised must stop being
@@ -213,8 +227,16 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 screens = manifest.get('screens')
                 if not solar_allowed(load_config(config_path)) and isinstance(screens, dict):
                     screens.pop('solar', None)
-                body = json.dumps(manifest, ensure_ascii=False,
-                                  separators=(',', ':')).encode()
+                try:
+                    if self.proof_key is not None:
+                        omit_board_credits(manifest)
+                        manifest = ui.security.manifest(manifest, root, key=self.proof_key,
+                                                        profile=device_manifest[1])
+                    body = json.dumps(manifest, ensure_ascii=False, separators=(',', ':')).encode()
+                except (OSError, ValueError, KeyError, TypeError, AttributeError):
+                    self.send_error(503); return
+                if self.proof_key is not None and len(body) > MAX_SERVED_MANIFEST_BYTES:
+                    ui.respond(self, 503); return
                 ui.respond(self, 200, body, 'application/json'); return
             if active() and path.startswith('/previews/'):
                 ui.handle(self, path); return
@@ -233,7 +255,8 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 suffix = target.suffix
                 self.send_header('Content-Type', {'.json': 'application/json', '.vnf': 'application/octet-stream', '.vnr': 'application/octet-stream', '.png': 'image/png'}[suffix])
                 self.send_header('Content-Length', str(source.seek(0, 2)))
-                self.send_header('Cache-Control', 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable')
+                self.send_header('Cache-Control', 'no-store' if self.proof_key is not None else
+                                 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable')
                 self.end_headers()
                 source.seek(0)
                 try:

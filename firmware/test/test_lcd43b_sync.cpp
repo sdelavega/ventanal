@@ -629,22 +629,22 @@ int main() {
         assert(prefs.begin("ventanal", false));
         lcd::DeviceManifest published;         // what the last online sync stored
         published.quietStart = 1380;            // 23:00 local
-        published.quietEnd = 360;               // 06:00 local
+        published.quietEnd = 240;               // 04:00 local
         lcd::saveQuiet(prefs, published);
         lcd::DeviceManifest rebooted;           // fresh boot: NVS only, no network
         assert(lcd::loadQuiet(prefs, rebooted));
         // setup() initialises the configured timezone before any refresh.
         lcd::configureTimezone();
         assert(fakeTz == VENTANAL_TZ);
-        // Retained RTC: 2026-11-17 06:30 UTC, synced before the reboot.
+        // Retained RTC: 2026-11-17 04:30 UTC, synced before the reboot.
         std::tm utc{};
         utc.tm_year = 2026 - 1900;
         utc.tm_mon = 10;
         utc.tm_mday = 17;
-        utc.tm_hour = 6;
+        utc.tm_hour = 4;
         utc.tm_min = 30;
         const time_t instant = timegm(&utc);
-        setenv("TZ", fakeTz.c_str(), 1);       // MST (UTC-7) in November
+        setenv("TZ", fakeTz.c_str(), 1);       // EST (UTC-5) in November
         tzset();
         std::tm local{};
         localtime_r(&instant, &local);

@@ -76,9 +76,8 @@ inline bool parseFrameInfo(JsonVariantConst value, FrameInfo& out) {
 }
 
 // Validate and copy a device manifest document; false leaves out untouched.
-inline bool parseDeviceManifest(const char* body, DeviceManifest& out) {
-    JsonDocument doc;
-    if (deserializeJson(doc, body) || (doc["version"] | 0) != 1) return false;
+inline bool parseDeviceManifest(JsonVariantConst doc, DeviceManifest& out) {
+    if ((doc["version"] | 0) != 1) return false;
     DeviceManifest parsed;
     parsed.clock24h = doc["clock_24h"] | true;
     if (!parseFrameInfo(doc["screens"]["art"], parsed.screens[0])) return false;
@@ -100,6 +99,11 @@ inline bool parseDeviceManifest(const char* body, DeviceManifest& out) {
     }
     out = parsed;
     return true;
+}
+
+inline bool parseDeviceManifest(const char* body, DeviceManifest& out) {
+    JsonDocument doc;
+    return !deserializeJson(doc, body) && parseDeviceManifest(doc.as<JsonVariantConst>(), out);
 }
 
 // Quiet hours: equal endpoints disable quiet; a wrapped window (start after

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "../ventanal/security.h"
 #include "../ventanal/manifest_security.h"
+#include "../lcd43b/transport.h"
 #include <cassert>
 #include <fstream>
 #include <iostream>
@@ -28,5 +29,44 @@ int main() {
     JsonDocument doc; deserializeJson(doc,"{\"z\":1,\"a\":{\"title\":\"Árbol\",\"list\":[2,null,true]}}");
     assert(canonicalJson(doc.as<JsonVariantConst>())=="{\"a\":{\"list\":[2,null,true],\"title\":\"Árbol\"},\"z\":1}");
     assert(!verifyManifest(doc));
+
+    const std::string lcdKey(32, '\0');
+    HTTPClient http;
+    const auto lcdProof = proof["lcd"];
+    const auto path = lcdProof["path"].as<const char*>();
+    assert(!lcd::addPairedHeaders(http, lcdKey, "bad ID", path));
+    assert(lcd::addPairedHeaders(http, lcdKey, "test-lcd", path));
+    assert(lastHeaders.at("X-Ventanal-Counter") == "1");
+    assert(lastHeaders.at("X-Ventanal-Device") == "test-lcd");
+    Preferences::failWriteKey = "lcd-sec-counter";
+    assert(!lcd::addPairedHeaders(http, lcdKey, "test-lcd", path));
+    Preferences::failWriteKey.clear();
+    assert(lcd::addPairedHeaders(http, lcdKey, "test-lcd", path));
+    assert(lastHeaders.at("X-Ventanal-Counter") == std::to_string(lcdProof["counter"].as<uint64_t>()));
+    assert(lastHeaders.at("Authorization") == std::string("Ventanal ") + lcdProof["mac"].as<const char*>());
+    assert(lcd::nextPairingCounter(std::string(32, 'x'), counter) && counter == 1);
+    preferences["lcd-sec-counter"] = {1, 2, 3};
+    assert(!lcd::nextPairingCounter(lcdKey, counter));
+
+    std::ifstream lcdInput("fixtures/lcd43b-signed-manifest.json");
+    assert(lcdInput);
+    const std::string body((std::istreambuf_iterator<char>(lcdInput)), {});
+    lcd::DeviceManifest manifest;
+    assert(!lcd::parseSignedDeviceManifest(body.c_str(), std::string(32, 'x'), manifest));
+    assert(!manifest.screens[0].present);
+    assert(lcd::parseSignedDeviceManifest(body.c_str(), lcdKey, manifest));
+    assert(manifest.screens[0].present && manifest.screens[1].present);
+    assert(!manifest.clock24h && manifest.quietStart == 1380);
+    JsonDocument tampered;
+    assert(!deserializeJson(tampered, body));
+    tampered["screens"]["art"]["sha256"] = std::string(64, 'f');
+    std::string changed;
+    serializeJson(tampered, changed);
+    assert(!lcd::parseSignedDeviceManifest(changed.c_str(), lcdKey, manifest));
+    assert(strcmp(manifest.screens[0].sha256, std::string(64, '0').c_str()) == 0);
+    tampered.remove("sig");
+    changed.clear();
+    serializeJson(tampered, changed);
+    assert(!lcd::parseSignedDeviceManifest(changed.c_str(), lcdKey, manifest));
     std::cout << "security crypto, canonical JSON, durable counter and overflow passed\n";
 }

@@ -275,6 +275,26 @@ For an isolated diagnostic build only, pass
 That private header can `#undef VENTANAL_HOST_URL` and supply disposable TLS/key
 values without editing `config.h`. Omit this property for the production build.
 
+### Waveshare LCD pairing
+
+In the web GUI, choose **Settings → Security → LCD pairing** and create a
+unique pairing ID for this board. In the private header selected by
+`VENTANAL_LCD_CONFIG`, set `VENTANAL_HOST_URL` to the HTTPS origin with no
+trailing slash. Copy the values for `VENTANAL_DEVICE_ID`, `VENTANAL_PAIRING_ID`,
+`VENTANAL_DEVICE_KEY` and `VENTANAL_HOST_CERT_PEM`. The device ID identifies the
+published feed, and the pairing ID identifies the physical LCD. The PEM must
+cover the hostname or IP in the URL. During certificate rotation, include both
+complete PEM blocks in the raw string to support rollback.
+
+Build and upload the LCD sketch with the LCD board options. You can use a
+second private header selected by `VENTANAL_LCD_SECURITY_CONFIG` to override
+the pairing values for a test build. The LCD sends
+`X-Ventanal-Device` with each proof, stores its counter in `lcd-sec-counter`,
+and verifies the manifest signature before using the full frame hashes.
+After NVS loss, select **Re-pair LCD (new device key)** for its pairing ID and
+flash the updated key. For a server running without a password, use its HTTP
+origin and omit the pairing ID, key, and certificate.
+
 ## Wake button gestures
 
 A short press cycles cached screens; a double press cycles spare art. Hold WAKE

@@ -18,7 +18,14 @@
 #ifndef VENTANAL_DEVICE_ID
 #define VENTANAL_DEVICE_ID "lcd43b"
 #endif
-// POSIX TZ string for local time (quiet hours and serial logs).
+// Password/HTTPS mode: copy the LCD pairing values from Settings → Security.
+// Leave all three unset for a plain HTTP server.
+// #define VENTANAL_PAIRING_ID "your-lcd-pairing-id"
+// #define VENTANAL_DEVICE_KEY "64 lowercase hex characters"
+// #define VENTANAL_HOST_CERT_PEM R"PEM(...complete PEM block(s)...)PEM"
+// Set VENTANAL_HOST_URL above to the HTTPS origin when paired.
+
+// POSIX timezone for the St. Augustine, FL sample (America/New_York).
 #ifndef VENTANAL_TZ
-#define VENTANAL_TZ "MST7MDT,M3.2.0,M11.1.0"
+#define VENTANAL_TZ "EST5EDT,M3.2.0,M11.1.0"
 #endif

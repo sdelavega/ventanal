@@ -2,5 +2,11 @@
   "method": "GET",
   "path": "/manifest.json?bat=90&skips=a~b&bat_mv=4012",
   "counter": 57,
-  "mac": "c8acb2b29e368a10ead06f3567a440e8563c3d95eb2e6c7a14700b605f7bfbc6"
+  "mac": "c8acb2b29e368a10ead06f3567a440e8563c3d95eb2e6c7a14700b605f7bfbc6",
+  "lcd": {
+    "method": "GET",
+    "path": "/devices/lcd43b/manifest.json?skips=aaaaaaaaaaaaaaaa~bbbbbbbbbbbbbbbb",
+    "counter": 2,
+    "mac": "3c46ca88d93c81849f68eb4fb44ab4001aec03985604dd884e90ba8c12a92ded"
+  }
 }

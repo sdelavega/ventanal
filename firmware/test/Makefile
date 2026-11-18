@@ -114,7 +114,7 @@ build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ve
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manifest_security.h $(wildcard fakes/*.h) Makefile
+build/test_security: test_security.cpp ../ventanal/security.h ../ventanal/manifest_security.h ../lcd43b/transport.h ../lcd43b/manifest.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) -o $@
 
@@ -243,3 +243,7 @@ build/test_lcd43b_persist: ../lcd43b/deferred_save.h
 build/test_lcd43b_owner: ../lcd43b/frame.h ../lcd43b/sha256.h
 
 build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h
+
+SECURITY_HEADERS = ../ventanal/security_protocol.h ../ventanal/manifest_signature.h
+build/test_security build/test_secure_transport build/test_lcd43b_sync: $(SECURITY_HEADERS)
+build/test_lcd43b_sync: ../lcd43b/build_config.h ../lcd43b/transport.h

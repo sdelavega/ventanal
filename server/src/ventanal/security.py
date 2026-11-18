@@ -1,6 +1,6 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
-"""TLS identity, single-board pairing and durable replay protection.
+"""TLS identity, device pairing and durable replay protection.
 
 Canonical JSON: UTF-8, sorted object keys, no insignificant whitespace, integer
 numbers (the manifest schema has no floating point fields), no ASCII escaping.
@@ -178,30 +178,82 @@ class Security:
             except OSError:
                 self.state=previous; raise
 
+    def pair_lcd(self, device, profile, *, rotate=False):
+        if not re.fullmatch(r'[a-z0-9-]{1,32}', device):
+            raise ValueError('Enter a pairing ID of 1–32 lowercase letters, numbers or hyphens.')
+        with self.lock:
+            devices = self.state.get('lcd_devices', {})
+            if device in devices and not rotate:
+                raise ValueError('That pairing ID already exists. Reveal or re-pair it below.')
+            if rotate and device not in devices:
+                raise ValueError('Unknown LCD pairing ID.')
+            previous = self.state
+            self.state = {**previous, 'lcd_devices': {**devices, device: {
+                'profile': profile, 'device_key': secrets.token_hex(32), 'counter': 0,
+            }}}
+            try:
+                self._save()
+            except OSError:
+                self.state = previous
+                raise
+
+    def lcd_pairings(self):
+        with self.lock:
+            return [(device, entry['profile']) for device, entry in
+                    sorted(self.state.get('lcd_devices', {}).items())]
+
+    def lcd_values(self, device):
+        with self.lock:
+            entry = self.state.get('lcd_devices', {}).get(device)
+            if entry is None:
+                raise ValueError('Unknown LCD pairing ID.')
+            return entry['profile'], entry['device_key']
+
     def accept(self,method,path,headers):
+        return self.authenticate(method, path, headers) is not None
+
+    def authenticate(self, method, path, headers, profile=None):
+        """Return the key that authenticated this request, for manifest signing."""
         counter=headers.get('X-Ventanal-Counter','')
         auth=headers.get('Authorization','')
-        if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return False
-        if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return False
+        device = headers.get('X-Ventanal-Device')
+        if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return None
+        if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return None
         with self.lock:
-            expected=hmac.new(self.key,f'{method}\n{path}\n{counter}'.encode(),hashlib.sha256).hexdigest()
-            if int(counter)<=self.state['counter'] or not hmac.compare_digest(auth[9:],expected): return False
-            previous=self.state['counter']; self.state['counter']=int(counter)
+            if profile is None:
+                if device is not None:
+                    return None
+                entry = self.state
+            else:
+                entry = self.state.get('lcd_devices', {}).get(device)
+                if entry is None or entry['profile'] != profile:
+                    return None
+            key = bytes.fromhex(entry['device_key'])
+            expected = hmac.new(key, f'{method}\n{path}\n{counter}'.encode(), hashlib.sha256).hexdigest()
+            if int(counter) <= entry['counter'] or not hmac.compare_digest(auth[9:], expected):
+                return None
+            previous = entry['counter']
+            entry['counter'] = int(counter)
             try: self._save()
             except OSError:
-                self.state['counter']=previous
-                return False
-            return True
+                entry['counter'] = previous
+                return None
+            return key
 
-    def manifest(self,manifest,root):
+    def manifest(self, manifest, root, *, key=None, profile=None):
         result=copy.deepcopy(manifest); result.pop('sig',None)
         reject_manifest_floats(result)
+        frame_route = (r'/frames/[A-Za-z0-9_-]+\.vnf' if profile is None else
+                       rf'/devices/{re.escape(profile)}/frames/[A-Za-z0-9_-]+\.vnr')
         for entry in [*result.get('screens',{}).values(),*result.get('spares',[])]:
             url=entry['url']
-            if not re.fullmatch(r'/frames/[A-Za-z0-9_-]+\.vnf',url): raise ValueError('Invalid frame path')
+            if not re.fullmatch(frame_route, url): raise ValueError('Invalid frame path')
             path=root/url.lstrip('/')
             if path.resolve()!=path: raise ValueError('Invalid frame path')
-            with path.open('rb') as f: entry['sha256']=hashlib.file_digest(f,'sha256').hexdigest()
-        with self.lock:
-            result['sig']=hmac.new(self.key,canonical(result),hashlib.sha256).hexdigest()
+            with path.open('rb') as f:
+                digest = hashlib.file_digest(f, 'sha256').hexdigest()
+            if profile is not None and (entry['id'] != digest[:16] or entry['sha256'] != digest):
+                raise ValueError('LCD frame differs from its published hash')
+            entry['sha256'] = digest
+        result['sig'] = hmac.new(self.key if key is None else key, canonical(result), hashlib.sha256).hexdigest()
         return result

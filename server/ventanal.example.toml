@@ -94,5 +94,6 @@ call_sign = ""
 # per-device manifest under <output_dir>/devices/<id>/ (served at
 # /devices/<id>/manifest.json). The e-paper outputs are unchanged.
 # Optional id must match the board's VENTANAL_DEVICE_ID (default "lcd43b").
+# With HTTPS, pair each LCD separately in Settings → Security.
 lcd43b = false
 # id = "lcd43b"

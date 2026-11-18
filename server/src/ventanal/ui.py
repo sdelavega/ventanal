@@ -439,11 +439,13 @@ class UI:
                 self.respond(h,403); return
             error=''
             reveal=False
+            lcd_values = None
+            cfg = load_config(self.config_path)
             if post:
                 action=values.get('action')
-                if action in ('regenerate','repair') and not self.security.ready:
+                if action in ('regenerate','repair','pair-lcd','repair-lcd','reveal-lcd') and not self.security.ready:
                     send(400,'Security','Enable security before rotating its certificate or key.'); return
-                if action in ('enable','regenerate','restore','repair') and values.get('confirm')!='yes':
+                if action in ('enable','regenerate','restore','repair','repair-lcd') and values.get('confirm')!='yes':
                     send(400,'Security','Confirm the security change before continuing.'); return
                 try:
                     if action=='enable':
@@ -455,9 +457,17 @@ class UI:
                         if not self.security.restore(): error=self.security.NO_PREVIOUS_CERTIFICATE
                     elif action=='repair': self.security.repair()
                     elif action=='reveal': reveal=True
+                    elif action in ('pair-lcd', 'repair-lcd', 'reveal-lcd'):
+                        device = values.get('device', '')
+                        if action != 'reveal-lcd':
+                            if not cfg.lcd43b:
+                                raise ValueError('Enable the LCD profile in the server configuration first.')
+                            self.security.pair_lcd(device, cfg.device_id, rotate=action == 'repair-lcd')
+                        profile, key = self.security.lcd_values(device)
+                        lcd_values = device, profile, key
                     else: self.respond(h,400); return
+                except ValueError as exc: error=str(exc)
                 except OSError: error='Unable to update security material; check service permissions and listener port.'
-            cfg=load_config(self.config_path)
             body='<div class="form-card security-panel"><p>Security '+('ON' if self.security.ready else 'OFF — activation required for this existing password')+'</p>'
             if self.security.ready:
                 import socket
@@ -469,6 +479,29 @@ class UI:
                     body+=form('/security',token,f'<input type="hidden" name="action" value="{action}"><label><input type="checkbox" name="confirm" value="yes" required>I understand the board must be updated afterwards.</label>',label)
                 if self.security.can_restore:
                     body+=form('/security',token,'<input type="hidden" name="action" value="restore"><label><input type="checkbox" name="confirm" value="yes" required>Present the previous certificate to the board again.</label>','Restore previous certificate')
+                pairings = self.security.lcd_pairings()
+                if cfg.lcd43b or pairings:
+                    body += '<h2>LCD pairing</h2>'
+                if cfg.lcd43b:
+                    body += form('/security', token, '<input type="hidden" name="action" value="pair-lcd">'
+                                 r'<label>LCD pairing ID<input name="device" pattern="[a-z0-9\-]{1,32}" required></label>',
+                                 'Pair LCD')
+                for device, profile in pairings:
+                    hidden = f'<input type="hidden" name="device" value="{e(device)}">'
+                    body += f'<p><strong>{e(device)}</strong> · {e(profile)}</p>'
+                    body += form('/security', token, hidden+'<input type="hidden" name="action" value="reveal-lcd">',
+                                 'Reveal LCD values')
+                    if cfg.lcd43b:
+                        body += form('/security', token, hidden+'<input type="hidden" name="action" value="repair-lcd">'
+                                     '<label><input type="checkbox" name="confirm" value="yes" required>'
+                                     'I understand this LCD must be updated afterwards.</label>', 'Re-pair LCD (new device key)')
+                if lcd_values:
+                    device, profile, key = lcd_values
+                    body += ('<p>Copy the certificate as a C++ raw string and use the HTTPS URL above in your private LCD build configuration.</p>'
+                             f'<pre>{e(self.security.certificate)}</pre>'
+                             f'<label>VENTANAL_DEVICE_ID<input name="lcd_profile" readonly value="{e(profile)}"></label>'
+                             f'<label>VENTANAL_PAIRING_ID<input name="lcd_pairing" readonly value="{e(device)}"></label>'
+                             f'<label>VENTANAL_DEVICE_KEY<input name="lcd_key" readonly value="{e(key)}"></label>')
             else:
                 body+=form('/security',token,'<input type="hidden" name="action" value="enable"><label><input type="checkbox" name="confirm" value="yes" required>Enable HTTPS; the board must be updated afterwards.</label>','Enable security')
             send(400 if error else 200,'Security',body+e(error)+'</div>'); return

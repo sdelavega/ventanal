@@ -140,6 +140,7 @@ On the LCD, tap right/left to rotate art → weather → published solar (or bac
 Double tap swaps the art through cached spares and back to the main painting,
 then opens Art. Skips survive reboots and report on the next online refresh.
 Art off hides artwork and makes double tap a no-op. Hold for 1.5 seconds to refresh.
+The LCD sample uses St. Augustine, FL 32084 and the `America/New_York` timezone.
 
 Art changes on configured seasonal slots. Weather includes current conditions,
 seven-day forecast, alerts and radar. Solar appears only after the local ham
@@ -209,6 +210,15 @@ out of your system's CA trust store.
 For an initial pairing, use **Settings → Security → Reveal board values**, then
 configure and flash the board as described under Firmware above.
 
+For a Waveshare LCD, enable `devices.lcd43b` on the server. In **Settings →
+Security → LCD pairing**, enter a unique pairing ID for the board and select
+**Pair LCD**. Copy its certificate and values into your private LCD build
+configuration and flash the board. Use **Reveal LCD values** to retrieve an
+existing pairing. Use **Re-pair LCD (new device key)** after erasing the board's
+NVS or to rotate its key. Each pairing has its own replay counter, including
+when multiple LCDs use the same published feed. LCD check-ins are stored
+separately from the e-paper status and battery calibration.
+
 Coordinate regeneration with the board flash. The current pin stops working
 for new TLS connections as soon as the server starts presenting the new certificate.
 
@@ -223,7 +233,7 @@ for new TLS connections as soon as the server starts presenting the new certific
    ```
 
 2. Open **Settings → Security → Reveal board values** and copy the complete
-   new PEM into `VENTANAL_HOST_CERT_PEM` in your private `config.h`. Set
+   new PEM into `VENTANAL_HOST_CERT_PEM` in your private build configuration. Set
    `VENTANAL_HOST_URL` to an HTTPS URL whose hostname or IP is in the certificate.
    For a flash where rollback must work without another upload, put both complete
    PEM blocks, separated by a newline, in the same C++ raw string. This lets
@@ -231,7 +241,8 @@ for new TLS connections as soon as the server starts presenting the new certific
    previous PEM at the next firmware update after verifying the new certificate.
    Regeneration preserves the device key and replay counter. For a fresh
    pairing, NVS loss, or device-key rotation, confirm **Re-pair board (new
-   device key)** and copy the new `VENTANAL_DEVICE_KEY` as well.
+   device key)** for e-paper or **Re-pair LCD (new device key)** for the LCD
+   and copy the new `VENTANAL_DEVICE_KEY` as well.
 3. Rebuild and upload with the firmware instructions above. Verify a successful
    board check-in and frame refresh over HTTPS. Keep the pairing values private.
    See the [transport details](firmware/README.md#password-protected-transport).

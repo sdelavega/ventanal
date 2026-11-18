@@ -10,32 +10,13 @@
 #include "inflate.h"
 #include <vector>
 
-#ifdef VENTANAL_HOST_TEST
-#include "config.example.h"
-#else
-#ifdef VENTANAL_LCD_CONFIG
-#include VENTANAL_LCD_CONFIG
-#else
-#include "config.example.h"
-#endif
-#endif
+#include "build_config.h"
+#include "transport.h"
 
-// Optional private-config keys with the same safe defaults as the sketch.
-#ifndef VENTANAL_WIFI_SSID
-#define VENTANAL_WIFI_SSID "your-network-name"
-#endif
-#ifndef VENTANAL_WIFI_PASSWORD
-#define VENTANAL_WIFI_PASSWORD "your-network-password"
-#endif
-#ifndef VENTANAL_HOST_URL
-#define VENTANAL_HOST_URL "http://192.168.0.10:18780"
-#endif
-#ifndef VENTANAL_TZ
-#define VENTANAL_TZ "MST7MDT,M3.2.0,M11.1.0"
-#endif
-
-#include <HTTPClient.h>
 #include <WiFi.h>
+#ifndef VENTANAL_HOST_TEST
+#include <WiFiClientSecure.h>
+#endif
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
 
@@ -44,6 +25,42 @@
 namespace lcd {
 
 namespace {
+
+struct Request {
+    WiFiClient plain;
+#ifndef VENTANAL_HOST_TEST
+    WiFiClientSecure tls;
+#endif
+    HTTPClient http;
+
+    bool begin(const char* origin, const String& path, const std::string& key) {
+        const String url = String(origin) + path;
+        const bool secured = strncmp(origin, "https://", 8) == 0;
+        if (secured) {
+            if (!VENTANAL_HOST_CERT_PEM[0] || key.size() != 32) return false;
+#ifdef VENTANAL_HOST_TEST
+            if (!http.begin(plain, url)) return false;
+#else
+            // The trust bundle contains the current self-signed leaf and,
+            // during rotation, may also contain the previous leaf.
+            tls.setCACert(VENTANAL_HOST_CERT_PEM);
+            tls.setHandshakeTimeout(5);
+            if (!http.begin(tls, url)) return false;
+#endif
+            if (!addPairedHeaders(http, key, VENTANAL_PAIRING_ID, path.c_str())) return false;
+        } else {
+            if (strncmp(origin, "http://", 7) != 0 || VENTANAL_HOST_CERT_PEM[0]
+                || VENTANAL_DEVICE_KEY[0] || VENTANAL_PAIRING_ID[0]) return false;
+            if (!http.begin(plain, url)) return false;
+        }
+        // The bounded body readers rely on connection-close framing.
+        http.setReuse(false);
+        http.setTimeout(HTTP_TIMEOUT_MS);
+        return true;
+    }
+
+    ~Request() { http.end(); }
+};
 
 // As on e-paper, keep the radio awake during large transfers and restore
 // the configured power-save mode on every exit from the worker pass.
@@ -84,37 +101,38 @@ bool syncTime(Watchdog& watchdog) {
 
 bool fetchManifest(const char* hostUrl, const char* deviceId,
                    DeviceManifest& out, Watchdog& watchdog, const char* skips) {
-    HTTPClient http;
+    Request request;
+    auto& http = request.http;
     // Skip ids are 16 lowercase hex digits (including restored owner state).
     // The comma and tilde separators are permitted literally in a query.
-    const String url = String(hostUrl) + "/devices/" + deviceId
+    const String path = String("/devices/") + deviceId
                      + "/manifest.json" + (skips[0] ? String("?skips=")+skips : String());
-    http.begin(url);
-    // Connection-close framing: never keep-alive, so a persistent-capable
-    // HTTP/1.1 server hangs up after the body instead of holding the
-    // socket open past our timeouts (same as downloadFrame below).
-    http.setReuse(false);
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    const auto key = decodeDeviceKey(VENTANAL_DEVICE_KEY);
+    if (!request.begin(hostUrl, path, key)) {
+        log("manifest transport=unavailable\n");
+        return false;
+    }
     watchdog.feed();
     const int status = http.GET();
     watchdog.feed();
     if (status != 200 || http.getSize() <= 0 || http.getSize() > 8192) {
         log("manifest status=%d\n", status);
-        http.end();
         return false;
     }
     const String body = http.getString();
-    http.end();
+    const bool secured = !key.empty();
     DeviceManifest parsed;
-    if (!parseDeviceManifest(body.c_str(), parsed)) {
-        log("manifest parsed=0\n");
+    const bool ok = secured ? parseSignedDeviceManifest(body.c_str(), key, parsed)
+                            : parseDeviceManifest(body.c_str(), parsed);
+    if (!ok) {
+        log("manifest parsed=0 secured=%d\n", secured);
         return false;
     }
     out = parsed;
-    log("manifest parsed=1 screens=%d%d%d spares=%u quiet=%04d-%04d\n",
+    log("manifest parsed=1 screens=%d%d%d spares=%u quiet=%04d-%04d secured=%d\n",
         out.screens[0].present, out.screens[1].present, out.screens[2].present,
         out.spareCount, out.quietValid() ? out.quietStart : -1,
-        out.quietValid() ? out.quietEnd : -1);
+        out.quietValid() ? out.quietEnd : -1, secured);
     return true;
 }
 
@@ -224,18 +242,12 @@ void configureTimezone() {
 static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, uint8_t* buffer, Watchdog& watchdog,
                            uint32_t started, bool& retryable) {
-    const String url = String(hostUrl) + info.url;
     bool ok = false;
     bool excess = false;
-    HTTPClient http;
-    http.begin(url);
-    // Connection-close framing: the body is framed by the server's hang-up
-    // (see the completion check below), so the request must ask for closure.
-    // The Arduino HTTPClient defaults to keep-alive; an HTTP/1.1 server or
-    // reverse proxy would then deliver a complete valid frame and keep the
-    // socket open, failing every download on the close grace.
-    http.setReuse(false);
-    http.setTimeout(HTTP_TIMEOUT_MS);
+    Request request;
+    auto& http = request.http;
+    if (!request.begin(hostUrl, String(info.url), decodeDeviceKey(VENTANAL_DEVICE_KEY)))
+        return false;
     const uint32_t attemptStarted = millis();
     watchdog.feed();
     const int status = http.GET();
@@ -311,7 +323,6 @@ static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
         log("download slot=%s status=%d size=%d\n", slotName, status,
             http.getSize());
     }
-    http.end();
     return ok;
 }
 

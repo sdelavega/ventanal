@@ -28,11 +28,14 @@ from ventanal.art.compose import compose
 from test_weather_render import sample  # shared deterministic weather fixture
 
 TZ = ZoneInfo('America/New_York')
+LAT, LON = 29.9144193, -81.3628995
+PLACE = 'St. Augustine'
 NOW = datetime(2026, 11, 15, 6, 0, tzinfo=TZ)
 EXAMPLE = Path(__file__).parent.parent / 'ventanal.example.toml'
 
 
 def cfg(tmp_path, **changes):
+    changes.setdefault('zip', '32084')
     return replace(
         load_config(EXAMPLE), output_dir=tmp_path / 'out',
         cache_dir=tmp_path / 'cache', **changes)
@@ -89,8 +92,8 @@ def test_decode_frame_roundtrip_and_rejects_bad_frames():
 def solar_sample(tmp_path, **changes):
     from test_solar import sample, NOW as solar_now
     from ventanal.devices.lcd_solar import render_lcd_solar
-    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7,
-                 longitude=-72.7, **changes)
+    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=LAT,
+                 longitude=LON, **changes)
     return render_lcd_solar(sample(), config, solar_now)
 
 
@@ -117,7 +120,7 @@ def test_lcd_solar_still_gated(tmp_path, monkeypatch):
     from test_solar import sample as solar_data_sample
     monkeypatch.setattr('ventanal.solar.licence.verify',
                         lambda *a: Verification(True, 'test licence'))
-    value = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
+    value = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=LAT, longitude=LON)
     monkeypatch.setattr(lcd43b, 'weather_frame',
                         lambda *a: Image.new('RGB', (800, 480)))
     monkeypatch.setattr(solar_data, 'fetch_solar', lambda *a: solar_data_sample())
@@ -141,17 +144,17 @@ def test_lcd_solar_data_pipeline(tmp_path, monkeypatch, located):
     from test_solar import sample as solar_data_sample
     data = solar_data_sample()
     config = cfg(tmp_path, ham_call_sign='CALL SIGN',
-                 latitude=41.7 if located else None,
-                 longitude=-72.7 if located else None)
+                 latitude=LAT if located else None,
+                 longitude=LON if located else None)
     monkeypatch.setattr(solar_data, 'fetch_solar', lambda *a: data)
 
     def geocode(*args):
         assert not located
-        return 41.7, -72.7, 'Sample'
+        return LAT, LON, PLACE
 
     monkeypatch.setattr(weather_data, 'geocode', geocode)
     image = lcd43b._render_screen(config, 'solar', NOW, None)
-    expected = render_lcd_solar(data, replace(config, latitude=41.7, longitude=-72.7), NOW)
+    expected = render_lcd_solar(data, replace(config, latitude=LAT, longitude=LON), NOW)
     assert image.tobytes() == expected.tobytes()
 
 
@@ -202,7 +205,7 @@ def test_lcd_solar_text_is_bounded(tmp_path, monkeypatch, storm):
         surface = LCDDraw if method == 'rounded_rectangle' else ImageDraw.ImageDraw
         monkeypatch.setattr(surface, method, capture_shape(method))
     monkeypatch.setattr(Image.Image, 'paste', capture_paste)
-    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=41.7, longitude=-72.7)
+    config = cfg(tmp_path, ham_call_sign='CALL SIGN', latitude=LAT, longitude=LON)
     image = render_lcd_solar(data, config, NOW)
     for text, (x0, y0, x1, y1) in boxes:
         assert 0 <= x0 < x1 <= 800 and 26 <= y0 < y1 < 458, text
@@ -363,7 +366,7 @@ def run_device_tick(monkeypatch, cfg_value, *, screens, solar=False, spares=(), 
                             lambda *a: Image.new('RGB', (800, 480), (0, 0, 255)))
         from ventanal.weather import data as weather_data
         monkeypatch.setattr(weather_data, 'geocode',
-                            lambda *a: (40.01, -105.27, 'Boulder'))
+                            lambda *a: (LAT, LON, PLACE))
     with httpx.Client() as client:
         devices.lcd43b.tick(cfg_value, NOW, client)
 
@@ -518,7 +521,7 @@ def test_epaper_outputs_unchanged_when_enabled(tmp_path, monkeypatch):
                             lambda *a: np.zeros((1200, 1600), dtype=np.uint8))
         monkeypatch.setattr(jobs, 'simulate',
                             lambda *a: Image.new('RGB', (16, 12)))
-        monkeypatch.setattr(jobs, 'geocode', lambda *a: (40.01, -105.27, 'Boulder'))
+        monkeypatch.setattr(jobs, 'geocode', lambda *a: (LAT, LON, PLACE))
         monkeypatch.setattr(jobs, 'fetch_weather', lambda *a, **k: object())
         monkeypatch.setattr(jobs, 'fetch_alerts', lambda *a: [])
         monkeypatch.setattr(jobs, 'fetch_iem', lambda *a: None)
@@ -574,7 +577,7 @@ def test_epaper_outputs_unchanged_after_a_successful_publish(tmp_path, monkeypat
                             lambda *a: np.zeros((1200, 1600), dtype=np.uint8))
         monkeypatch.setattr(jobs, 'simulate',
                             lambda *a: Image.new('RGB', (16, 12)))
-        monkeypatch.setattr(jobs, 'geocode', lambda *a: (40.01, -105.27, 'Boulder'))
+        monkeypatch.setattr(jobs, 'geocode', lambda *a: (LAT, LON, PLACE))
         monkeypatch.setattr(jobs, 'fetch_weather', lambda *a, **k: object())
         monkeypatch.setattr(jobs, 'fetch_alerts', lambda *a: [])
         monkeypatch.setattr(jobs, 'fetch_iem', lambda *a: None)

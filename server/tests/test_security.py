@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 import hashlib
 import hmac
-from contextlib import nullcontext
+from contextlib import closing, nullcontext
 from ipaddress import ip_address
 import json
 import ssl
@@ -17,6 +17,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID
 import pytest
+import httpx
 from ventanal.security import Security, canonical
 from ventanal.serve import make_server
 
@@ -40,6 +41,15 @@ def test_cross_language_request_proof(tmp_path):
     assert not security.accept(method, path, {**headers, 'Authorization': 'Ventanal ' + legacy_mac})
     assert security.state['counter'] == 0
     assert security.accept(method, path, headers)
+    lcd = vector['lcd']
+    assert proof(key, lcd['path'], lcd['counter'], lcd['method'])['Authorization'] == 'Ventanal ' + lcd['mac']
+
+
+def test_cross_language_signed_lcd_manifest():
+    fixture = Path(__file__).parents[2] / 'firmware/test/fixtures/lcd43b-signed-manifest.json'
+    manifest = json.loads(fixture.read_bytes())
+    signature = manifest.pop('sig')
+    assert signature == hmac.new(bytes(32), canonical(manifest), hashlib.sha256).hexdigest()
 
 
 def test_certificate_proofs_rotation_and_persistence(tmp_path):
@@ -354,6 +364,109 @@ def test_counter_storage_failure_is_rejected(tmp_path,monkeypatch):
     assert s.state['counter']==0
     monkeypatch.setattr(s,'_save',original)
     assert s.accept('GET','/manifest.json',headers)
+
+
+def test_lcd_web_pairing_and_transport_isolate_devices_and_checkins(tmp_path):
+    from ventanal.devices.lcd43b import _publish_frame
+    from datetime import datetime, timezone
+    import re
+
+    config, cache, out = (tmp_path / name for name in ('settings.toml', 'cache', 'out'))
+    example = Path(__file__).parents[1] / 'ventanal.example.toml'
+    config.write_text(example.read_text().replace('/var/lib/ventanal', str(out))
+                      .replace('/var/cache/ventanal', str(cache)).replace('lcd43b = false', 'lcd43b = true'))
+    root = '/devices/lcd43b'
+    manifest_path = root + '/manifest.json'
+    lcd_poll = manifest_path + '?fw=lcd-test&bat_mv=3888'
+    board_poll = '/manifest.json?bat_mv=4150'
+    now = datetime.now(timezone.utc)
+    frame = _publish_frame(out / root.lstrip('/'), root, 'art', b'test frame contents', now)
+    publication = {'version': 1, 'screens': {'art': frame, 'weather': frame}}
+    manifest_file = out / manifest_path.lstrip('/')
+    manifest_file.write_text(json.dumps(publication))
+    (out / 'manifest.json').write_text('{"version":1,"screens":{}}')
+    srv = make_server(out, '127.0.0.1', 0, cache_dir=cache, config_path=config, https_port=0)
+    thread = Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+    try:
+        plain = f'http://127.0.0.1:{srv.server_address[1]}'
+        with httpx.Client(base_url=plain, trust_env=False) as client:
+            response = client.get(lcd_poll)
+            assert response.status_code == 200 and response.json() == publication
+            assert srv.ui.store.latest() is None
+            srv.ui.enable_security()
+            password = 'test password'
+            srv.ui.auth.set_password(password, password)
+            assert client.get(lcd_poll).status_code == 403
+        secure = f'https://127.0.0.1:{srv.tls_server.server_address[1]}'
+        context = ssl.create_default_context(cadata=srv.ui.security.certificate)
+        with httpx.Client(base_url=secure, verify=context, trust_env=False) as client:
+            def csrf(path):
+                return re.search(r'name="csrf" value="([^"]+)"', client.get(path).text)[1]
+
+            def security(action, device, **more):
+                return client.post('/security', data={'action': action, 'device': device,
+                                                      'csrf': csrf('/security'), **more})
+
+            def key_from(response):
+                assert response.status_code == 200
+                assert response.headers['Cache-Control'] == 'no-store'
+                return bytes.fromhex(re.search(r'name="lcd_key" readonly value="([^"]+)"', response.text)[1])
+
+            def lcd_get(path, device, key, counter):
+                return client.get(path, headers={**proof(key, path, counter), 'X-Ventanal-Device': device})
+
+            assert client.get('/security').status_code == 303
+            assert client.get(lcd_poll).status_code == 403
+            assert client.post('/login', data={'csrf': csrf('/login'), 'password': password}).status_code == 303
+            assert client.post('/security', data={'action': 'pair-lcd', 'device': 'desk',
+                                                  'csrf': 'invalid'}).status_code == 403
+            desk = key_from(security('pair-lcd', 'desk'))
+            hall = key_from(security('pair-lcd', 'hall'))
+            assert len({desk, hall, srv.ui.security.key}) == 3
+            assert 'name="lcd_key"' not in client.get('/security').text
+            assert security('pair-lcd', 'desk').status_code == 400
+            assert key_from(security('reveal-lcd', 'desk')) == desk
+            assert client.get(lcd_poll, headers=proof(srv.ui.security.key, lcd_poll, 1)).status_code == 403
+            assert lcd_get(lcd_poll, 'desk', hall, 1).status_code == 403
+            assert lcd_get(lcd_poll, 'desk', desk, 1).status_code == 200
+            assert lcd_get(lcd_poll, 'desk', desk, 1).status_code == 403
+            assert client.get(lcd_poll + '&bat=90', headers={
+                **proof(desk, lcd_poll, 2), 'X-Ventanal-Device': 'desk'}).status_code == 403
+            assert lcd_get(lcd_poll, 'desk', desk, 2).status_code == 200
+            response = lcd_get(lcd_poll, 'hall', hall, 1)
+            assert response.status_code == 200
+            signed = response.json()
+            signature = signed.pop('sig')
+            assert signature == hmac.new(hall, canonical(signed), hashlib.sha256).hexdigest()
+            download = lcd_get(frame['url'], 'hall', hall, 2)
+            assert download.status_code == 200 and download.headers['Cache-Control'] == 'no-store'
+            assert hashlib.sha256(download.content).hexdigest() == signed['screens']['art']['sha256']
+            assert lcd_get(frame['url'].replace('/lcd43b/', '/other/'), 'hall', hall, 3).status_code == 403
+            assert lcd_get(board_poll, 'hall', hall, 3).status_code == 403
+            assert client.get(board_poll, headers=proof(srv.ui.security.key, board_poll, 1)).status_code == 200
+            assert lcd_get(lcd_poll, 'hall', hall, 3).status_code == 200
+            assert srv.ui.store.latest()['bat_mv'] == 4150
+            assert [event['kind'] for event in srv.ui.store.recent()] == ['check-in']
+            with closing(srv.ui.store.connect()) as db:
+                rows = db.execute('SELECT device, data FROM lcd_checkins ORDER BY rowid').fetchall()
+            assert [device for device, _ in rows] == ['lcd43b', 'desk', 'desk', 'hall', 'hall']
+            assert all(json.loads(payload)['bat_mv'] == 3888 for _, payload in rows)
+
+            assert security('repair-lcd', 'desk').status_code == 400
+            new_desk = key_from(security('repair-lcd', 'desk', confirm='yes'))
+            assert lcd_get(lcd_poll, 'desk', desk, 3).status_code == 403
+            assert lcd_get(lcd_poll, 'desk', new_desk, 1).status_code == 200
+            assert lcd_get(lcd_poll, 'hall', hall, 3).status_code == 403
+            assert lcd_get(lcd_poll, 'hall', hall, 4).status_code == 200
+            persisted = Security(cache)
+            assert persisted.authenticate('GET', lcd_poll, {
+                **proof(hall, lcd_poll, 4), 'X-Ventanal-Device': 'hall'}, 'lcd43b') is None
+            assert persisted.key == srv.ui.security.key
+    finally:
+        srv.shutdown()
+        srv.server_close()
+        thread.join()
 
 
 def test_lost_active_identity_never_reopens_plain_transport(tmp_path):

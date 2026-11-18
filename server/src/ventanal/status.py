@@ -31,6 +31,8 @@ class BoardStore(OwnerStore):
         with closing(self.connect()) as db, db:
             db.executescript('''CREATE TABLE IF NOT EXISTS board_checkins (
                 time TEXT NOT NULL, ip TEXT NOT NULL, data TEXT NOT NULL);
+                CREATE TABLE IF NOT EXISTS lcd_checkins (
+                    time TEXT NOT NULL, device TEXT NOT NULL, ip TEXT NOT NULL, data TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS activity (time TEXT NOT NULL, kind TEXT NOT NULL, detail TEXT NOT NULL);
                 CREATE TABLE IF NOT EXISTS frame_roles (frame_id TEXT PRIMARY KEY, role TEXT NOT NULL);''')
 
@@ -53,6 +55,13 @@ class BoardStore(OwnerStore):
         with closing(self.connect()) as db:
             row = db.execute('SELECT time, ip, data FROM board_checkins ORDER BY rowid DESC LIMIT 1').fetchone()
         return {'time': row[0], 'ip': row[1], **json.loads(row[2])} if row else None
+
+    def checkin_lcd(self, device, ip, values, *, timeout=120):
+        with closing(self.connect(timeout=timeout)) as db, db:
+            db.execute('INSERT INTO lcd_checkins VALUES (?,?,?,?)',
+                       (datetime.now(timezone.utc).isoformat(), device, ip, json.dumps(values)))
+            db.execute('DELETE FROM lcd_checkins WHERE rowid NOT IN '
+                       '(SELECT rowid FROM lcd_checkins ORDER BY rowid DESC LIMIT 500)')
 
     def event(self, kind, detail):
         with closing(self.connect()) as db, db:

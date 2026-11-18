@@ -37,14 +37,7 @@
 #include <atomic>
 #include "clock.h"
 
-#ifdef VENTANAL_LCD_CONFIG
-#include VENTANAL_LCD_CONFIG
-#else
-#include "config.example.h"
-#endif
-// VENTANAL_LCD_CONFIG is the only private-configuration path: the sketch
-// never falls back to a local config.h, so private values cannot sneak
-// into the repository.
+#include "build_config.h"
 
 #include "ch422g.h"
 #include "frame.h"
@@ -76,14 +69,6 @@
 #endif
 #if defined(VENTANAL_LCD_DIAG_HW) && defined(VENTANAL_LCD_DIAG_PANEL)
 #error Hardware probing and panel stress require separate builds.
-#endif
-
-// Optional private-config keys with safe defaults.
-#ifndef VENTANAL_DEVICE_ID
-#define VENTANAL_DEVICE_ID "lcd43b"
-#endif
-#ifndef VENTANAL_TZ
-#define VENTANAL_TZ "MST7MDT,M3.2.0,M11.1.0"
 #endif
 
 namespace {
