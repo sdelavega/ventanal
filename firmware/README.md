@@ -230,8 +230,12 @@ HTTPS uses HTTP/1.1 and one verified connection across the wake, including
 spare refills; every request still has a fresh counter/proof. Partial
 responses close that connection. HTTP mode keeps its existing connection behavior.
 
-Each GET signs the exact `GET` + request path/query + decimal unsigned counter
-with HMAC-SHA256. The board commits `sec-counter` in NVS before transmitting;
+Each GET signs `method\npath\ncounter` with HMAC-SHA256. The path includes the
+exact query string, and the unsigned counter uses decimal digits. The two LF
+separators are part of the MAC input. Upgrade the HTTPS server together with
+the board firmware so both use the same proof format.
+
+The board commits `sec-counter` in NVS before transmitting;
 server state persists the accepted counter before processing reports. Missing,
 corrupt or unwritable existing counter storage fails closed. After NVS loss,
 use **Re-pair board** and update its key. NVS State/frame layouts are unchanged.

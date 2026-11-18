@@ -16,7 +16,24 @@ from ventanal.serve import make_server
 
 
 def proof(key, path, counter, method='GET'):
-    return {'Authorization': 'Ventanal '+hmac.new(key, (method+path+str(counter)).encode(), hashlib.sha256).hexdigest(), 'X-Ventanal-Counter':str(counter)}
+    return {'Authorization': 'Ventanal '+hmac.new(key, f'{method}\n{path}\n{counter}'.encode(), hashlib.sha256).hexdigest(), 'X-Ventanal-Counter':str(counter)}
+
+
+def test_cross_language_request_proof(tmp_path):
+    fixture = Path(__file__).parents[2] / 'firmware/test/fixtures/request-proof.json'
+    vector = json.loads(fixture.read_text(encoding='utf-8'))
+    method, path, counter = vector['method'], vector['path'], vector['counter']
+    key = bytes(32)
+    headers = {'Authorization': 'Ventanal ' + vector['mac'], 'X-Ventanal-Counter': str(counter)}
+    assert proof(key, path, counter, method) == headers
+
+    security = Security(tmp_path)
+    security.enable(['127.0.0.1'])
+    security.state['device_key'] = key.hex()
+    legacy_mac = hmac.new(key, f'{method}{path}{counter}'.encode(), hashlib.sha256).hexdigest()
+    assert not security.accept(method, path, {**headers, 'Authorization': 'Ventanal ' + legacy_mac})
+    assert security.state['counter'] == 0
+    assert security.accept(method, path, headers)
 
 
 def test_certificate_proofs_rotation_and_persistence(tmp_path):

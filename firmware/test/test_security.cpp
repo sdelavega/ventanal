@@ -3,9 +3,16 @@
 #include "../ventanal/security.h"
 #include "../ventanal/manifest_security.h"
 #include <cassert>
+#include <fstream>
 #include <iostream>
 int main() {
-    assert(hmacHex(std::string(32,'\0'),"GET/manifest.json1")=="58fe2f37b96dc6ea87bab1b479e17ffe76a051a3b327ec651026553d7bf361bb");
+    std::ifstream input("fixtures/request-proof.json");
+    assert(input);
+    JsonDocument proof;
+    assert(!deserializeJson(proof, input));
+    assert(requestProof(std::string(32,'\0'), proof["method"].as<const char*>(),
+                        proof["path"].as<const char*>(), proof["counter"].as<uint64_t>()) ==
+           proof["mac"].as<const char*>());
     uint64_t counter=0;
     assert(nextCounter(counter) && counter==1);
     assert(nextCounter(counter) && counter==2);

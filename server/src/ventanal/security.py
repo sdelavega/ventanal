@@ -133,7 +133,7 @@ class Security:
         if not re.fullmatch(r'[1-9][0-9]{0,19}',counter) or int(counter)>=2**64: return False
         if not re.fullmatch(r'Ventanal [0-9a-f]{64}',auth): return False
         with self.lock:
-            expected=hmac.new(self.key,(method+path+counter).encode(),hashlib.sha256).hexdigest()
+            expected=hmac.new(self.key,f'{method}\n{path}\n{counter}'.encode(),hashlib.sha256).hexdigest()
             if int(counter)<=self.state['counter'] or not hmac.compare_digest(auth[9:],expected): return False
             previous=self.state['counter']; self.state['counter']=int(counter)
             try: self._save()

@@ -1,0 +1,6 @@
+{
+  "method": "GET",
+  "path": "/manifest.json?bat=90&skips=a~b&bat_mv=4012",
+  "counter": 57,
+  "mac": "c8acb2b29e368a10ead06f3567a440e8563c3d95eb2e6c7a14700b605f7bfbc6"
+}
