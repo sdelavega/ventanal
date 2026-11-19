@@ -72,6 +72,7 @@
 #include <string>
 #include "sync.h"
 #include "local_provider.h"
+#include "local_media.h"
 #include "touch.h"
 #include <esp_sntp.h>
 

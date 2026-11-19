@@ -37,7 +37,8 @@ inline bool setupCancelVisible(SetupReason why) { return why == SetupReason::Use
 
 template<size_t N>
 inline void copyText(char (&dst)[N], const char* src) {
-    const size_t n = strnlen(src, N - 1);
+    size_t n = 0;
+    while (n < N - 1 && src[n]) ++n;  // sources are NUL-terminated, possibly shorter arrays
     memmove(dst, src, n);  // memmove: callers may copy a field onto itself
     dst[n] = '\0';
 }

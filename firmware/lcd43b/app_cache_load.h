@@ -7,6 +7,11 @@
 // inside its anonymous namespace, in the order listed there. Earlier parts
 // provide the declarations later parts use. Do not include it anywhere else.
 #pragma once
+// Boot runs before the task watchdog is armed for this work.
+struct BootWatchdog : lcd::Watchdog {
+    void feed() override {}
+} bootWatchdog;
+
 bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
     if (!mounted || !frame || strlen(id) != 16) return false;
     lcd::ScanScope activity(lcd::ScanActivity::LittleFS);
@@ -22,9 +27,11 @@ bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
         } else if (file.seek(0)) {
             auto* wire = static_cast<uint8_t*>(ps_malloc(bytes));
             if (wire) {
-                const bool valid = file.read(wire, bytes) == bytes
-                    && lcd::frameHashMatches(wire, bytes, id, 16)
-                    && lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame);
+                // Standalone art is cached as its source (VNA1): compose it again.
+                const bool read = file.read(wire, bytes) == bytes && lcd::frameHashMatches(wire, bytes, id, 16);
+                const bool valid = read && (lcd::isArtBody(wire, bytes)
+                    ? lcd::composeArtBody(wire, bytes, frame, bootWatchdog)
+                    : lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame));
                 free(wire);
                 if (valid) return true;
             }

@@ -20,6 +20,23 @@
 
 namespace lcd::local {
 
+// A buffer whose allocation can fail without throwing: art runs on a board
+// with little free memory, where a failed allocation must skip a piece, not
+// abort the firmware.
+template<class T>
+struct Buffer {
+    std::unique_ptr<T[]> data;
+    size_t size = 0;
+    bool allocate(size_t n, const T& fill = T{}) {
+        data.reset(new (std::nothrow) T[n]);
+        size = data ? n : 0;
+        if (data) std::fill(data.get(), data.get() + n, fill);
+        return bool(data);
+    }
+    T& operator[](size_t i) { return data[i]; }
+    const T& operator[](size_t i) const { return data[i]; }
+};
+
 struct ArtRect {
     int x = 0, y = 0, w = 0, h = 0;
 };
@@ -65,9 +82,10 @@ public:
         if (dest.w <= 0 || dest.h <= 0 || crop.w <= 0 || crop.h <= 0 || crop.x + crop.w > sourceWidth
             || crop.y + crop.h > sourceHeight)
             return false;
-        rowFirst_.assign(size_t(sourceHeight), -1);
-        rowLast_.assign(size_t(sourceHeight), -2);
-        rowEnd_.resize(size_t(dest.h));
+        if (!rowFirst_.allocate(size_t(sourceHeight), int16_t(-1)) || !rowLast_.allocate(size_t(sourceHeight), int16_t(-2))
+            || !rowEnd_.allocate(size_t(dest.h)) || !colFirst_.allocate(size_t(sourceWidth), int16_t(-1))
+            || !colLast_.allocate(size_t(sourceWidth), int16_t(-2)))
+            return false;
         for (int ty = 0; ty < dest.h; ++ty) {
             const int y0 = crop.y + int(int64_t(ty) * crop.h / dest.h);
             const int y1 = std::max(y0 + 1, crop.y + int(int64_t(ty + 1) * crop.h / dest.h));
@@ -77,8 +95,6 @@ public:
                 rowLast_[size_t(y)] = ty;
             }
         }
-        colFirst_.assign(size_t(sourceWidth), -1);
-        colLast_.assign(size_t(sourceWidth), -2);
         for (int tx = 0; tx < dest.w; ++tx) {
             const int x0 = crop.x + int(int64_t(tx) * crop.w / dest.w);
             const int x1 = std::max(x0 + 1, crop.x + int(int64_t(tx + 1) * crop.w / dest.w));
@@ -89,16 +105,15 @@ public:
         }
         // Rows one band of source rows can touch, plus the rows still open.
         bandRows_ = int(int64_t(blockRows + 2) * dest.h / crop.h) + 4;
-        sums_.assign(size_t(bandRows_) * size_t(dest.w), Sum{});
         nextRow_ = 0;
-        return true;
+        return sums_.allocate(size_t(bandRows_) * size_t(dest.w));
     }
 
     // One block: w x h RGB888 pixels at (x, y) of the source.
     void block(int x, int y, int w, int h, const uint8_t* rgb) {
         for (int row = 0; row < h; ++row) {
             const int sy = y + row;
-            if (sy < 0 || sy >= int(rowFirst_.size()) || rowFirst_[size_t(sy)] < 0) continue;
+            if (sy < 0 || sy >= int(rowFirst_.size) || rowFirst_[size_t(sy)] < 0) continue;
             for (int col = 0; col < w; ++col) {
                 const int sx = x + col;
                 if (sx < 0 || sx >= sourceWidth_ || colFirst_[size_t(sx)] < 0) continue;
@@ -107,10 +122,12 @@ public:
                     if (ty < nextRow_ || ty >= nextRow_ + bandRows_) continue;
                     Sum* line = &sums_[size_t(ty % bandRows_) * size_t(dest_.w)];
                     for (int tx = colFirst_[size_t(sx)]; tx <= colLast_[size_t(sx)]; ++tx) {
-                        line[tx].r += p[0];
-                        line[tx].g += p[1];
-                        line[tx].b += p[2];
-                        ++line[tx].n;
+                        Sum& s = line[tx];
+                        if (s.n == 256) continue;  // enough for an average; keeps 16-bit sums exact
+                        s.r = uint16_t(s.r + p[0]);
+                        s.g = uint16_t(s.g + p[1]);
+                        s.b = uint16_t(s.b + p[2]);
+                        ++s.n;
                     }
                 }
             }
@@ -121,8 +138,8 @@ public:
     void finish() { flushBefore(1 << 30); }
 
 private:
-    struct Sum {
-        uint32_t r = 0, g = 0, b = 0, n = 0;
+    struct Sum {  // 8 bytes: a band of 20 rows of 800 is 128 KB
+        uint16_t r = 0, g = 0, b = 0, n = 0;
     };
 
     void flushBefore(int sourceRow) {
@@ -134,10 +151,10 @@ private:
                 for (int tx = 0; tx < dest_.w; ++tx) {
                     const Sum& s = line[tx];
                     const uint32_t n = s.n ? s.n : 1;
-                    out[tx] = rgb565(((s.r + n / 2) / n) << 16 | ((s.g + n / 2) / n) << 8 | ((s.b + n / 2) / n));
+                    out[tx] = rgb565(((s.r + n / 2) / n) << 16 | ((s.g + n / 2) / n) << 8 | ((uint32_t(s.b) + n / 2) / n));
                 }
             }
-            std::fill(line, line + dest_.w, Sum{});
+            std::fill(line, line + dest_.w, Sum{});  // ready for the row bandRows_ later
             ++nextRow_;
         }
     }
@@ -145,9 +162,9 @@ private:
     Frame frame_{nullptr};
     ArtRect dest_, crop_;
     int sourceWidth_ = 0, bandRows_ = 0, nextRow_ = 0;
-    std::vector<int16_t> rowFirst_, rowLast_, colFirst_, colLast_;
-    std::vector<int> rowEnd_;
-    std::vector<Sum> sums_;
+    Buffer<int16_t> rowFirst_, rowLast_, colFirst_, colLast_;
+    Buffer<int> rowEnd_;
+    Buffer<Sum> sums_;
 };
 
 namespace art_detail {
@@ -160,9 +177,10 @@ inline void expand565(uint16_t c, int& r, int& g, int& b) {
 }
 
 // Three box passes approximate a Gaussian of standard deviation sigma.
-inline void blurFloat(std::vector<float>& v, int w, int h, int stride, double sigma) {
+inline bool blurFloat(Buffer<float>& v, int w, int h, int stride, double sigma) {
     const int radius = std::max(1, int(std::lround(std::sqrt(4 * sigma * sigma + 1) / 2.0 - 0.5)));
-    std::vector<float> tmp(std::max(w, h));
+    Buffer<float> tmp;
+    if (!tmp.allocate(size_t(std::max(w, h)))) return false;
     for (int pass = 0; pass < 3; ++pass) {
         for (int y = 0; y < h; ++y) {  // rows
             float* row = &v[size_t(y) * stride];
@@ -171,7 +189,7 @@ inline void blurFloat(std::vector<float>& v, int w, int h, int stride, double si
                 for (int k = -radius; k <= radius; ++k) s += row[std::min(w - 1, std::max(0, x + k))];
                 tmp[size_t(x)] = s / float(2 * radius + 1);
             }
-            std::copy(tmp.begin(), tmp.begin() + w, row);
+            std::copy(tmp.data.get(), tmp.data.get() + w, row);
         }
         for (int x = 0; x < w; ++x) {  // columns
             for (int y = 0; y < h; ++y) {
@@ -182,15 +200,18 @@ inline void blurFloat(std::vector<float>& v, int w, int h, int stride, double si
             for (int y = 0; y < h; ++y) v[size_t(y) * stride + x] = tmp[size_t(y)];
         }
     }
+    return true;
 }
 
 }  // namespace art_detail
 
 // compose()'s backdrop: the cover image blurred (radius 60 * 800 / 1600 = 30)
 // and darkened to 55 %, built at 1/8 scale and enlarged bilinearly.
-inline void blurredBackdrop(Frame f) {
+inline bool blurredBackdrop(Frame f) {
     constexpr int s = 8, w = ART_WIDTH / s, h = ART_HEIGHT / s;
-    std::vector<float> ch[3] = {std::vector<float>(w * h), std::vector<float>(w * h), std::vector<float>(w * h)};
+    Buffer<float> ch[3];
+    for (auto& c : ch)
+        if (!c.allocate(size_t(w) * h)) return false;
     for (int y = 0; y < h; ++y)
         for (int x = 0; x < w; ++x) {
             int sr = 0, sg = 0, sb = 0;
@@ -206,7 +227,8 @@ inline void blurredBackdrop(Frame f) {
             ch[1][size_t(y * w + x)] = sg / float(s * s);
             ch[2][size_t(y * w + x)] = sb / float(s * s);
         }
-    for (auto& c : ch) art_detail::blurFloat(c, w, h, w, 30.0 / s);
+    for (auto& c : ch)
+        if (!art_detail::blurFloat(c, w, h, w, 30.0 / s)) return false;
     for (int y = 0; y < ART_HEIGHT; ++y) {
         const float fy = std::min(float(h - 1), std::max(0.f, (y + 0.5f) / s - 0.5f));
         const int y0 = int(fy), y1 = std::min(h - 1, y0 + 1);
@@ -226,6 +248,7 @@ inline void blurredBackdrop(Frame f) {
             f.px[size_t(y) * FRAME_WIDTH + x] = rgb565(rgb);
         }
     }
+    return true;
 }
 
 struct ArtCredit {
@@ -261,8 +284,9 @@ inline void drawCredit(Frame f, const ArtCredit& credit) {
     const int right = int(std::lround(14 + width64 / 64.0 + 20));
     const int maskWidth = std::min(ART_WIDTH, right + 22);
     const int rows = bottom - top;
-    std::vector<float> mask(size_t(maskWidth) * rows, 0.f);
-    for (int y = 458; y < bottom; ++y)
+    Buffer<float> mask;
+    const bool shade = mask.allocate(size_t(maskWidth) * rows, 0.f);  // without memory: text without shade
+    for (int y = 458; shade && y < bottom; ++y)
         for (int x = 0; x <= right && x < maskWidth; ++x) {
             bool inside = true;
             const int r = 15;
@@ -273,8 +297,8 @@ inline void drawCredit(Frame f, const ArtCredit& credit) {
             else if (x > right - r && y > 480 - r) inside = corner(right - r, 480 - r);
             if (inside) mask[size_t(y - top) * maskWidth + x] = 150.f;
         }
-    art_detail::blurFloat(mask, maskWidth, rows, maskWidth, 7.0);
-    for (int y = top; y < bottom; ++y) {
+    const bool blurred = shade && art_detail::blurFloat(mask, maskWidth, rows, maskWidth, 7.0);
+    for (int y = top; blurred && y < bottom; ++y) {
         if (y < f.first || y >= f.first + f.rows) continue;
         uint16_t* line = f.px + size_t(y - f.first) * FRAME_WIDTH;
         for (int x = 0; x < maskWidth; ++x) {
@@ -303,7 +327,7 @@ inline bool composeArt(Frame f, int width, int height, Decode decode, const ArtC
         return false;
     resampler.finish();
     if (!plan.cover) {
-        blurredBackdrop(f);
+        if (!blurredBackdrop(f)) return false;
         ArtResampler piece;
         if (!piece.begin(f, plan.contain, {0, 0, width, height}, width, height) || !decode(piece)) return false;
         piece.finish();
