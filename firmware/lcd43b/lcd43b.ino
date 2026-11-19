@@ -241,6 +241,7 @@ void setup() {
     refreshCache.publish = stageResidentFrame;
     refreshCache.manifestVerified = [] { updateManifestVerified.store(true); };
     refreshCache.reclaimWireMemory = requestWireMemory;
+    refreshCache.releaseFrame = requestReleaseFrame;
     powerSession.activity(millis());
     show(screenIndex);            // cached frame, or the waiting screen
 #ifdef VENTANAL_LCD_DIAG_PANEL

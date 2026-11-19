@@ -43,6 +43,10 @@ struct ResidentCache {
     void (*manifestVerified)() = nullptr;
     // Optional loop-task hand-off when a wire allocation runs out of PSRAM.
     void (*reclaimWireMemory)(size_t bytes) = nullptr;
+    // Optional loop-task hand-off: give up a spare's resident frame (it is
+    // about to be replaced) so its PSRAM can be used meanwhile. Refused for a
+    // spare on screen or pinned; a released slot reads as empty until filled.
+    bool (*releaseFrame)(int slot) = nullptr;
 };
 
 // Budgets (ms). The transfer budget bounds each stalled frame download;

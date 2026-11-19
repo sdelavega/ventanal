@@ -85,6 +85,7 @@ struct PendingFrame {
     const lcd::FrameInfo* info;
     const lcd::FrameBody* body;
     size_t requestedBytes = 0;
+    int releaseSlot = -1;
 };
 PendingFrame pendingFrame;
 SemaphoreHandle_t frameStaged;       // worker -> loop: decoded frame ready
@@ -107,6 +108,13 @@ void requestWireMemory(size_t bytes) {
     xSemaphoreTake(frameCopied, portMAX_DELAY);
 }
 
+bool requestReleaseFrame(int slot) {
+    pendingFrame = {-1, nullptr, nullptr, 0, slot};
+    xSemaphoreGive(frameStaged);
+    xSemaphoreTake(frameCopied, portMAX_DELAY);
+    return frameAccepted;
+}
+
 uint8_t* clearOverrideSave() {
     deferredOverride = {};
     overrideSource = -1;
@@ -118,6 +126,24 @@ uint8_t* clearOverrideSave() {
 
 void applyResidentFrame() {
     const auto frame = pendingFrame;
+    if (frame.slot < 0 && frame.releaseSlot >= 0) {
+        // Lend a spare's frame memory to the worker (standalone art). Never the
+        // spare on screen or a pinned override; an empty id makes the slot read
+        // as missing (screenFrame) until a new frame is published into it.
+        const int slot = frame.releaseSlot;
+        uint8_t* pixels = slot >= 3 && slot < lcd::SCREEN_SLOTS ? residentFrames[slot] : nullptr;
+        frameAccepted = pixels && pixels != overrideFrame && screenSlot(screenIndex) != slot;
+        if (frameAccepted) {
+            residentFrames[slot] = nullptr;
+            state.cachedIds[slot][0] = '\0';
+            retirePixels(framePixels(pixels));
+            free(pixels);
+        }
+        lcd::log("cache release slot=%s ok=%d free_psram=%u\n", lcd::SLOT_NAMES[slot], frameAccepted,
+                 unsigned(ESP.getFreePsram()));
+        xSemaphoreGive(frameCopied);
+        return;
+    }
     if (frame.slot < 0) {
         if (!backlightState || litFrameSaveAllowed(millis())) reclaimCacheMemory(frame.requestedBytes);
         xSemaphoreGive(frameCopied);
@@ -125,7 +151,7 @@ void applyResidentFrame() {
     }
     uint8_t* retired = nullptr;
     if (frame.info) {
-        const bool pinnedSpare = residentFrames[frame.slot] == overrideFrame;
+        const bool pinnedSpare = residentFrames[frame.slot] && residentFrames[frame.slot] == overrideFrame;
         auto* replacement = pinnedSpare ? static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES)) : nullptr;
         if (pinnedSpare && !replacement) {
             frameAccepted = false;
@@ -160,6 +186,10 @@ void applyResidentFrame() {
     retirePixels(framePixels(retired));
     retirePixels(framePixels(oldOverride));
     free(oldOverride);
+    if (!refreshCache.staging) {  // the frame went into a released slot: a new scratch buffer
+        refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
+        lcd::log("cache staging realloc ok=%d\n", refreshCache.staging != nullptr);
+    }
     frameAccepted = true;
     xSemaphoreGive(frameCopied);
 }
@@ -274,6 +304,10 @@ void refreshWorker(void*) {
 // backlight while it runs. At most one worker may be in flight.
 bool startRefresh(bool redraw, bool check = false) {
     if (refreshBusy || setupActive || setupQueued) return false;
+    if (!refreshCache.staging) {  // a frame went into a lent slot and memory was short then
+        refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
+        lcd::log("cache staging retry ok=%d\n", refreshCache.staging != nullptr);
+    }
     refreshCheckingUpdates = check;
     if (!check) {
         formatOtaReport(refreshOtaReport, updateBoot.journal.record);

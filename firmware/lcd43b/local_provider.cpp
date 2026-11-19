@@ -211,8 +211,12 @@ int searchArt(const char* term, local::ArtCandidate* pool, int max, Watchdog& wa
 
 // The day's set, if it is due: art screen (slot 0) and spares (slots 3..).
 // Returns how many frames it placed, or -1 when it did not run.
+// Spares whose memory the art pass borrowed but could not fill.
+bool releasedUnfilled[SCREEN_SLOTS] = {};
+
 int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                const ResidentCache& cache) {
+    for (bool& r : releasedUnfilled) r = false;
     struct tm local {};
     localtime_r(&now, &local);
     local::LocalDate today;
@@ -222,7 +226,10 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
     const uint32_t day = uint32_t(today.year) * 10000 + today.month * 100 + today.day;
     ArtState state = loadArtState();
 #ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
-    state.failedAt = 0;  // diagnostic runs retry at once
+    static bool forced = false;  // diagnostic runs: a new set on the first pass after boot
+    state.failedAt = 0;
+    if (!forced) state.day = 0;
+    forced = true;
 #endif
     const bool haveArt = currentIds[0][0] != '\0';
     if ((state.day == day && haveArt) || (state.failedAt && uint32_t(now) - state.failedAt < ArtRetrySeconds))
@@ -235,22 +242,31 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
     int order[24];
     const int ranked = local::pickCandidates(pool.get(), found, state.seen, local::daySeed(today, deviceId()), found, order);
 
+    // The spares are about to be replaced: borrow their frame memory meanwhile
+    // (six resident frames leave too little PSRAM for an image and its work).
+    bool released[SCREEN_SLOTS] = {};
+    if (ranked > 0 && cache.releaseFrame)
+        for (int slot = 3; slot < SCREEN_SLOTS; ++slot)
+            if (currentIds[slot][0]) released[slot] = cache.releaseFrame(slot);
+
     static const int slots[ArtWant] = {0, 3, 4, 5};
     int placed = 0;
-    for (int i = 0; i < ranked && placed < ArtWant; ++i) {
+    for (int i = 0; i < ranked && placed < ArtWant && cache.staging; ++i) {
         const local::ArtCandidate& c = pool[size_t(order[i])];
         const local::ArtCredit credit{c.title, c.artist, c.date, c.museum};
         const uint32_t started = millis();
         // The cache body is the credit and the JPEG (VNA1): download straight
         // into it behind the header, compose into staging, keep the body.
         const size_t header = artBodyHeaderBytes(credit);
+        // Room for a whole image (up to 500 KB) beside the resampler's row band
+        // (<= ~200 KB); otherwise let the loop save queued frames first.
+        constexpr size_t ImageCap = 500 * 1024, Work = 224 * 1024;
         size_t room = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (room < header + 160 * 1024 && cache.reclaimWireMemory) {  // let the loop save queued frames first
-            cache.reclaimWireMemory(header + 400 * 1024);
+        if (room < header + Work + ImageCap && cache.reclaimWireMemory) {
+            cache.reclaimWireMemory(header + Work + ImageCap);
             room = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
         }
-        // Leave room for the resampler's row band (<= ~200 KB) beside the body.
-        const size_t cap = std::min<size_t>(320 * 1024, room > header + 224 * 1024 ? room - header - 224 * 1024 : 0);
+        const size_t cap = std::min(ImageCap, room > header + Work + 64 * 1024 ? room - header - Work : size_t(0));
         auto* bytes = cap ? static_cast<uint8_t*>(heap_caps_malloc(header + cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))
                           : nullptr;
         if (!bytes) {
@@ -279,7 +295,7 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
         info.size = body.size;
         info.encoding = FrameEncoding::Zlib;  // not a raw frame (the loader tells VNA1 by its magic)
         info.present = true;
-        if (!strcmp(currentIds[slot], info.id) || cache.publish(slot, &info, body)) {
+        if ((!released[slot] && !strcmp(currentIds[slot], info.id)) || cache.publish(slot, &info, body)) {
             strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
             state.seen.add(local::candidateKey(c));
@@ -288,6 +304,9 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
             result.frameFailed[slot] = true;
         }
     }
+    // A released spare that got no new piece is dropped (its memory is gone).
+    for (int slot = 3; slot < SCREEN_SLOTS; ++slot)
+        if (released[slot] && !(placed > slot - 2)) releasedUnfilled[slot] = true;
     if (placed) {
         state.day = day;
         state.failedAt = 0;
@@ -357,7 +376,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
     const int placed = cache.staging ? refreshArt(now, currentIds, result, watchdog, cache) : -1;
     if (placed <= 0) {
         keepSlot(0, m.screens[0], currentIds, result);
-        for (int i = 0; i < SPARE_SLOTS && currentIds[3 + i][0]; ++i) {
+        for (int i = 0; i < SPARE_SLOTS && currentIds[3 + i][0] && !releasedUnfilled[3 + i]; ++i) {
             keepSlot(3 + i, m.spares[i], currentIds, result);
             m.spareCount = uint8_t(i + 1);
         }
