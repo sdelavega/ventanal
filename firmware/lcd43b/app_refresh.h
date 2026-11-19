@@ -139,8 +139,9 @@ void applyResidentFrame() {
             retirePixels(framePixels(pixels));
             free(pixels);
         }
-        lcd::log("cache release slot=%s ok=%d free_psram=%u\n", lcd::SLOT_NAMES[slot], frameAccepted,
-                 unsigned(ESP.getFreePsram()));
+        if (pixels || frameAccepted)
+            lcd::log("cache release slot=%s ok=%d free_psram=%u\n", lcd::SLOT_NAMES[slot], frameAccepted,
+                     unsigned(ESP.getFreePsram()));
         xSemaphoreGive(frameCopied);
         return;
     }
