@@ -132,13 +132,57 @@ def location_marker(image, centre, here_label):
     d.ellipse((cx-7, cy-7, cx+7, cy+7), fill='black')
 
 
+def _hour_label(value, cfg):
+    if cfg.clock_24h:
+        return f'{value.hour:02d}'
+    return f'{value.hour % 12 or 12}{"AM" if value.hour < 12 else "PM"}'
+
+
+# The standalone chart: twelve 35 px columns across the radar box.
+CHART_COLUMN = 35
+CHART_TEMP_TOP, CHART_TEMP_BOTTOM = 126, 236   # dot centres span this range
+CHART_BAR_TOP, CHART_BAR_BOTTOM = 262, 304     # rain-chance track
+
+
+def draw_hours_chart(d, hours, cfg):
+    """Next 12 hours: temperature dots with labels, rain-chance bars, hour labels.
+
+    Only rounded bars, dots and text, so a board can draw the same screen.
+    """
+    x0, y0, x1, y1 = RADAR_BOX
+    if not hours:
+        _text(d, 'HOURLY FORECAST UNAVAILABLE', ((x0+x1)//2, (y0+y1)//2), 24, 'light_gray',
+              anchor='ms', width=x1-x0-16)
+        return
+    temps = [round(h.temp) for h in hours]
+    low, high = min(temps), max(temps)
+    span = max(1, high - low)
+    for i, (hour, temp) in enumerate(zip(hours, temps)):
+        cx = x0 + 17 + i*CHART_COLUMN
+        cy = CHART_TEMP_BOTTOM - round((temp - low) * (CHART_TEMP_BOTTOM - CHART_TEMP_TOP) / span)
+        _text(d, f'{temp}°', (cx, cy - 9), 16, bold=True, anchor='ms', width=CHART_COLUMN - 1)
+        d.ellipse((cx-4, cy-4, cx+4, cy+4), fill=LCD_COLOURS['gold'])
+        d.rounded_rectangle((cx-11, CHART_BAR_TOP, cx+10, CHART_BAR_BOTTOM), radius=3,
+                            fill=LCD_COLOURS['gray'])
+        chance = max(0, min(100, hour.precip_prob))
+        if chance:
+            top = CHART_BAR_BOTTOM - max(3, round((CHART_BAR_BOTTOM - CHART_BAR_TOP) * chance / 100))
+            d.rounded_rectangle((cx-11, top, cx+10, CHART_BAR_BOTTOM), radius=3, fill=LCD_COLOURS['sky'])
+        _text(d, _hour_label(hour.time, cfg), (cx, 322), 14, 'light_gray', anchor='ms', width=CHART_COLUMN - 1)
+
+
 def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
-                       place=None, coords=None) -> Image.Image:
-    """Render native LCD content, leaving the clock entirely to the board."""
+                       place=None, coords=None, standalone=False) -> Image.Image:
+    """Render native LCD content, leaving the clock entirely to the board.
+
+    standalone: a board without a host has no radar; the box charts the
+    next 12 hours instead (w.hours) and the sidebar says HOURLY.
+    """
     image = Image.new('RGB', (800, 480))
     code1 = f'{now.timetuple().tm_yday:03d}-{now:%H%M}'
     code2 = f'{w.sunrise:%H%M}-{w.sunset:%H%M}'
-    sections = [(y, h, colour, code1 if i == 0 else code2 if i == 2 else label)
+    sections = [(y, h, colour, code1 if i == 0 else code2 if i == 2 else
+                 'HOURLY' if standalone and i == 1 else label)
                 for i, (y, h, colour, label) in enumerate(SECTIONS)]
     draw_lcd_frame(image, sections, accent='violet', clock_block='orange')
     d = LCDDraw(image)
@@ -164,11 +208,14 @@ def render_lcd_weather(w, alerts, radar, cfg, now, *, lines=None,
         _text(d, label, (150, 246 + i*24), 16,
               'gold' if i == 3 else 'white', width=204)
     x0, y0, x1, y1 = RADAR_BOX
-    map_image = _radar_image(radar, lines or {}, cfg, now).resize(
-        (x1-x0-4, y1-y0-4), Image.Resampling.LANCZOS)
-    clip = rounded_mask(map_image.size, 12)
-    d.rounded_rectangle((x0, y0, x1-1, y1-1), radius=14, fill='white')
-    image.paste(map_image, (x0+2, y0+2), clip)
+    if standalone:
+        draw_hours_chart(d, w.hours, cfg)
+    else:
+        map_image = _radar_image(radar, lines or {}, cfg, now).resize(
+            (x1-x0-4, y1-y0-4), Image.Resampling.LANCZOS)
+        clip = rounded_mask(map_image.size, 12)
+        d.rounded_rectangle((x0, y0, x1-1, y1-1), radius=14, fill='white')
+        image.paste(map_image, (x0+2, y0+2), clip)
     d.line((150, 331, 785, 331), fill=LCD_COLOURS['gray'])
     for i, day in enumerate(w.days[:7]):
         cx = 195 + i*91

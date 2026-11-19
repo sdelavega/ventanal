@@ -301,6 +301,32 @@ def test_lcd_weather_golden(sample):
         assert image.tobytes() == expected.convert('RGB').tobytes()
 
 
+def test_lcd_weather_standalone_chart(sample):
+    """No radar without a host: the box charts the next 12 hours instead."""
+    from datetime import timedelta
+    from PIL import ImageColor
+    from ventanal.devices.lcd_lcars import LCD_COLOURS
+    from ventanal.devices.lcd_weather import RADAR_BOX, render_lcd_weather
+    from ventanal.weather.data import Hour
+    w, alerts, radar, lines, place, coords, now, config = sample
+    base = now.replace(minute=0, second=0, microsecond=0)
+    w.hours = [Hour(base + timedelta(hours=i), 50 + i, (0, 10, 45, 90)[i % 4]) for i in range(12)]
+    image = render_lcd_weather(w, alerts, None, config, now, place=place, coords=coords, standalone=True)
+    x0, y0, x1, y1 = RADAR_BOX
+    box = np.asarray(image.crop((x0, y0, x1, y1)))
+    assert not (box == 255).all(axis=2).mean() > 0.05      # no white map panel
+    gold = np.array(ImageColor.getrgb(LCD_COLOURS['gold']))
+    sky = np.array(ImageColor.getrgb(LCD_COLOURS['sky']))
+    assert (np.abs(box - gold).sum(axis=2) == 0).sum() > 12 * 20   # a dot per hour
+    assert (np.abs(box - sky).sum(axis=2) == 0).sum() > 9 * 60     # rain bars for the rainy hours
+    host = render_lcd_weather(w, alerts, None, config, now, place=place, coords=coords)
+    # Outside the box (and its sidebar label) the two screens are identical.
+    a, b = np.asarray(image).copy(), np.asarray(host).copy()
+    a[y0-3:y1+3, x0-3:x1+3] = b[y0-3:y1+3, x0-3:x1+3] = 0  # the map panel's AA edge
+    a[119:237, 0:100] = b[119:237, 0:100] = 0
+    assert (a == b).all(), np.argwhere((a != b).any(axis=2))[[0, -1]]
+
+
 def test_lcd_weather_no_overlap(sample):
     from ventanal.devices.lcd_weather import weather_layout
     from ventanal.weather.data import Alert

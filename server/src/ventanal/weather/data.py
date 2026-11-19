@@ -3,7 +3,7 @@
 
 """Fetch weather using caller-owned HTTP clients; no network at import time."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
 import json
 import os
@@ -66,6 +66,13 @@ class Alert:
 
 
 @dataclass
+class Hour:
+    time: datetime
+    temp: float
+    precip_prob: int
+
+
+@dataclass
 class Weather:
     current: Current
     days: list[Day]
@@ -73,6 +80,7 @@ class Weather:
     sunset: datetime
     rain_onset: datetime | None
     fetched: datetime
+    hours: list[Hour] = field(default_factory=list)  # the next 12, from the current hour
 
 
 def compass8(deg: float) -> str:
@@ -120,7 +128,7 @@ def fetch_weather(lat, lon, units, client, *, now: datetime | None = None) -> We
     params = {
         'latitude': lat, 'longitude': lon,
         'current': 'temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m',
-        'hourly': 'precipitation_probability',
+        'hourly': 'temperature_2m,precipitation_probability',
         'daily': 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset',
         'timezone': 'auto', 'forecast_days': 7,
     }
@@ -147,12 +155,18 @@ def fetch_weather(lat, lon, units, client, *, now: datetime | None = None) -> We
         data['hourly']['time'], data['hourly']['precipitation_probability'], strict=True,
     ) if probability is not None and probability >= 40]
     rain_onset = min((hour for hour in rain_hours if hour.date() == today and hour > instant), default=None)
+    current_hour = instant.astimezone(zone).replace(minute=0, second=0, microsecond=0)
+    hourly = data['hourly']
+    hours = [Hour(local_time(value), float(temp), int(chance or 0)) for value, temp, chance in zip(
+        hourly['time'], hourly.get('temperature_2m') or [None] * len(hourly['time']),
+        hourly['precipitation_probability'], strict=True,
+    ) if temp is not None and local_time(value) >= current_hour][:12]
     return Weather(
         current=Current(float(current['temperature_2m']), int(current['relative_humidity_2m']),
                         float(current['wind_speed_10m']), compass8(current['wind_direction_10m']),
                         int(current['weather_code'])),
         days=days, sunrise=local_time(daily['sunrise'][0]), sunset=local_time(daily['sunset'][0]),
-        rain_onset=rain_onset, fetched=instant,
+        rain_onset=rain_onset, fetched=instant, hours=hours,
     )
 
 

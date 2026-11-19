@@ -1,11 +1,11 @@
 {
  "fixture": "open-meteo-90210-imperial.json",
  "units": "imperial",
- "now_epoch": 1795114800,
+ "now_epoch": 1795115700,
  "current": {
   "temp": 61.0,
-  "humidity": 77,
-  "wind_speed": 7.5,
+  "humidity": 79,
+  "wind_speed": 8.7,
   "wind_dir": "SW",
   "code": 3
  },

@@ -84,7 +84,7 @@ def test_weather_parse(units):
     assert requests[0].headers['User-Agent'] == USER_AGENT
     assert str(requests[0].url).startswith('https://api.open-meteo.com/v1/forecast?')
     assert params['current'] == 'temperature_2m,relative_humidity_2m,weather_code,wind_speed_10m,wind_direction_10m'
-    assert params['hourly'] == 'precipitation_probability'
+    assert params['hourly'] == 'temperature_2m,precipitation_probability'
     assert params['daily'] == 'weather_code,temperature_2m_max,temperature_2m_min,precipitation_probability_max,sunrise,sunset'
     assert params['timezone'] == 'auto'
     assert params['forecast_days'] == '7'
@@ -168,3 +168,34 @@ def test_http_errors_propagate(operation, tmp_path):
             fetch_weather(40.7484, -73.9967, 'metric', client)
         else:
             fetch_alerts(40.7484, -73.9967, client, '')
+
+
+def test_fetch_weather_next_twelve_hours():
+    """Standalone boards chart the next 12 hours (from the current hour)."""
+    import json
+    from datetime import datetime
+    from pathlib import Path
+    from zoneinfo import ZoneInfo
+    from ventanal.weather.data import fetch_weather
+    path = Path(__file__).parents[2] / 'firmware/test/fixtures/standalone/open-meteo-90210-imperial.json'
+    data = json.loads(path.read_text())
+
+    class Client:
+        def get(self, *args, **kwargs):
+            class Response:
+                def raise_for_status(self):
+                    pass
+
+                def json(self):
+                    return data
+            return Response()
+
+    zone = ZoneInfo(data['timezone'])
+    now = datetime.fromisoformat(data['current']['time']).replace(tzinfo=zone, minute=20)
+    w = fetch_weather(34.09, -118.41, 'imperial', Client(), now=now)
+    assert len(w.hours) == 12
+    assert w.hours[0].time == now.replace(minute=0)  # the current hour first
+    assert [h.time.hour for h in w.hours] == [(now.hour + i) % 24 for i in range(12)]
+    index = data['hourly']['time'].index(now.strftime('%Y-%m-%dT%H:00'))
+    assert w.hours[0].temp == data['hourly']['temperature_2m'][index]
+    assert w.hours[0].precip_prob == data['hourly']['precipitation_probability'][index]

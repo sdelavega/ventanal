@@ -1,11 +1,11 @@
 {
  "fixture": "open-meteo-90210-metric.json",
  "units": "metric",
- "now_epoch": 1795114800,
+ "now_epoch": 1795115700,
  "current": {
   "temp": 16.1,
-  "humidity": 77,
-  "wind_speed": 12.1,
+  "humidity": 79,
+  "wind_speed": 14.0,
   "wind_dir": "SW",
   "code": 3
  },
