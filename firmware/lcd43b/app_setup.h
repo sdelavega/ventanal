@@ -76,6 +76,7 @@ bool startSetupPortal() {
     hooks.locate = portal::resolveLocation;
     hooks.save = saveSetupRecord;
     hooks.feed = [] {};
+    hooks.note = [](const char* line) { lcd::log("%s\n", line); };
     return setupPortal.begin(setupApName, setupApPassword, hooks);
 }
 

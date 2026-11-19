@@ -26,6 +26,7 @@ struct PortalHooks {
     // Writes the whole record in one go; false leaves the old record as it was.
     bool (*save)(const PortalFields& fields, const LocationResult& location) = nullptr;
     void (*feed)() = nullptr;  // watchdog (and, on boards, keeps serving the page)
+    void (*note)(const char* line) = nullptr;  // board log; never given names or passwords
 };
 
 enum class PortalOutcome { Running, Saved, TimedOut, Cancelled };
@@ -66,6 +67,7 @@ public:
         error_ = parsePortalForm(body, pending_);
         if (error_ == FormError::None) {
             state_ = State::Checking;
+            checkPending_ = true;
             status_ = "Checking the Wi-Fi network\xe2\x80\xa6";
         }
         return currentPage();
@@ -75,7 +77,10 @@ public:
         if (cancelled_) return PortalOutcome::Cancelled;
         switch (state_) {
         case State::Checking:
-            check(nowMs);
+            // Return once first, so a board can draw "Checking" before the
+            // join blocks for up to 20 seconds.
+            if (checkPending_) checkPending_ = false;
+            else check(nowMs);
             return PortalOutcome::Running;
         case State::Saved:
             return elapsed(nowMs, savedAt_) >= portalRestartDelayMs ? PortalOutcome::Saved : PortalOutcome::Running;
@@ -165,6 +170,7 @@ private:
     FormError error_ = FormError::None;
     std::string status_;
     bool cancelled_ = false;
+    bool checkPending_ = false;
 };
 
 #ifndef VENTANAL_HOST_TEST

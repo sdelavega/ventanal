@@ -16,6 +16,12 @@ static bool contains(const std::string& haystack, const char* needle) {
 static const char* goodBody = "ssid=Synthetic+Net&password=synthetic-pass&zip=12345&units=imperial&clock=24"
                               "&quiet_start=23%3A00&quiet_end=06%3A00&call=K1ABC";
 
+// One poll lets the board draw "Checking" before the slow join; the next runs it.
+static PortalOutcome settle(PortalCore& core, uint32_t nowMs) {
+    core.poll(nowMs - 1);
+    return core.poll(nowMs);
+}
+
 static PortalCore freshCore(uint32_t now = 1000) {
     fakenet::reset();
     return PortalCore(fakenet::hooks(), {"Synthetic Net", "Neighbour"}, now);
@@ -37,6 +43,8 @@ static void portal_saves_after_join_and_locate() {
     assert(accepted.code == 200 && contains(accepted.body, "Checking"));
     assert(contains(accepted.body, "http-equiv=refresh"));
     assert(fakenet::joins == 0);  // the slow work happens in poll, not in the request
+    assert(core.poll(2050) == PortalOutcome::Running && fakenet::joins == 0);
+    assert(contains(core.status(), "Checking"));  // the board can show this before the join blocks
     assert(core.poll(2100) == PortalOutcome::Running);
     assert(fakenet::joins == 1 && !strcmp(fakenet::lastSsid, "Synthetic Net"));
     assert(!strcmp(fakenet::lastPassword, "synthetic-pass") && fakenet::lastTimeoutMs == 20000);
@@ -54,7 +62,7 @@ static void portal_rejects_failed_join_keeps_ap() {
     PortalCore core = freshCore();
     fakenet::joinResult = false;
     core.handlePost("/save", goodBody, 2000);
-    assert(core.poll(2100) == PortalOutcome::Running);
+    assert(settle(core, 2100) == PortalOutcome::Running);
     assert(fakenet::joins == 1 && fakenet::locates == 0 && fakenet::saves == 0);
     const Response again = core.handleGet("/", 2200);
     assert(contains(again.body, "<form") && contains(again.body, "Couldn&#39;t join"));
@@ -65,7 +73,7 @@ static void portal_rejects_failed_join_keeps_ap() {
     // A corrected second attempt succeeds.
     fakenet::joinResult = true;
     core.handlePost("/save", goodBody, 3000);
-    core.poll(3100);
+    settle(core, 3100);
     assert(fakenet::joins == 2 && fakenet::saves == 1);
 }
 
@@ -74,7 +82,7 @@ static void unknown_zip_is_reported() {
     fakenet::location.why = LocationResult::ZipUnknown;
     fakenet::location.ok = false;
     core.handlePost("/save", goodBody, 2000);
-    core.poll(2100);
+    settle(core, 2100);
     assert(fakenet::saves == 0);
     const Response page = core.handleGet("/", 2200);
     assert(contains(page.body, formErrorText(FormError::Zip)) && contains(page.body, "ZIP not found"));
@@ -85,7 +93,7 @@ static void unreachable_locator_is_reported() {
     fakenet::location.why = LocationResult::Network;
     fakenet::location.ok = false;
     core.handlePost("/save", goodBody, 2000);
-    core.poll(2100);
+    settle(core, 2100);
     assert(fakenet::saves == 0 && contains(core.status(), "location service"));
 }
 
@@ -93,7 +101,7 @@ static void save_is_single_putBytes() {
     PortalCore core = freshCore();
     core.handlePost("/save", goodBody, 2000);
     core.handlePost("/save", goodBody, 2050);  // a double-tap while checking is ignored
-    core.poll(2100);
+    settle(core, 2100);
     core.poll(2200);
     assert(fakenet::saves == 1);
     assert(!strcmp(fakenet::savedFields.ssid, "Synthetic Net") && !strcmp(fakenet::savedFields.zip, "12345"));
@@ -103,7 +111,7 @@ static void save_is_single_putBytes() {
     PortalCore failing(fakenet::hooks(), {}, 0);
     fakenet::saveResult = false;
     failing.handlePost("/save", goodBody, 10);
-    assert(failing.poll(20) == PortalOutcome::Running && contains(failing.status(), "Couldn't save"));
+    assert(settle(failing, 20) == PortalOutcome::Running && contains(failing.status(), "Couldn't save"));
 }
 
 static void host_join_without_zip_skips_locate() {
@@ -111,7 +119,7 @@ static void host_join_without_zip_skips_locate() {
     const std::string body = std::string("ssid=n&password=synthetic-pass&host=https%3A%2F%2Fframe.test")
         + "&pairing=desk&certificate=-----BEGIN+CERTIFICATE-----x&device_key=" + std::string(64, 'a');
     core.handlePost("/save", body.c_str(), 2000);
-    core.poll(2100);
+    settle(core, 2100);
     assert(fakenet::locates == 0 && fakenet::saves == 1 && !fakenet::savedLocation.ok);
 }
 
@@ -119,7 +127,7 @@ static void form_errors_answer_immediately() {
     PortalCore core = freshCore();
     const Response r = core.handlePost("/save", "ssid=n&zip=1234", 2000);
     assert(r.code == 200 && contains(r.body, formErrorText(FormError::Zip)));
-    core.poll(2100);
+    settle(core, 2100);
     assert(fakenet::joins == 0);
 }
 

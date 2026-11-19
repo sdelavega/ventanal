@@ -10,6 +10,7 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <algorithm>
+#include <cstdarg>
 #include <memory>
 
 namespace portal {
@@ -22,9 +23,22 @@ struct Runtime {
     WebServer server{80};
     std::unique_ptr<PortalCore> core;
     void (*userFeed)() = nullptr;
+    void (*note)(const char*) = nullptr;
+    int clients = -1;
 };
 
 Runtime* active = nullptr;
+
+void note(const char* format, ...) {
+    if (!active || !active->note) return;
+    char line[96];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    active->note(line);
+}
+
 
 void serviceRequests() {
     if (!active) return;
@@ -105,11 +119,13 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     if (active || strlen(apPass) < 8) return false;
     auto runtime = std::make_unique<Runtime>();
     runtime->userFeed = hooks.feed;
+    runtime->note = hooks.note;
     hooks.feed = feedAndServe;  // long checks keep answering the phone
     WiFi.persistent(false);
     WiFi.mode(WIFI_AP_STA);
     WiFi.disconnect(false);
     std::vector<std::string> networks = scanNetworks();
+    const size_t scanned = networks.size();
     const IPAddress address(192, 168, 4, 1);
     if (!WiFi.softAPConfig(address, address, IPAddress(255, 255, 255, 0))
         || !WiFi.softAP(apSsid, apPass)) {  // an 8+ character passphrase means WPA2-PSK
@@ -122,12 +138,18 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     runtime->server.onNotFound(handleRequest);
     runtime->server.begin();
     active = runtime.release();
+    note("portal ap=up channel=%d networks=%u", int(WiFi.channel()), unsigned(scanned));
     return true;
 }
 
 PortalOutcome SetupPortal::poll(uint32_t nowMs) {
     if (!active) return PortalOutcome::Cancelled;
     serviceRequests();
+    const int clients = WiFi.softAPgetStationNum();
+    if (clients != active->clients) {
+        active->clients = clients;
+        note("portal clients=%d sta=%d channel=%d", clients, int(WiFi.status()), int(WiFi.channel()));
+    }
     return active->core->poll(nowMs);
 }
 

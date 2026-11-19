@@ -186,6 +186,7 @@ struct InstallationSlot {
 
 inline InstallationSlot readInstallationSlot(Preferences& prefs, const char* key) {
     InstallationSlot slot;
+    if (!prefs.isKey(key)) return slot;  // probing a missing key would log an NVS error
     const size_t length = prefs.getBytesLength(key);
     if (!length) return slot;
     slot.state = SlotState::Corrupt;
@@ -246,6 +247,7 @@ inline bool saveInstallation(const Installation& config) {
 // The pre-1.1 record under "installation": schema 1 (4700 bytes), or a whole
 // schema-2 struct from 1.1.0 development builds. Never rewritten here.
 inline SlotState readLegacyInstallation(Preferences& prefs, Installation& out) {
+    if (!prefs.isKey(installationKey)) return SlotState::Absent;
     const size_t length = prefs.getBytesLength(installationKey);
     if (!length) return SlotState::Absent;
     if (length != installationSchema1Bytes && length != sizeof(Installation)) return SlotState::Corrupt;
