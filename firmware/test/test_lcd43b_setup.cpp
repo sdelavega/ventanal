@@ -50,7 +50,7 @@ static void setup_screen_draws_qr_modules() {
     for (int y = 0; y < qr.size; ++y)
         for (int x = 0; x < qr.size; ++x) qr.set(x, y, (x + y) % 2 == 0);
     std::vector<uint16_t> px(size_t(WIDTH) * HEIGHT, 0x1234);
-    SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", "Checking", "", true, &qr};
+    SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", "Checking", false, "", true, &qr};
     drawSetupPage(SettingsSurface(px.data()), screen);
     const SetupQrLayout q = setupQrLayout(qr.size);
     auto at = [&](int x, int y) { return px[size_t(y) * WIDTH + x]; };
@@ -69,7 +69,7 @@ static void setup_screen_draws_qr_modules() {
 static void long_status_stays_left_of_the_code() {
     std::vector<uint16_t> px(size_t(WIDTH) * HEIGHT, 0x1234);
     const std::string status = "Couldn't join \"" + std::string(32, 'W') + "\". Check the network and its password.";
-    SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", status.c_str(), status.c_str(), false, nullptr};
+    SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", status.c_str(), true, status.c_str(), false, nullptr};
     drawSetupPage(SettingsSurface(px.data()), screen);
     for (int y = 300; y < 370; ++y)
         for (int x = SETUP_TEXT.x + SETUP_TEXT.w; x < 790; ++x) assert(px[size_t(y) * WIDTH + x] == 0);
@@ -88,7 +88,7 @@ static void setup_page_fits_local_scene() {
             qr.set(x, y, seed >> 31);
         }
     const std::string status = "Couldn't join \"" + std::string(32, 'W') + "\". Check the network.";
-    SetupScreen screen{"Ventanal-WWWW", "WWWWWWWWWW", status.c_str(), status.c_str(), true, &qr};
+    SetupScreen screen{"Ventanal-WWWW", "WWWWWWWWWW", status.c_str(), true, status.c_str(), true, &qr};
     std::vector<uint16_t> px(size_t(WIDTH) * HEIGHT);
     drawSetupPage(SettingsSurface(px.data()), screen);
     auto page = std::make_unique<LocalPage>();

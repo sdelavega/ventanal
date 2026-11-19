@@ -44,7 +44,7 @@ static void portal_saves_after_join_and_locate() {
     assert(contains(accepted.body, "http-equiv=refresh"));
     assert(fakenet::joins == 0);  // the slow work happens in poll, not in the request
     assert(core.poll(2050) == PortalOutcome::Running && fakenet::joins == 0);
-    assert(contains(core.status(), "Checking"));  // the board can show this before the join blocks
+    assert(contains(core.status(), "Checking") && !core.statusIsFailure());  // drawn before the join blocks
     assert(core.poll(2100) == PortalOutcome::Running);
     assert(fakenet::joins == 1 && !strcmp(fakenet::lastSsid, "Synthetic Net"));
     assert(!strcmp(fakenet::lastPassword, "synthetic-pass") && fakenet::lastTimeoutMs == 20000);
@@ -69,7 +69,7 @@ static void portal_rejects_failed_join_keeps_ap() {
     assert(contains(again.body, "<option value=\"Synthetic Net\" selected>"));
     assert(contains(again.body, "value=\"12345\"") && contains(again.body, "value=\"K1ABC\""));
     assert(!contains(again.body, "synthetic-pass"));
-    assert(contains(core.status(), "Couldn't join"));
+    assert(contains(core.status(), "Couldn't join") && core.statusIsFailure());
     // A corrected second attempt succeeds.
     fakenet::joinResult = true;
     core.handlePost("/save", goodBody, 3000);

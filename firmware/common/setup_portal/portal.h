@@ -64,6 +64,7 @@ public:
         lastActivity_ = nowMs;
         if (path != "/save" || state_ != State::Form) return currentPage();  // ignore double taps
         status_.clear();
+        failed_ = false;
         error_ = parsePortalForm(body, pending_);
         if (error_ == FormError::None) {
             state_ = State::Checking;
@@ -93,6 +94,7 @@ public:
 
     void cancel() { cancelled_ = true; }
     const char* status() const { return status_.c_str(); }
+    bool statusIsFailure() const { return failed_; }
 
 private:
     enum class State { Form, Checking, Saved };
@@ -111,6 +113,7 @@ private:
 
     void fail(const std::string& why, FormError error = FormError::None) {
         status_ = why;
+        failed_ = true;
         error_ = error;
         state_ = State::Form;
     }
@@ -171,6 +174,7 @@ private:
     std::string status_;
     bool cancelled_ = false;
     bool checkPending_ = false;
+    bool failed_ = false;
 };
 
 #ifndef VENTANAL_HOST_TEST
@@ -183,6 +187,7 @@ public:
     void cancel();
     void end();  // stops serving and takes the SoftAP down
     const char* status() const;
+    bool statusIsFailure() const;
 };
 
 // A `join` hook for boards: joins as a station while the SoftAP stays up,

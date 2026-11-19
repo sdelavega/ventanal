@@ -161,6 +161,10 @@ const char* SetupPortal::status() const {
     return active ? active->core->status() : "";
 }
 
+bool SetupPortal::statusIsFailure() const {
+    return active && active->core->statusIsFailure();
+}
+
 void SetupPortal::end() {
     if (!active) return;
     active->server.stop();
@@ -175,13 +179,23 @@ void keepServing() {
 }
 
 bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs) {
+    // One attempt: no background retries hopping the radio (and the SoftAP)
+    // between channels, and a rejected password or a missing network ends
+    // the wait as soon as the driver reports it instead of at the timeout.
+    WiFi.setAutoReconnect(false);
     WiFi.begin(ssid, password[0] ? password : nullptr);
     const uint32_t start = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - start < timeoutMs) {
+    wl_status_t status = WiFi.status();
+    while (status != WL_CONNECTED && millis() - start < timeoutMs) {
+        if ((status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) && millis() - start > 1500) break;
         feedAndServe();
         delay(50);
+        status = WiFi.status();
     }
-    if (WiFi.status() == WL_CONNECTED) return true;
+    note("portal join=%d status=%d ms=%lu", status == WL_CONNECTED, int(status),
+         static_cast<unsigned long>(millis() - start));
+    WiFi.setAutoReconnect(true);
+    if (status == WL_CONNECTED) return true;
     WiFi.disconnect(false);  // keep the SoftAP up for another try
     return false;
 }

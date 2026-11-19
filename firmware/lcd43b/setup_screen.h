@@ -47,6 +47,7 @@ struct SetupScreen {
     const char* apName;
     const char* apPassword;
     const char* status;   // the portal's latest message
+    bool statusFailed;    // drawn in red: the last attempt did not work
     const char* note;     // optional second line, e.g. why setup opened
     bool cancel;
     const QrBits* qr;     // null or size 0: no code drawn
@@ -77,8 +78,9 @@ inline void drawSetupPage(SettingsSurface px, const SetupScreen& s) {
     px.text(StatusFont, s.apPassword, 150, 222, white);
     px.text(ArtDate, "OR SCAN THE CODE. THEN OPEN THIS PAGE:", 150, 262, light);
     px.text(ClockTime, "http://192.168.4.1", 150, 292, gold);
-    if (s.status && *s.status) drawFitted(px, ArtDate, s.status, 150, 330, SETUP_TEXT.w, sky);
-    if (s.note && *s.note) drawFitted(px, ArtDate, s.note, 150, 354, SETUP_TEXT.w, light);
+    if (s.status && *s.status)
+        drawFitted(px, ClockTime, s.status, 150, 332, SETUP_TEXT.w, s.statusFailed ? rgb565(255, 85, 85) : sky);
+    if (s.note && *s.note) drawFitted(px, ArtDate, s.note, 150, 358, SETUP_TEXT.w, light);
     if (s.cancel) updateButton(px, SETUP_CANCEL, "Cancel");
     if (!s.qr || s.qr->size <= 0 || s.qr->size > QR_MAX_MODULES) return;
     const SetupQrLayout q = setupQrLayout(s.qr->size);

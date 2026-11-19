@@ -60,7 +60,8 @@ const char* setupNote() {
 }
 
 bool showSetup() {
-    const lcd::SetupScreen screen{setupApName, setupApPassword, setupPortal.status(), setupNote(),
+    const lcd::SetupScreen screen{setupApName, setupApPassword, setupPortal.status(),
+                                  setupPortal.statusIsFailure(), setupNote(),
                                   lcd::setupCancelVisible(setupReason), &setupQr};
     const int local = drawLocalScene([&](lcd::SettingsSurface pixels) { lcd::drawSetupPage(pixels, screen); });
     clockSlot = -1;
