@@ -223,6 +223,11 @@ void keepServing();
 
 // One line in the board log through the portal's note hook (no names or passwords).
 void portalNote(const char* format, ...);
+
+// Diagnostics only: hotspot compatibility variants (bit 0: 20 MHz channel,
+// bit 1: US country code, bit 2: station off until a join). Zero leaves the
+// driver defaults.
+extern int portalApVariant;
 #endif
 
 }  // namespace portal

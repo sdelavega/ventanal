@@ -14,6 +14,13 @@ char setupApName[16]{};
 char setupApPassword[11]{};
 lcd::QrBits setupQr;
 std::string setupShownStatus;
+// Diagnostics only: run setup with the panel stopped and the backlight off.
+#ifdef VENTANAL_LCD_DIAG_SETUP_DARK
+bool setupDark = true;
+#else
+bool setupDark = false;
+#endif
+bool setupDarkHeld = false;
 
 void captureSetupQr(esp_qrcode_handle_t code) {
     const int size = esp_qrcode_get_size(code);
@@ -93,6 +100,12 @@ bool enterSetup(lcd::SetupReason why) {
     uint8_t mac[6]{};
     esp_read_mac(mac, ESP_MAC_WIFI_SOFTAP);
     strlcpy(setupApName, portal::apName(mac).c_str(), sizeof setupApName);
+#ifdef VENTANAL_LCD_DIAG_SETUP_VARIANTS
+    {
+        const char suffix[] = {'-', char('A' + portal::portalApVariant), '\0'};
+        strlcat(setupApName, suffix, sizeof setupApName);
+    }
+#endif
     portal::apPassword(esp_random, setupApPassword);
     buildSetupQr();
     WiFi.disconnect(false);
@@ -108,13 +121,14 @@ bool enterSetup(lcd::SetupReason why) {
     lcd::log("setup start reason=%s ap=%s\n", why == lcd::SetupReason::FirstBoot ? "first-boot" : "user",
              setupApName);
     showSetup();
-#ifdef VENTANAL_LCD_DIAG_SETUP_DARK
-    // Diagnostic: is scan-out (PSRAM traffic) what keeps phones from seeing
-    // the hotspot? Hold the backlight off and stop the panel while setup runs.
-    displayOwner.acquire(lcd::DarkReason::Diag, millis());
-    backlightRefresh();
-    lcd::log("diag setup-dark panel_stopped=%d\n", stopPanel());
-#endif
+    if (setupDark) {
+        // Diagnostic: is scan-out (PSRAM traffic) what keeps phones from seeing
+        // the hotspot? Hold the backlight off and stop the panel while setup runs.
+        displayOwner.acquire(lcd::DarkReason::Diag, millis());
+        backlightRefresh();
+        setupDarkHeld = true;
+        lcd::log("diag setup-dark panel_stopped=%d\n", stopPanel());
+    }
     return true;
 }
 
@@ -122,9 +136,10 @@ void leaveSetup() {
     setupPortal.end();
     WiFi.mode(WIFI_OFF);  // the next refresh joins as a station again
     setupActive = false;
-#ifdef VENTANAL_LCD_DIAG_SETUP_DARK
-    displayOwner.release(lcd::DarkReason::Diag);
-#endif
+    if (setupDarkHeld) {
+        setupDarkHeld = false;
+        displayOwner.release(lcd::DarkReason::Diag);
+    }
     touchPoller.controlsMode(false);
     powerSession.activity(millis());
     lcd::log("setup leave\n");
@@ -139,9 +154,7 @@ void setupPoll(uint32_t now) {
     powerSession.activity(now);  // keep the password on screen while setup runs
     switch (lcd::afterSetup(setupPortal.poll(now), setupReason)) {
     case lcd::SetupNext::Stay:
-#ifndef VENTANAL_LCD_DIAG_SETUP_DARK
-        if (setupShownStatus != setupPortal.status()) showSetup();
-#endif
+        if (!setupDarkHeld && setupShownStatus != setupPortal.status()) showSetup();
         break;
     case lcd::SetupNext::Restart:
         lcd::log("setup saved restart=1\n");
@@ -165,3 +178,74 @@ void setupTap(int x, int y) {
         setupPortal.cancel();
     }
 }
+
+#ifdef VENTANAL_LCD_DIAG_SETUP_CYCLE
+// Diagnostic: with no one at the board, open setup by itself six times,
+// alternating lit and dark, 3 minutes each with 30 s of art in between, so
+// a nearby Wi-Fi scanner can time when the hotspot first becomes visible.
+struct DiagSetupCycle {
+    int cycle = 0;
+    bool running = false;
+    uint32_t at = 15000;
+} diagSetupCycle;
+
+void diagSetupCycleTick(uint32_t now) {
+    auto& d = diagSetupCycle;
+    if (d.cycle >= 6) return;
+    if (!d.running) {
+        if (setupActive) {
+            d.running = true;
+            d.at = now + 180000;
+            lcd::log("diag setup-cycle n=%d dark=%d start\n", d.cycle + 1, setupDark);
+        } else if (int32_t(now - d.at) >= 0) {
+            setupDark = d.cycle % 2;
+            enterSetup(lcd::SetupReason::UserRequested);  // may queue behind a refresh
+            d.at = now + 5000;
+        }
+    } else if (!setupActive) {
+        lcd::log("diag setup-cycle n=%d end\n", d.cycle + 1);
+        d.running = false;
+        d.at = now + 30000;
+        if (++d.cycle == 6) lcd::log("diag setup-cycle done\n");
+    } else if (int32_t(now - d.at) >= 0) {
+        setupPortal.cancel();
+    }
+}
+#endif
+
+#ifdef VENTANAL_LCD_DIAG_SETUP_VARIANTS
+// Diagnostic: four automatic setup runs, 3 minutes each, one per hotspot
+// variant (defaults, 20 MHz, US country, both), each under its own name
+// (Ventanal-XXXX-A..D) so an Apple scanner's cache cannot mix them up.
+struct DiagSetupVariants {
+    int run = 0;
+    bool running = false;
+    uint32_t at = 15000;
+} diagVariants;
+
+void diagSetupVariantsTick(uint32_t now) {
+    auto& d = diagVariants;
+    static constexpr int variants[] = {4, 5};  // E: station off until a join; F: also 20 MHz
+    constexpr int runs = sizeof variants / sizeof variants[0];
+    if (d.run >= runs) return;
+    if (!d.running) {
+        if (setupActive) {
+            d.running = true;
+            d.at = now + 180000;
+            lcd::log("diag setup-variant run=%d variant=%d ap=%s start\n", d.run + 1, portal::portalApVariant,
+                     setupApName);
+        } else if (int32_t(now - d.at) >= 0) {
+            portal::portalApVariant = variants[d.run];
+            enterSetup(lcd::SetupReason::UserRequested);
+            d.at = now + 5000;
+        }
+    } else if (!setupActive) {
+        lcd::log("diag setup-variant run=%d end\n", d.run + 1);
+        d.running = false;
+        d.at = now + 30000;
+        if (++d.run == runs) lcd::log("diag setup-variant done\n");
+    } else if (int32_t(now - d.at) >= 0) {
+        setupPortal.cancel();
+    }
+}
+#endif

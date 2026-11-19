@@ -10,7 +10,9 @@
 #include <WebServer.h>
 #include <WiFi.h>
 #include <algorithm>
+#include <atomic>
 #include <cstdarg>
+#include <esp_wifi.h>
 #include <memory>
 
 namespace portal {
@@ -25,7 +27,14 @@ struct Runtime {
     void (*userFeed)() = nullptr;
     void (*note)(const char*) = nullptr;
     int clients = -1;
+    wifi_event_id_t probeWatch = 0;
+    uint32_t probeReportMs = 0;
 };
+
+// Probe requests heard by the hotspot (phones looking for networks): count
+// and strongest signal per report window. Addresses are never kept.
+std::atomic<uint32_t> probeCount{0};
+std::atomic<int> probeRssiMax{-128};
 
 Runtime* active = nullptr;
 
@@ -134,19 +143,47 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
         WiFi.mode(WIFI_OFF);
         return false;
     }
+    if (portalApVariant & 4) WiFi.mode(WIFI_AP);  // station off until a join needs it
     runtime->core = std::make_unique<PortalCore>(hooks, std::move(networks), millis());
     runtime->dns.setErrorReplyCode(DNSReplyCode::NoError);
     runtime->dns.start(53, "*", address);  // every name resolves to the portal
     runtime->server.onNotFound(handleRequest);
     runtime->server.begin();
     active = runtime.release();
-    portalNote("portal ap=up channel=%d chosen=%d networks=%u", int(WiFi.channel()), channel, unsigned(scanned));
+    if (portalApVariant & 1) esp_wifi_set_bandwidth(WIFI_IF_AP, WIFI_BW_HT20);
+    if (portalApVariant & 2) esp_wifi_set_country_code("US", true);
+    {
+        wifi_bandwidth_t bw = WIFI_BW_HT40;
+        esp_wifi_get_bandwidth(WIFI_IF_AP, &bw);
+        char cc[3] = {};
+        esp_wifi_get_country_code(cc);
+        portalNote("portal variant=%d bandwidth=%d country=%s", portalApVariant, int(bw), cc);
+    }
+    esp_wifi_set_event_mask(WIFI_EVENT_MASK_NONE);  // deliver AP probe-request events while setup runs
+    active->probeWatch = WiFi.onEvent(
+        [](arduino_event_id_t, arduino_event_info_t info) {
+            probeCount.fetch_add(1, std::memory_order_relaxed);
+            const int rssi = info.wifi_ap_probereqrecved.rssi;
+            int seen = probeRssiMax.load(std::memory_order_relaxed);
+            while (rssi > seen && !probeRssiMax.compare_exchange_weak(seen, rssi)) {}
+        },
+        ARDUINO_EVENT_WIFI_AP_PROBEREQRECVED);
+    int8_t power = 0;
+    esp_wifi_get_max_tx_power(&power);
+    portalNote("portal ap=up channel=%d chosen=%d networks=%u tx_quarter_dbm=%d", int(WiFi.channel()), channel,
+               unsigned(scanned), int(power));
     return true;
 }
 
 PortalOutcome SetupPortal::poll(uint32_t nowMs) {
     if (!active) return PortalOutcome::Cancelled;
     serviceRequests();
+    if (nowMs - active->probeReportMs >= 10000) {
+        active->probeReportMs = nowMs;
+        const uint32_t probes = probeCount.exchange(0);
+        const int rssi = probeRssiMax.exchange(-128);
+        portalNote("portal probes=%lu rssi_max=%d", static_cast<unsigned long>(probes), probes ? rssi : 0);
+    }
     const int clients = WiFi.softAPgetStationNum();
     if (clients != active->clients) {
         active->clients = clients;
@@ -169,6 +206,8 @@ bool SetupPortal::statusIsFailure() const {
 
 void SetupPortal::end() {
     if (!active) return;
+    WiFi.removeEvent(active->probeWatch);
+    esp_wifi_set_event_mask(WIFI_EVENT_MASK_AP_PROBEREQRECVED);  // the default
     active->server.stop();
     active->dns.stop();
     WiFi.softAPdisconnect(true);
@@ -177,6 +216,8 @@ void SetupPortal::end() {
     delete active;
     active = nullptr;
 }
+
+int portalApVariant = 0;
 
 void portalNote(const char* format, ...) {
     if (!active || !active->note) return;
@@ -206,6 +247,7 @@ bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs) {
         },
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.setAutoReconnect(false);
+    if (WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA);  // the hotspot keeps running
     WiFi.begin(ssid, password[0] ? password : nullptr);
     const uint32_t start = millis();
     wl_status_t status = WiFi.status();

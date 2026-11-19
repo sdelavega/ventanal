@@ -306,6 +306,12 @@ void loop() {
     }
     pollTouch(now);
     setupPoll(millis());  // a tap above may just have started setup (after a scan)
+#ifdef VENTANAL_LCD_DIAG_SETUP_CYCLE
+    diagSetupCycleTick(millis());
+#endif
+#ifdef VENTANAL_LCD_DIAG_SETUP_VARIANTS
+    diagSetupVariantsTick(millis());
+#endif
     reportBootScanout(now);
     if (lcd::pairingCounterFlash.exchange(false) && !LitNvsWrites) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();
