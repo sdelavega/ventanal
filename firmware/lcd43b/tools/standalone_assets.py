@@ -24,7 +24,8 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'server/src'))
-from ventanal.devices.lcd_lcars import draw_lcd_frame  # noqa: E402
+from ventanal.devices.lcd_lcars import LCD_COLOURS, draw_lcd_frame  # noqa: E402
+from ventanal.weather.data import WMO_LONG, WMO_SHORT  # noqa: E402
 from ventanal.devices.lcd_weather import SECTIONS as WEATHER_SECTIONS  # noqa: E402
 
 FONT_DIR = ROOT / 'server/src/ventanal/fonts/antonio'
@@ -126,6 +127,15 @@ def chrome_header():
     out += ['// The sidebar blocks: labels are black, white on gray (draw_lcd_frame).',
             'inline constexpr FrameSection WEATHER_SECTIONS[] = {']
     out += [f'    {{{y},{h},0x{0xffff if colour == "gray" else 0:04x}}},' for y, h, colour, _ in WEATHER_SECTIONS]
+    out += ['};', '// The server\'s LCD palette (devices/lcd_lcars.LCD_COLOURS), 0xRRGGBB.', 'namespace colour {']
+    for name, value in sorted({**LCD_COLOURS, 'white': '#ffffff', 'black': '#000000'}.items()):
+        out.append(f'inline constexpr uint32_t {name} = 0x{value.lstrip("#").lower()};')
+    out += ['}  // namespace colour',
+            '// Weather code names (weather/data.py WMO_LONG / WMO_SHORT).',
+            'struct WmoName { uint8_t code; const char* longName; const char* shortName; };',
+            'inline constexpr WmoName WMO_NAMES[] = {']
+    for code in sorted(set(WMO_LONG) | set(WMO_SHORT)):
+        out.append(f'    {{{code},"{WMO_LONG.get(code, "Unknown")}","{WMO_SHORT.get(code, "UNKNOWN")}"}},')
     out += ['};', '}  // namespace lcd::local']
     return ('\n'.join(out) + '\n').encode()
 

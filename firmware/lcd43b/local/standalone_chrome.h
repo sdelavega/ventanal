@@ -895,4 +895,50 @@ inline constexpr FrameSection WEATHER_SECTIONS[] = {
     {241,31,0x0000},
     {276,148,0xffff},
 };
+// The server's LCD palette (devices/lcd_lcars.LCD_COLOURS), 0xRRGGBB.
+namespace colour {
+inline constexpr uint32_t black = 0x000000;
+inline constexpr uint32_t gold = 0xffaa00;
+inline constexpr uint32_t gray = 0x666688;
+inline constexpr uint32_t green = 0x5fae4f;
+inline constexpr uint32_t light_gray = 0x9996ba;
+inline constexpr uint32_t orange = 0xff7700;
+inline constexpr uint32_t red = 0xdd4444;
+inline constexpr uint32_t sky = 0xaaaaff;
+inline constexpr uint32_t text_gray = 0xd3d3d3;
+inline constexpr uint32_t violet = 0xddbbff;
+inline constexpr uint32_t white = 0xffffff;
+}  // namespace colour
+// Weather code names (weather/data.py WMO_LONG / WMO_SHORT).
+struct WmoName { uint8_t code; const char* longName; const char* shortName; };
+inline constexpr WmoName WMO_NAMES[] = {
+    {0,"Clear sky","CLEAR"},
+    {1,"Mainly clear","M CLEAR"},
+    {2,"Partly cloudy","P CLOUD"},
+    {3,"Overcast","OVERCAST"},
+    {45,"Fog","FOG"},
+    {48,"Depositing rime fog","RIME FOG"},
+    {51,"Light drizzle","DRIZZLE"},
+    {53,"Moderate drizzle","DRIZZLE"},
+    {55,"Dense drizzle","DRIZZLE"},
+    {56,"Light freezing drizzle","FRZ DRZ"},
+    {57,"Dense freezing drizzle","FRZ DRZ"},
+    {61,"Slight rain","RAIN"},
+    {63,"Moderate rain","RAIN"},
+    {65,"Heavy rain","HVY RAIN"},
+    {66,"Light freezing rain","FRZ RAIN"},
+    {67,"Heavy freezing rain","FRZ RAIN"},
+    {71,"Slight snow fall","SNOW"},
+    {73,"Moderate snow fall","SNOW"},
+    {75,"Heavy snow fall","HVY SNOW"},
+    {77,"Snow grains","SN GRAIN"},
+    {80,"Slight rain showers","SHOWERS"},
+    {81,"Moderate rain showers","SHOWERS"},
+    {82,"Violent rain showers","HVY SHWR"},
+    {85,"Slight snow showers","SN SHWR"},
+    {86,"Heavy snow showers","SN SHWR"},
+    {95,"Thunderstorm","T-STORM"},
+    {96,"Thunderstorm with slight hail","T / HAIL"},
+    {99,"Thunderstorm with heavy hail","T / HAIL"},
+};
 }  // namespace lcd::local

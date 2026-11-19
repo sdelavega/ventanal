@@ -57,6 +57,13 @@ static void matches_server(const char* expectedName) {
     assert(clockText(w.sunset) == expected["sunset"].as<const char*>());
     if (expected["rain_onset"].isNull()) assert(!w.rain);
     else assert(w.rain && stampText(w.rainOnset) == expected["rain_onset"].as<const char*>());
+    JsonArrayConst hours = expected["hours"];
+    assert(hours.size() == 12 && w.hourCount == 12);
+    for (int i = 0; i < w.hourCount; ++i) {
+        assert(stampText(w.hours[i].time) == hours[i]["time"].as<const char*>());
+        assert(std::fabs(w.hours[i].temp - hours[i]["temp"].as<float>()) < 1e-4f);
+        assert(w.hours[i].precip == hours[i]["precip"].as<int>());
+    }
 }
 
 static void open_meteo_matches_server() {

@@ -59,6 +59,8 @@ def weather_expected(name, units, hour=None):
                   'lo': d.lo, 'code': d.code, 'precip': d.precip_prob} for d in w.days],
         'sunrise': w.sunrise.strftime('%H:%M'), 'sunset': w.sunset.strftime('%H:%M'),
         'rain_onset': w.rain_onset.strftime('%Y-%m-%dT%H:%M') if w.rain_onset else None,
+        'hours': [{'time': h.time.strftime('%Y-%m-%dT%H:%M'), 'temp': h.temp, 'precip': h.precip_prob}
+                  for h in w.hours],
     }
 
 

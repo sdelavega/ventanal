@@ -34,6 +34,13 @@ struct LocalDay {
 };
 
 inline constexpr int localForecastDays = 7;
+inline constexpr int localChartHours = 12;
+
+struct LocalHour {
+    LocalClock time;
+    float temp = 0;
+    uint8_t precip = 0;  // percent
+};
 
 struct LocalWeather {
     float temp = 0;
@@ -46,6 +53,8 @@ struct LocalWeather {
     LocalClock sunrise, sunset;
     bool rain = false;      // rain (>= 40 %) later today
     LocalClock rainOnset;
+    LocalHour hours[localChartHours];  // the next 12, from the current hour
+    int hourCount = 0;
     int32_t utcOffsetSeconds = 0;
 };
 
@@ -180,6 +189,7 @@ inline bool parseOpenMeteo(const char* json, time_t now, LocalWeather& out) {
         filter["current"][key] = true;
     filter["hourly"]["time"] = true;
     filter["hourly"]["precipitation_probability"] = true;
+    filter["hourly"]["temperature_2m"] = true;
     for (const char* key : {"time", "weather_code", "temperature_2m_max", "temperature_2m_min",
                             "precipitation_probability_max", "sunrise", "sunset"})
         filter["daily"][key] = true;
@@ -221,10 +231,22 @@ inline bool parseOpenMeteo(const char* json, time_t now, LocalWeather& out) {
     const LocalDate today = civilFromDays((int64_t(now) + out.utcOffsetSeconds) / 86400);
     JsonArrayConst hours = hourly["time"];
     JsonArrayConst chances = hourly["precipitation_probability"];
+    JsonArrayConst temps = hourly["temperature_2m"];
+    const int64_t nowLocal = int64_t(now) + out.utcOffsetSeconds;
+    const int64_t currentHour = nowLocal - ((nowLocal % 3600) + 3600) % 3600;  // the hour now is in
     int index = 0;
     for (JsonVariantConst value : hours) {
+        JsonVariantConst temp = temps[index];
         JsonVariantConst chance = chances[index++];
         LocalClock hour;
+        // The chart: the next 12 hours with a temperature, from the current hour.
+        if (out.hourCount < localChartHours && !temp.isNull() && detail::parseClock(value.as<const char*>(), hour)
+            && detail::clockMinutes(hour) * 60 >= currentHour) {
+            LocalHour& h = out.hours[out.hourCount++];
+            h.time = hour;
+            h.temp = temp.as<float>();
+            h.precip = uint8_t(chance.isNull() ? 0 : chance.as<int>());
+        }
         if (chance.isNull() || chance.as<int>() < 40 || !detail::parseClock(value.as<const char*>(), hour)) continue;
         if (hour.date.year != today.year || hour.date.month != today.month || hour.date.day != today.day) continue;
         if (int64_t(detail::clockMinutes(hour)) * 60 <= (int64_t(now) + out.utcOffsetSeconds)) continue;
