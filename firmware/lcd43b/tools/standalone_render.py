@@ -15,7 +15,10 @@ ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'server/src'))
 sys.path.insert(0, str(Path(__file__).parent))
 from standalone_expected import FIXTURES, FixtureClient, fixture_now  # noqa: E402
+from ventanal.devices.lcd43b import render_art  # noqa: E402
 from ventanal.devices.lcd_weather import render_lcd_weather  # noqa: E402
+from PIL import Image  # noqa: E402
+import json  # noqa: E402
 from ventanal.weather.data import fetch_alerts, fetch_weather  # noqa: E402
 
 LAT, LON, PLACE = 34.0901, -118.4065, 'Beverly Hills · CA'
@@ -40,11 +43,49 @@ def weather_case(name):
     return render_lcd_weather(w, alerts, None, cfg, now, place=PLACE, coords=(LAT, LON), standalone=True)
 
 
+# name -> image fixture art-<source>-<object id>.jpg, at the size the board
+# asks for; the credit comes from that candidate in expected-art-winter.json.
+ART_CASES = {
+    'art-cover-aic': ('art-aic-10932.jpg', None),         # 3:2, within 15 % of 4:3: cover crop
+    'art-wide-cleveland': ('art-cleveland-153737.jpg', None),  # very wide: backdrop + contained
+    'art-wide-met': ('art-met-54428.jpg', None),          # very wide, small image
+}
+
+
+def art_credit(name):
+    """The credit the board builds from the same candidate (expected-art-winter.json)."""
+    image, _ = ART_CASES[name]
+    source, object_id = image[4:-4].split('-')
+    expected = json.loads((FIXTURES / 'expected-art-winter.json').read_text())
+    c = next(c for c in expected['candidates'] if c['source'] == source and c['object_id'] == object_id)
+    return {key: c[key] for key in ('title', 'artist', 'date', 'museum')}
+
+
+def art_source(name):
+    with Image.open(FIXTURES / ART_CASES[name][0]) as im:
+        return im.convert('RGB')
+
+
+def art_case(name):
+    return render_art(art_source(name), art_credit(name))
+
+
+def write_art_inputs(out):
+    """The decoded pixels (PPM) and credit (JSON) the board's host render uses."""
+    for name in ART_CASES:
+        art_source(name).save(out / f'{name}-input.ppm')
+        (out / f'{name}-credit.json').write_text(json.dumps(art_credit(name)))
+
+
 def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
     for name in WEATHER_CASES:
         weather_case(name).save(out / f'{name}.png')
+    for name in ART_CASES:
+        art_case(name).save(out / f'{name}.png')
+    if len(sys.argv) > 2 and sys.argv[2] == '--inputs':
+        write_art_inputs(out)
 
 
 if __name__ == '__main__':

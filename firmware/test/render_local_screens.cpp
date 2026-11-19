@@ -4,6 +4,7 @@
 // Host build of the board's standalone renderers: draws the fixture cases
 // (the same ones tools/standalone_render.py asks the server for) and writes
 // them as PPM images for tools/standalone_compare.py.
+#include "../lcd43b/local/art_compose.h"
 #include "../lcd43b/local/render_weather.h"
 #include <cassert>
 #include <cstdio>
@@ -49,6 +50,51 @@ struct WeatherCase {
     const char* alerts;    // nullptr: none
 };
 
+struct Image {
+    int width = 0, height = 0;
+    std::vector<uint8_t> rgb;
+};
+
+static Image readPpm(const std::string& path) {
+    std::ifstream in(path, std::ios::binary);
+    std::string magic;
+    Image im;
+    int maxValue = 0;
+    in >> magic >> im.width >> im.height >> maxValue;
+    in.get();
+    if (magic != "P6" || maxValue != 255) exit(2);
+    im.rgb.resize(size_t(im.width) * im.height * 3);
+    in.read(reinterpret_cast<char*>(im.rgb.data()), std::streamsize(im.rgb.size()));
+    return im;
+}
+
+// Feeds 16x16 blocks in raster order, like a JPEG decoder's MCUs.
+static bool feedBlocks(const Image& im, ArtResampler& r) {
+    std::vector<uint8_t> block(16 * 16 * 3);
+    for (int by = 0; by < im.height; by += 16)
+        for (int bx = 0; bx < im.width; bx += 16) {
+            const int w = std::min(16, im.width - bx), h = std::min(16, im.height - by);
+            for (int y = 0; y < h; ++y)
+                memcpy(&block[size_t(y) * w * 3], &im.rgb[(size_t(by + y) * im.width + bx) * 3], size_t(w) * 3);
+            r.block(bx, by, w, h, block.data());
+        }
+    return true;
+}
+
+static void renderArtCase(const std::string& dir, const char* name, std::vector<uint16_t>& px) {
+    const Image im = readPpm(dir + "/" + name + "-input.ppm");
+    std::ifstream in(dir + "/" + name + "-credit.json");
+    std::stringstream text;
+    text << in.rdbuf();
+    JsonDocument doc;
+    if (deserializeJson(doc, text.str())) exit(2);
+    ArtCredit credit{doc["title"] | "", doc["artist"] | "", doc["date"] | "", doc["museum"] | ""};
+    std::fill(px.begin(), px.end(), uint16_t(0));
+    if (!composeArt(Frame{px.data()}, im.width, im.height, [&](ArtResampler& r) { return feedBlocks(im, r); }, credit))
+        exit(1);
+    writePpm(dir + "/" + name + ".ppm", px);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s OUT_DIR\n", argv[0]);
@@ -77,5 +123,7 @@ int main(int argc, char** argv) {
         renderWeather(Frame{px.data()}, w, alerts, count < 0 ? 0 : count, screen, now);
         writePpm(std::string(argv[1]) + "/" + c.name + ".ppm", px);
     }
+    for (const char* name : {"art-cover-aic", "art-wide-cleveland", "art-wide-met"})  // standalone_render.ART_CASES
+        renderArtCase(argv[1], name, px);
     return 0;
 }

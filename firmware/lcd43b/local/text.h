@@ -164,10 +164,10 @@ inline std::string renderable(const TextFace& face, const char* utf8) {
 
 // text.py fit(): the longest prefix (stripped of trailing ' ' and '·') plus
 // an ellipsis that fits maxWidth pixels, or "" when even "…" does not fit.
-inline std::string fitText(const TextFace& face, const char* utf8, int maxWidth) {
+// limit64 is the width in 1/64 px (fit() also takes fractional widths).
+inline std::string fitText64(const TextFace& face, const char* utf8, int32_t limit) {
     constexpr uint32_t ellipsis = 0x2026;
     const std::vector<uint32_t> codes = decodeUtf8(utf8);
-    const int32_t limit = int32_t(maxWidth) * 64;
     if (textWidth64(face, codes) <= limit) return encodeUtf8(codes);
     if (textWidth64(face, std::vector<uint32_t>{ellipsis}) > limit) return "";
     auto candidate = [&](size_t n) {
@@ -185,21 +185,17 @@ inline std::string fitText(const TextFace& face, const char* utf8, int maxWidth)
     return encodeUtf8(candidate(lo));
 }
 
+inline std::string fitText(const TextFace& face, const char* utf8, int maxWidth) {
+    return fitText64(face, utf8, int32_t(maxWidth) * 64);
+}
+
 // ---- drawing --------------------------------------------------------------
 
 inline int32_t floorDiv64(int32_t v) { return v >= 0 ? v / 64 : -((-v + 63) / 64); }
 
-// Draws text the way the server's _text() helpers do: renderable(), then
-// fitText() when maxWidth >= 0, then Pillow's placement for the anchor.
-inline void drawText(Frame frame, const TextFace& face, const char* utf8, int x, int y, uint32_t rgb,
-                     Anchor anchor = Anchor::LeftBaseline, int maxWidth = -1) {
-    std::string label = renderable(face, utf8);
-    if (maxWidth >= 0) label = fitText(face, label.c_str(), maxWidth);
-    const std::vector<uint32_t> codes = decodeUtf8(label.c_str());
-    const int32_t width = textWidth64(face, codes);
-    int32_t pen = x * 64;
-    if (anchor == Anchor::MiddleBaseline) pen = (x - (width / 2 + 32) / 64) * 64;
-    if (anchor == Anchor::RightBaseline) pen = floorDiv64(x * 64 - width + 32) * 64;
+// Glyphs from pen (1/64 px) on baseline y, exactly as given.
+inline void drawCodes(Frame frame, const TextFace& face, const std::vector<uint32_t>& codes, int32_t pen, int y,
+                      uint32_t rgb) {
     uint32_t previous = 0;
     for (uint32_t c : codes) {
         const TextGlyph* g = findGlyph(face, c);
@@ -222,6 +218,26 @@ inline void drawText(Frame frame, const TextFace& face, const char* utf8, int x,
             }
         }
     }
+}
+
+// Draws text the way the server's _text() helpers do: renderable(), then
+// fitText() when maxWidth >= 0, then Pillow's placement for the anchor.
+inline void drawText(Frame frame, const TextFace& face, const char* utf8, int x, int y, uint32_t rgb,
+                     Anchor anchor = Anchor::LeftBaseline, int maxWidth = -1) {
+    std::string label = renderable(face, utf8);
+    if (maxWidth >= 0) label = fitText(face, label.c_str(), maxWidth);
+    const std::vector<uint32_t> codes = decodeUtf8(label.c_str());
+    const int32_t width = textWidth64(face, codes);
+    int32_t pen = x * 64;
+    if (anchor == Anchor::MiddleBaseline) pen = (x - (width / 2 + 32) / 64) * 64;
+    if (anchor == Anchor::RightBaseline) pen = floorDiv64(x * 64 - width + 32) * 64;
+    drawCodes(frame, face, codes, pen, y, rgb);
+}
+
+// Pillow's draw.text((x, y), text, anchor='ls') for a fractional x (in 1/64
+// px), with the text drawn as given: no renderable(), no fitting.
+inline void drawTextRaw64(Frame frame, const TextFace& face, const char* utf8, int32_t x64, int y, uint32_t rgb) {
+    drawCodes(frame, face, decodeUtf8(utf8), x64, y, rgb);
 }
 
 }  // namespace lcd::local

@@ -321,6 +321,7 @@ build/render_local_screens: render_local_screens.cpp $(wildcard ../lcd43b/local/
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -O2 -I"$(ARDUINOJSON)" render_local_screens.cpp $(LDFLAGS) -o $@
 check_standalone_screens: build/render_local_screens
 	mkdir -p build/standalone
+	$(PYTHON) ../lcd43b/tools/standalone_compare.py build/standalone --inputs
 	./build/render_local_screens build/standalone
 	$(PYTHON) ../lcd43b/tools/standalone_compare.py build/standalone
 build/test_local_art: test_local_art.cpp $(wildcard ../lcd43b/local/*.h) Makefile | check-arduinojson

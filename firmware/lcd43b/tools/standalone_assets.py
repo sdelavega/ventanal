@@ -28,27 +28,34 @@ from ventanal.devices.lcd_lcars import LCD_COLOURS, draw_lcd_frame  # noqa: E402
 from ventanal.weather.data import WMO_LONG, WMO_SHORT  # noqa: E402
 from ventanal.devices.lcd_weather import SECTIONS as WEATHER_SECTIONS  # noqa: E402
 
-FONT_DIR = ROOT / 'server/src/ventanal/fonts/antonio'
+FONT_DIR = ROOT / 'server/src/ventanal/fonts'
 TEXT = ''.join(chr(c) for c in range(32, 127)) + '°·…'
 DIGITS = '0123456789-°…'
+# Art credits name artists and places from everywhere: Latin-1 and Latin
+# Extended-A, plus typographic punctuation.
+LATIN = (''.join(chr(c) for c in range(32, 127)) + ''.join(chr(c) for c in range(0xa0, 0x180))
+         + '·…–—‘’“”′″')
 
 # (C++ name, file, pixel size, characters): only the faces and sizes the
 # standalone renderers use (server/src/ventanal/devices/lcd_weather.py).
 FACES = [
-    ('AntonioBold30', 'Antonio-Bold', 30, TEXT),
-    ('AntonioBold108', 'Antonio-Bold', 108, DIGITS),
-    ('AntonioBold24', 'Antonio-Bold', 24, TEXT),
-    ('AntonioBold19', 'Antonio-Bold', 19, TEXT),
-    ('AntonioBold27', 'Antonio-Bold', 27, TEXT),
-    ('AntonioBold16', 'Antonio-Bold', 16, TEXT),
-    ('AntonioBold13', 'Antonio-Bold', 13, TEXT),
-    ('AntonioBold12', 'Antonio-Bold', 12, TEXT),
-    ('Antonio24', 'Antonio-Regular', 24, TEXT),
-    ('Antonio17', 'Antonio-Regular', 17, TEXT),
-    ('Antonio16', 'Antonio-Regular', 16, TEXT),
-    ('Antonio14', 'Antonio-Regular', 14, TEXT),
-    ('Antonio13', 'Antonio-Regular', 13, TEXT),
-    ('Antonio12', 'Antonio-Regular', 12, TEXT),
+    ('AntonioBold30', 'antonio/Antonio-Bold', 30, TEXT),
+    ('AntonioBold108', 'antonio/Antonio-Bold', 108, DIGITS),
+    ('AntonioBold24', 'antonio/Antonio-Bold', 24, TEXT),
+    ('AntonioBold19', 'antonio/Antonio-Bold', 19, TEXT),
+    ('AntonioBold27', 'antonio/Antonio-Bold', 27, TEXT),
+    ('AntonioBold16', 'antonio/Antonio-Bold', 16, TEXT),
+    ('AntonioBold13', 'antonio/Antonio-Bold', 13, TEXT),
+    ('AntonioBold12', 'antonio/Antonio-Bold', 12, TEXT),
+    ('Antonio24', 'antonio/Antonio-Regular', 24, TEXT),
+    ('Antonio17', 'antonio/Antonio-Regular', 17, TEXT),
+    ('Antonio16', 'antonio/Antonio-Regular', 16, TEXT),
+    ('Antonio14', 'antonio/Antonio-Regular', 14, TEXT),
+    ('Antonio13', 'antonio/Antonio-Regular', 13, TEXT),
+    ('Antonio12', 'antonio/Antonio-Regular', 12, TEXT),
+    # Art credits (devices/lcd43b.py render_art).
+    ('InterBold12', 'inter/Inter-Bold', 12, LATIN),
+    ('Inter11', 'inter/Inter-Medium', 11, LATIN),
 ]
 
 HEADER = ['// SPDX-License-Identifier: GPL-3.0-or-later',
@@ -76,6 +83,7 @@ def fonts_header():
     total = 0
     for name, file, size, chars in FACES:
         face = ImageFont.truetype(str(FONT_DIR / f'{file}.ttf'), size)
+        weight = file.split('/')[-1]
         chars = ''.join(sorted(set(chars)))
         bits, glyphs = [], []
         for c in chars:
@@ -87,7 +95,7 @@ def fonts_header():
                         for i in range(0, len(alpha), 2))
         kerns = [(ord(a), ord(b), k) for a in chars for b in chars if (k := kern64(face, a, b))]
         total += len(bits) + 8 * len(glyphs) + 6 * len(kerns)
-        out += [f'// {file}, {size} px: {len(chars)} glyphs, {len(bits)} bitmap bytes, {len(kerns)} kerning pairs.',
+        out += [f'// {weight}, {size} px: {len(chars)} glyphs, {len(bits)} bitmap bytes, {len(kerns)} kerning pairs.',
                 f'inline constexpr uint8_t {name}Bits[] = {{' + ','.join(map(str, bits)) + '};',
                 f'inline constexpr uint16_t {name}Codes[] = {{' + ','.join(str(ord(c)) for c in chars) + '};',
                 f'inline constexpr TextGlyph {name}Glyphs[] = {{' + ','.join(glyphs) + '};',
