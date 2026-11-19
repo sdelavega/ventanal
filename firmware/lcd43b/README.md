@@ -214,6 +214,31 @@ Hardware pin and circuit references are in the
 [Waveshare schematic](https://files.waveshare.com/wiki/ESP32-S3-Touch-LCD-4.3B/ESP32-S3-Touch-LCD-4.3B-Sch.pdf);
 [board.h](board.h) records the port's capability contract.
 
+## Source layout
+
+`lcd43b.ino` holds the includes, `setup()` and `loop()`. The rest of the sketch
+lives in `app_*.h` parts that `lcd43b.ino` includes inside one anonymous
+namespace, in this order. They form a single translation unit, so later parts
+may use anything declared earlier; do not include them elsewhere.
+
+| Part | Responsibility |
+|---|---|
+| `app_state.h` | Constants, devices and loop-owned state |
+| `app_diag.h` | Diagnostic-build VSYNC cadence, touch dump, I2C scan |
+| `app_panel.h` | Screen list helpers; RGB panel start, stop and scan-out restart |
+| `app_buffers.h` | Clock, status and local-page buffers; pixel retirement |
+| `app_cache_load.h` | Loading the persisted frame cache into PSRAM at boot |
+| `app_clock.h` | Clock rendering, NTP and RTC synchronisation |
+| `app_display.h` | Scene composition, presenting screens, backlight policy |
+| `app_refresh.h` | Lit-write policy, refresh worker, applying results, deferred saves |
+| `app_update.h` | Update boot confirmation, Updating screen, install flow |
+| `app_input.h` | Settings changes and taps, gestures, touch polling |
+| `app_power.h` | Charge-me screen, sleep and power session ticks |
+| `app_diag_probes.h` | Diagnostic-build lit-write and busy-install probes |
+
+The split moved code without changing it: the compiled code matches the
+single-file version, apart from one embedded source-file name.
+
 ## Host tests
 
 Run from the repository root:
