@@ -121,15 +121,17 @@ static portal::LocationResult located() {
     return l;
 }
 
+constexpr time_t PortalNow = 1704067200;
+
 static void first_setup_builds_a_standalone_record() {
     const Installation none{};
-    const Installation r = installationFromPortal(none, fields(), located());
+    const Installation r = installationFromPortal(none, fields(), located(), PortalNow);
     assert(validInstallation(r) && standalone(r));
     assert(!strcmp(r.ssid, "synthetic-network") && !strcmp(r.zip, "90210") && r.units == 1 && !r.clock24h);
     assert(r.quietStart == 22 * 60 && r.quietEnd == 7 * 60 && !strcmp(r.callSign, "K1ABC"));
     assert(!strcmp(r.timezone, "PST8PDT,M3.2.0,M11.1.0") && !strcmp(r.place, "Beverly Hills, CA"));
     assert(std::fabs(r.latitude - 34.0901f) < 1e-4f && !strcmp(r.profile, "lcd43b"));
-    assert(r.callState == uint8_t(CallState::None));
+    assert(r.callState == uint8_t(CallState::Unverified) && r.callCheckedAt == PortalNow);
 }
 
 static Installation pairedRecord() {
@@ -151,24 +153,31 @@ static Installation pairedRecord() {
 
 static void setup_keeps_an_existing_host_pairing() {
     const Installation current = pairedRecord();
-    const Installation r = installationFromPortal(current, fields(), located());
+    const Installation r = installationFromPortal(current, fields(), located(), PortalNow);
     assert(validInstallation(r) && !standalone(r));
     assert(!strcmp(r.host, "https://frame.test/") && !strcmp(r.pairing, "desk") && r.deviceKey[0] == 'a');
     assert(!strcmp(r.profile, "desk-display") && r.forcedRevision == 3);  // a private seed stays write-once
     assert(!strcmp(r.ssid, "synthetic-network"));
-    // Same call sign: the cached FCC answer stays; a new one is looked up again.
-    assert(r.callState == uint8_t(CallState::Verified) && r.callCheckedAt == 1234);
-    portal::PortalFields other = fields();
-    strcpy(other.callSign, "W1AW");
-    const Installation changed = installationFromPortal(current, other, located());
-    assert(changed.callState == uint8_t(CallState::None) && !changed.callCheckedAt);
+    // Saving also checks an unchanged call sign.
+    assert(r.callState == uint8_t(CallState::Unverified) && r.callCheckedAt == PortalNow);
     // No ZIP lookup (host join without a ZIP) keeps the stored zone.
     portal::PortalFields noZip = fields();
     noZip.zip[0] = '\0';
     portal::LocationResult skipped;
     skipped.why = portal::LocationResult::Skipped;
-    const Installation kept = installationFromPortal(current, noZip, skipped);
+    const Installation kept = installationFromPortal(current, noZip, skipped, PortalNow);
     assert(!strcmp(kept.timezone, "EST5EDT,M3.2.0,M11.1.0") && std::isnan(kept.latitude));
+}
+
+static void setup_applies_the_call_sign_trust_fallback() {
+    const Installation current = pairedRecord();
+    portal::PortalFields other = fields();
+    strcpy(other.callSign, "W1AW");
+    const Installation changed = installationFromPortal(current, other, located(), 1000);
+    assert(changed.callState == uint8_t(CallState::Unverified) && !changed.callCheckedAt);
+    other.callSign[0] = '\0';
+    const Installation cleared = installationFromPortal(current, other, located(), PortalNow);
+    assert(!cleared.callSign[0] && cleared.callState == uint8_t(CallState::None) && !cleared.callCheckedAt);
 }
 
 static void setup_uses_portal_host_fields() {
@@ -177,14 +186,14 @@ static void setup_uses_portal_host_fields() {
     strcpy(f.pairing, "lounge");
     strcpy(f.certificate, "-----BEGIN CERTIFICATE-----y");
     memset(f.deviceKey, 'b', 64);
-    const Installation r = installationFromPortal(pairedRecord(), f, located());
+    const Installation r = installationFromPortal(pairedRecord(), f, located(), PortalNow);
     assert(!strcmp(r.host, "https://other.test") && !strcmp(r.pairing, "lounge") && r.deviceKey[0] == 'b');
 }
 
 static void leave_host_clears_credentials_keeps_zip() {
     portal::PortalFields f = fields();
     f.leaveHost = 1;
-    const Installation r = installationFromPortal(pairedRecord(), f, located());
+    const Installation r = installationFromPortal(pairedRecord(), f, located(), PortalNow);
     assert(validInstallation(r) && standalone(r));
     assert(!r.host[0] && !r.pairing[0] && !r.certificate[0] && !r.deviceKey[0]);
     assert(!strcmp(r.zip, "90210") && !strcmp(r.timezone, "PST8PDT,M3.2.0,M11.1.0"));
@@ -198,7 +207,7 @@ static void portal_starts_from_the_record() {
     assert(!strcmp(f.host, "https://frame.test/") && !strcmp(f.pairing, "desk") && f.deviceKey[0] == 'a');
     assert(!strcmp(f.callSign, "K1ABC") && f.quietStart == current.quietStart && f.clock24h == current.clock24h);
     // Saving the untouched form gives back the same pairing.
-    const Installation same = installationFromPortal(current, f, portal::LocationResult{});
+    const Installation same = installationFromPortal(current, f, portal::LocationResult{}, PortalNow);
     assert(!strcmp(same.host, current.host) && !strcmp(same.certificate, current.certificate));
 }
 
@@ -239,6 +248,7 @@ int main() {
     setup_page_fits_local_scene();
     first_setup_builds_a_standalone_record();
     setup_keeps_an_existing_host_pairing();
+    setup_applies_the_call_sign_trust_fallback();
     setup_uses_portal_host_fields();
     leave_host_clears_credentials_keeps_zip();
     portal_starts_from_the_record();

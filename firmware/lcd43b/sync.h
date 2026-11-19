@@ -93,6 +93,9 @@ struct RefreshResult {
     char frameIds[SCREEN_SLOTS][17] = {};
     bool dropSlot[SCREEN_SLOTS] = {};
     bool frameFailed[SCREEN_SLOTS] = {};
+    // Standalone FCC check staged for the loop, which owns installation writes.
+    uint32_t callCheckedAt = 0;
+    uint8_t callState = 0;
 };
 
 // True when the manifest arrived but at least one frame it required this

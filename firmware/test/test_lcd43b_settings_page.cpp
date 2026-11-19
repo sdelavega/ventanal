@@ -7,8 +7,31 @@
 #include <vector>
 #include <memory>
 #include <cstdio>
+
+static void call_sign_status_stays_between_controls() {
+    using namespace lcd;
+    constexpr int first = 342;
+    constexpr int rows = 32;
+    const auto settings = defaultSettings(false);
+    std::vector<uint16_t> plain(WIDTH * rows), actual(WIDTH * rows);
+    drawSettingsPage({plain.data(), first, rows}, settings, true, true, "", CallState::None);
+    drawSettingsPage({actual.data(), first, rows}, settings, true, true, "", CallState::Verified);
+    assert(actual == plain);
+
+    const auto check = [&](CallState state, const char* label) {
+        assert(textWidth(ArtDate, label) < 310 - 150);
+        auto expected = plain;
+        SettingsSurface(expected.data(), first, rows).text(ArtDate, label, 150, 359, rgb565(153,150,186));
+        drawSettingsPage({actual.data(), first, rows}, settings, true, true, "", state);
+        assert(actual == expected && actual != plain);
+    };
+    check(CallState::Unverified, "CALL SIGN UNVERIFIED");
+    check(CallState::Rejected, "CALL SIGN NOT FOUND");
+}
+
 int main(int argc,char** argv) {
     using namespace lcd;
+    call_sign_status_stays_between_controls();
     for (const auto& c : SETTINGS_CONTROLS) {
         assert(c.rect.h>=52);
         assert(hitSettings(c.rect.x+c.rect.w/2,c.rect.y+c.rect.h/2,true,true)==c.hit);

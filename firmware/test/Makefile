@@ -24,13 +24,14 @@ check_lcd43b_pie:
 
 test: check_lcd43b_pie check-arduinojson check-hardening check_lcd43b_display_owner check_standalone_screens
 
-test: build/test_lcd43b_installation build/test_portal_form build/test_portal_flow build/test_locate build/test_local_weather build/test_local_solar build/test_local_text build/test_local_art build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_setup build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_display_owner
+test: build/test_lcd43b_installation build/test_portal_form build/test_portal_flow build/test_locate build/test_local_weather build/test_local_solar build/test_fcc build/test_local_text build/test_local_art build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_setup build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_display_owner
 	./build/test_lcd43b_installation
 	./build/test_portal_form
 	./build/test_portal_flow
 	./build/test_locate
 	./build/test_local_weather
 	./build/test_local_solar
+	./build/test_fcc
 	./build/test_local_text
 	./build/test_local_art
 	$(PYTHON) ../lcd43b/tools/standalone_assets.py --check
@@ -271,7 +272,7 @@ build/test_lcd43b_settings: test_lcd43b_settings.cpp $(wildcard ../lcd43b/*.h) $
 
 build/test_lcd43b_screens build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_panel: ../lcd43b/settings.h
 
-build/test_lcd43b_settings_page: fixtures/lcd43b-settings-chrome.rle test_lcd43b_settings_page.cpp $(wildcard ../lcd43b/*.h) Makefile
+build/test_lcd43b_settings_page: fixtures/lcd43b-settings-chrome.rle test_lcd43b_settings_page.cpp ../common/call_state.h $(wildcard ../lcd43b/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_settings_page.cpp $(LDFLAGS) -o $@
 
@@ -307,7 +308,7 @@ build/test_portal_flow: test_portal_flow.cpp fakes/portal_net.h $(wildcard ../co
 build/test_locate: test_locate.cpp ../common/setup_portal/locate.h ../common/setup_portal/location.h ../common/tz_posix.h Makefile | check-arduinojson
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I"$(ARDUINOJSON)" test_locate.cpp $(LDFLAGS) -o $@
-build/test_lcd43b_setup: test_lcd43b_setup.cpp $(wildcard ../lcd43b/*.h) $(wildcard ../common/setup_portal/*.h) Makefile
+build/test_lcd43b_setup: test_lcd43b_setup.cpp ../common/fcc.h ../common/call_state.h $(wildcard ../lcd43b/*.h) $(wildcard ../common/setup_portal/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_lcd43b_setup.cpp $(LDFLAGS) -o $@
 build/test_local_weather: test_local_weather.cpp $(wildcard ../lcd43b/local/*.h) $(wildcard fixtures/standalone/*.json) Makefile | check-arduinojson
@@ -316,6 +317,10 @@ build/test_local_weather: test_local_weather.cpp $(wildcard ../lcd43b/local/*.h)
 build/test_local_solar: test_local_solar.cpp $(wildcard ../lcd43b/local/*.h) $(wildcard fixtures/standalone/*) Makefile | check-arduinojson
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I"$(ARDUINOJSON)" test_local_solar.cpp $(LDFLAGS) -o $@
+build/test_fcc: test_fcc.cpp ../common/fcc.h ../common/call_state.h Makefile
+	@mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG $< $(LDFLAGS) -o $@
+
 build/test_local_text: test_local_text.cpp $(wildcard ../lcd43b/local/*.h) Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I../lcd43b test_local_text.cpp $(LDFLAGS) -o $@

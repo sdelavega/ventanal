@@ -4,6 +4,7 @@
 // What Wi-Fi setup writes and when it runs (pure; host tested).
 #pragma once
 
+#include "../common/fcc.h"
 #include "../common/setup_portal/portal.h"
 #include "installation.h"
 #include <cstring>
@@ -50,7 +51,7 @@ inline void copyText(char (&dst)[N], const char* src) {
 // cache and screen state are untouched: the restart after saving picks the
 // new mode.
 inline void installationFromPortal(const Installation& current, const portal::PortalFields& f,
-                                   const portal::LocationResult& where, Installation& r) {
+                                   const portal::LocationResult& where, time_t now, Installation& r) {
     if (&r != &current) r = current;
     r.schema = installationSchema;
     copyText(r.ssid, f.ssid);
@@ -60,11 +61,9 @@ inline void installationFromPortal(const Installation& current, const portal::Po
     r.clock24h = f.clock24h;
     r.quietStart = f.quietStart;
     r.quietEnd = f.quietEnd;
-    if (strcmp(r.callSign, f.callSign)) {
-        copyText(r.callSign, f.callSign);
-        r.callState = uint8_t(CallState::None);
-        r.callCheckedAt = 0;
-    }
+    copyText(r.callSign, f.callSign);
+    r.callState = uint8_t(r.callSign[0] ? callStateFor(lookupCallSign(r.callSign)) : CallState::None);
+    r.callCheckedAt = r.callSign[0] && fccClockValid(now) ? uint32_t(now) : 0;
     if (f.leaveHost) {
         r.host[0] = r.pairing[0] = r.certificate[0] = r.deviceKey[0] = '\0';
     } else if (f.host[0]) {
@@ -100,9 +99,9 @@ inline portal::PortalFields portalFieldsFrom(const Installation& r) {
 }
 
 inline Installation installationFromPortal(const Installation& current, const portal::PortalFields& f,
-                                           const portal::LocationResult& where) {
+                                           const portal::LocationResult& where, time_t now) {
     Installation r;
-    installationFromPortal(current, f, where, r);
+    installationFromPortal(current, f, where, now, r);
     return r;
 }
 

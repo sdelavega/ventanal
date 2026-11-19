@@ -105,7 +105,8 @@ bool showSettings(lcd::ReadoutRect damage) {
             lcd::drawUpdatePage(pixels, hostOffer.version, githubOffer.version,
                                 waiting ? "Waiting for refresh..." : updateNotice, busy, waiting);
         } else {
-            lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer);
+            lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer,
+                                  CallState(lcd::installation.callState));
             if (!updateBoot.pending) {
                 const char* version = hostOffer.version[0] ? hostOffer.version : githubOffer.version;
                 char label[48] = "Firmware updates";

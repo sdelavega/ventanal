@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include "../common/call_state.h"
 #include "settings.h"
 #include "overlay.h"
 #include "lcars_geometry.h"
@@ -130,7 +131,7 @@ inline void drawSettingsChrome(SettingsSurface px,bool labels=true) {
                  92-textWidth(SidebarLabel,section.label),section.y+section.h-6,0);
 }
 inline void drawSettingsPage(SettingsSurface px,const DeviceSettings& s,bool solarListed,
-                             bool batteryButton,const char* footer) {
+                             bool batteryButton,const char* footer,CallState callState=CallState::None) {
     const auto orange=rgb565(255,119,0), gold=rgb565(255,170,0);
     const auto sky=rgb565(170,170,255), light=rgb565(153,150,186);
     drawSettingsChrome(px);
@@ -141,6 +142,10 @@ inline void drawSettingsPage(SettingsSurface px,const DeviceSettings& s,bool sol
     px.text(ArtDate,"Dims the picture; this board's backlight is on/off only.",310,151,light);
     px.text(ArtDate,"Timeout applies on USB and battery alike. Touch wakes it.",310,255,light);
     px.text(ArtDate,"At least one stays on. Hidden screens aren't downloaded.",310,359,light);
+    if (callState == CallState::Unverified)
+        px.text(ArtDate,"CALL SIGN UNVERIFIED",150,359,light);
+    else if (callState == CallState::Rejected)
+        px.text(ArtDate,"CALL SIGN NOT FOUND",150,359,light);
     for(const auto& c:SETTINGS_CONTROLS) {
         if(!settingsControlVisible(c.hit,solarListed,batteryButton)) continue;
         const int h=int(c.hit);

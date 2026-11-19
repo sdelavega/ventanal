@@ -393,6 +393,14 @@ void applyFinishedRefresh() {
     const bool writesOwner = before != owner.queue.count;
     const bool writesMetadata = refreshStaging.manifestOk &&
         lcd::manifestSaveNeeded(prefs, refreshStaging.manifest);
+    const bool callStateChanged = refreshStaging.callCheckedAt &&
+        refreshStaging.callState != lcd::installation.callState;
+#ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
+    // The sample installation is a RAM-only override.
+    const bool writesCallState = false;
+#else
+    const bool writesCallState = callStateChanged;
+#endif
     if (!refreshStaging.manifestOk
         || !lcd::validateOffer(refreshStaging.firmware, lcd::UpdateSource::Host, hostOffer))
         hostOffer = {};
@@ -401,7 +409,18 @@ void applyFinishedRefresh() {
     bool redraw;
     {
         const bool ackUpdate = refreshStaging.manifestOk && refreshOtaReport[0] && !staleRollback;
-        ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate));
+        ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate || writesCallState));
+        if (refreshStaging.callCheckedAt) {
+            const uint8_t previousCallState = lcd::installation.callState;
+            const uint32_t previousCallCheckedAt = lcd::installation.callCheckedAt;
+            lcd::installation.callState = refreshStaging.callState;
+            lcd::installation.callCheckedAt = refreshStaging.callCheckedAt;
+            if (writesCallState && !lcd::saveInstallation(lcd::installation)) {
+                lcd::installation.callState = previousCallState;
+                lcd::installation.callCheckedAt = previousCallCheckedAt;
+                lcd::log("standalone error=fcc-save\n");
+            }
+        }
         if (ackUpdate) lcd::acknowledgeUpdate(prefs, updateBoot, refreshOtaReport, refreshOtaApproval);
         redraw = lcd::applyRefresh(state, screenIndex, spareCursor, prefs, refreshStaging,
                                    refreshRequested, settings);
@@ -426,7 +445,7 @@ void applyFinishedRefresh() {
              refreshStaging.manifestOk, state.offline, frameFailed);
     if (screenIndex != previousIndex)   // normalised to a shrunk list
         lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
-    if (redraw) show(screenIndex);
+    if (redraw || (callStateChanged && settingsPage.active)) show(screenIndex);
     else if (refreshLabel.label() != lcd::RefreshLabel::None)
         show(screenIndex);   // redraw the cached frame with the label
     backlightRefresh();

@@ -11,6 +11,7 @@
 
 #include "local_provider.h"
 
+#include "../common/fcc.h"
 #include "../common/https_get.h"
 #include "installation.h"
 #include "local/art_day.h"
@@ -202,8 +203,8 @@ void fetchSun(time_t now, Watchdog& watchdog) {
     sunDay = day;
 }
 
-bool showsSolar() {
-    return installation.callSign[0] && installation.callState != uint8_t(CallState::Rejected);
+bool showsSolar(uint8_t callState) {
+    return installation.callSign[0] && callState != uint8_t(CallState::Rejected);
 }
 
 // Space weather every three hours; otherwise the cached frame stays.
@@ -415,13 +416,19 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
                      const ResidentCache& cache) {
     result = RefreshResult{};
     result.wifiOk = connectForUpdates(watchdog);
-    result.timeOk = time(nullptr) >= 1704067200;  // 2024-01-01: the clock is set
+    const time_t now = time(nullptr);
+    result.timeOk = now >= 1704067200;  // 2024-01-01: the clock is set
+    result.callState = installation.callState;
+    if (installation.callSign[0] && fccRecheckDue(installation.callCheckedAt, now)) {
+        result.callState = uint8_t(callStateFor(lookupCallSign(installation.callSign)));
+        result.callCheckedAt = uint32_t(now);
+    }
     if (!result.wifiOk || !result.timeOk) {
         log("standalone refresh wifi=%d time=%d\n", result.wifiOk, result.timeOk);
         return;
     }
     DownloadPower radio;
-    const time_t now = time(nullptr);
+    const bool solar = showsSolar(result.callState);
 
     // The reserved spare's memory is the art work room (see StandaloneSpares).
     if (cache.releaseFrame) cache.releaseFrame(ReservedSpareSlot);
@@ -430,7 +437,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
     m.clock24h = installation.clock24h;
     m.quietStart = installation.quietStart;
     m.quietEnd = installation.quietEnd;
-    if (!showsSolar()) {  // the solar screen is for licensed amateurs
+    if (!solar) {  // the solar screen is for licensed amateurs
         m.screens[2].present = false;
         result.dropSlot[2] = true;
         if (currentIds[2][0]) cache.publish(2, nullptr, {});
@@ -469,7 +476,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
     }
     watchdog.feed();
 
-    if (showsSolar()) refreshSolar(now, currentIds, result, watchdog, cache);
+    if (solar) refreshSolar(now, currentIds, result, watchdog, cache);
     watchdog.feed();
 
     // Art once a local day; otherwise keep the cached set.
