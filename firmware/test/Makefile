@@ -24,7 +24,7 @@ check_lcd43b_pie:
 
 test: check_lcd43b_pie check-arduinojson check-hardening
 
-test: build/test_lcd43b_installation build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist
+test: build/test_lcd43b_installation build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_display_owner
 	./build/test_lcd43b_installation
 	./build/test_lcd43b_owner
 	./build/test_lcd43b_power_session
@@ -69,6 +69,7 @@ test: build/test_lcd43b_installation build/test_settings build/test_ota build/te
 	./build/test_lcd43b_touch
 	./build/test_lcd43b_sync
 	./build/test_lcd43b_persist
+	./build/test_lcd43b_display_owner
 
 build/test_release build/test_net build/test_security build/test_secure_transport: | check-arduinojson
 
@@ -302,3 +303,7 @@ build/test_lcd43b_sync: ../common/release_key.h
 
 check-hardening:
 	CXX="$(CXX)" ./check_hardening.sh
+
+build/test_lcd43b_display_owner: test_lcd43b_display_owner.cpp ../lcd43b/display_owner.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_display_owner.cpp $(LDFLAGS) -o $@
