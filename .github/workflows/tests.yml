@@ -1,0 +1,52 @@
+# SPDX-License-Identifier: GPL-3.0-or-later
+# Copyright (C) 2026 Stephen de la Vega
+name: Tests
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+
+permissions: {}
+
+jobs:
+  server:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Install the server with test dependencies
+        run: python -m pip install -e 'server[dev]'
+      - name: Server tests
+        working-directory: server
+        run: python -m pytest -q tests
+
+  firmware:
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.3.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: '3.13'
+      - name: Install libsodium for the host signature tests
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libsodium-dev pkg-config
+      - name: Install hash-pinned PlatformIO and fetch only ArduinoJson for host tests
+        run: |
+          python -m pip install --require-hashes --only-binary=:all: -r tools/release/requirements-platformio.txt
+          pio pkg install -d firmware/ventanal -e bench -l bblanchon/ArduinoJson@7.4.3 --no-save
+      - name: Install the server (shared release verification for firmware Python tests)
+        run: python -m pip install -e 'server[dev]'
+      - name: Firmware host tests
+        run: make -C firmware/test test
+      - name: Firmware tooling tests
+        run: python -m pytest -q firmware/test
