@@ -1,0 +1,315 @@
+{
+ "@context": [
+  "https://geojson.org/geojson-ld/geojson-context.jsonld",
+  {
+   "@version": "1.1",
+   "wx": "https://api.weather.gov/ontology#",
+   "@vocab": "https://api.weather.gov/ontology#"
+  }
+ ],
+ "type": "FeatureCollection",
+ "features": [
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.7eb4e2727dc40621676144dbeb84435a55f8f8db.002.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.7eb4e2727dc40621676144dbeb84435a55f8f8db.002.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.7eb4e2727dc40621676144dbeb84435a55f8f8db.002.1",
+    "areaDesc": "Southern Seward Peninsula Coast",
+    "geocode": {
+     "SAME": [
+      "002180"
+     ],
+     "UGC": [
+      "AKZ822"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/AKZ822"
+    ],
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c6845408d1de008c0865adeac0bbd6b1fb301ab4.005.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.c6845408d1de008c0865adeac0bbd6b1fb301ab4.005.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-18T13:09:00-09:00"
+     }
+    ],
+    "sent": "2026-11-19T02:41:00-09:00",
+    "effective": "2026-11-19T02:41:00-09:00",
+    "onset": "2026-11-19T02:41:00-09:00",
+    "expires": "2026-11-19T15:00:00-09:00",
+    "ends": "2026-11-19T15:00:00-09:00",
+    "status": "Actual",
+    "messageType": "Update",
+    "category": "Met",
+    "severity": "Minor",
+    "certainty": "Likely",
+    "urgency": "Expected",
+    "event": "Coastal Flood Advisory",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Fairbanks AK",
+    "headline": "Coastal Flood Advisory issued November 19 at 2:41AM AKST until November 19 at 3:00PM AKST by NWS Fairbanks AK",
+    "description": "* WHAT...Water levels of 3 to 5 feet above the normal high tide\nexpected.\n\n* WHERE...Southern Seward Peninsula Coast.\n\n* WHEN...Until 3 PM AKST Thursday.\n\n* IMPACTS...Minor coastal flooding is possible. In Nome, water\ncould approach homes in the Belmont Subdivision, portions of the\nport area will have standing water, and wave run-up will push\nwater higher than normal. In Golovin, water will approach beach\nproperty.",
+    "instruction": "If travel is required, allow extra time as some roads may be\nclosed. Do not drive around barricades or through water of\nunknown depth. Take the necessary actions to protect flood-prone\nproperty.",
+    "response": "Monitor",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "CFWAFG"
+     ],
+     "WMOidentifier": [
+      "WHAK49 PAFG 191141"
+     ],
+     "NWSheadline": [
+      "COASTAL FLOOD ADVISORY REMAINS IN EFFECT UNTIL 3 PM AKST THIS AFTERNOON"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "VTEC": [
+      "/O.CON.PAFG.CF.Y.0004.000000T0000Z-261120T0000Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-19T15:00:00-09:00"
+     ],
+     "expiredReferences": [
+      "w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.f99addde6b1d475e1dad290d56a2aa3a2263b979.002.1,2026-11-18T01:58:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.522e7a0eba08c3cd7d7c0aa2735064c2bf5df78d.001.2,2026-11-17T10:21:00-09:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "NWS"
+     ],
+     "NationalWeatherService": [
+      "CFY"
+     ]
+    }
+   }
+  },
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.7b0826feecbd97efb0e02a6e2ce4406619eb1b30.002.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.7b0826feecbd97efb0e02a6e2ce4406619eb1b30.002.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.7b0826feecbd97efb0e02a6e2ce4406619eb1b30.002.1",
+    "areaDesc": "Southern Kenai Mtns",
+    "geocode": {
+     "SAME": [
+      "002122"
+     ],
+     "UGC": [
+      "AKZ725"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/AKZ725"
+    ],
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.566d234e95309a8ff76db7b8a49ff628e2feb983.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.566d234e95309a8ff76db7b8a49ff628e2feb983.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-17T13:07:00-09:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.3d20aeb65c9b9f53ec78f58d9dd95e014f8436c4.002.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.3d20aeb65c9b9f53ec78f58d9dd95e014f8436c4.002.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-17T13:32:00-09:00"
+     }
+    ],
+    "sent": "2026-11-19T06:29:00-09:00",
+    "effective": "2026-11-19T06:29:00-09:00",
+    "onset": "2026-11-19T06:29:00-09:00",
+    "expires": "2026-11-19T18:00:00-09:00",
+    "ends": "2026-11-19T18:00:00-09:00",
+    "status": "Actual",
+    "messageType": "Update",
+    "category": "Met",
+    "severity": "Severe",
+    "certainty": "Possible",
+    "urgency": "Future",
+    "event": "Flood Watch",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Anchorage AK",
+    "headline": "Flood Watch issued November 19 at 6:29AM AKST until November 19 at 6:00PM AKST by NWS Anchorage AK",
+    "description": "* WHAT...Small stream and localized urban flooding caused by\nexcessive rainfall is possible.\n\n* WHERE...Including the following area, Southern Kenai Mtns. This\nincludes the city of Seward.\n\n* WHEN...Until 6 PM AKST this evening.\n\n* IMPACTS...Excessive runoff may result in flooding of rivers,\ncreeks, streams, and other low-lying and flood-prone locations.\nStorm drains and ditches may become clogged with debris. Flooding\nmay occur in poor drainage areas.\n\n* ADDITIONAL DETAILS...\n- Rainfall is still on track to decrease late this afternoon.\nProlonged heavy rain may lead to areas of flooding along smaller\nstreams and creeks, in low-lying and poor drainage areas, and\nponding of water on roadways.\n\n- Http://www.weather.gov/safety/flood",
+    "instruction": "Stay tuned to further developments by listening to your local radio,\ntelevision, or NOAA Weather Radio for further information.\n\nYou should monitor later forecasts and be alert for possible Flood\nWarnings. Those living in areas prone to flooding should be prepared\nto take action should flooding develop.",
+    "response": "Prepare",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "FFAAFC"
+     ],
+     "WMOidentifier": [
+      "WGAK68 PAFC 191529"
+     ],
+     "NWSheadline": [
+      "FLOOD WATCH REMAINS IN EFFECT UNTIL 6 PM AKST THIS EVENING"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "EAS-ORG": [
+      "WXR"
+     ],
+     "VTEC": [
+      "/O.CON.PAFC.FA.A.0011.000000T0000Z-261120T0300Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-19T18:00:00-09:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "FFA"
+     ],
+     "NationalWeatherService": [
+      "FAA"
+     ]
+    }
+   }
+  },
+  {
+   "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.d3fa9d8ad3522a293b0dbfe49109378424e20dd9.002.1",
+   "type": "Feature",
+   "geometry": null,
+   "properties": {
+    "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.d3fa9d8ad3522a293b0dbfe49109378424e20dd9.002.1",
+    "@type": "wx:Alert",
+    "id": "urn:oid:2.49.0.1.840.0.d3fa9d8ad3522a293b0dbfe49109378424e20dd9.002.1",
+    "areaDesc": "City and Borough of Juneau; Petersburg Borough; Prince of Wales Island; City and Borough of Wrangell; Ketchikan Gateway Borough",
+    "geocode": {
+     "SAME": [
+      "002110",
+      "002195",
+      "002198",
+      "002275",
+      "002130"
+     ],
+     "UGC": [
+      "AKZ325",
+      "AKZ326",
+      "AKZ328",
+      "AKZ329",
+      "AKZ330"
+     ]
+    },
+    "affectedZones": [
+     "https://api.weather.gov/zones/forecast/AKZ325",
+     "https://api.weather.gov/zones/forecast/AKZ326",
+     "https://api.weather.gov/zones/forecast/AKZ328",
+     "https://api.weather.gov/zones/forecast/AKZ329",
+     "https://api.weather.gov/zones/forecast/AKZ330"
+    ],
+    "references": [
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.001.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.001.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-19T05:31:00-09:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.002.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.002.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-19T05:31:00-09:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.003.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.ae5a5d444816beb3825f6595e9925b9ad9fd2d8f.003.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-19T05:31:00-09:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.6ad918e050f0ae6148b696c0041bef05a8953520.002.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.6ad918e050f0ae6148b696c0041bef05a8953520.002.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-19T06:18:00-09:00"
+     },
+     {
+      "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.6ad918e050f0ae6148b696c0041bef05a8953520.003.1",
+      "identifier": "urn:oid:2.49.0.1.840.0.6ad918e050f0ae6148b696c0041bef05a8953520.003.1",
+      "sender": "w-nws.webmaster@noaa.gov",
+      "sent": "2026-11-19T06:18:00-09:00"
+     }
+    ],
+    "sent": "2026-11-19T08:21:00-09:00",
+    "effective": "2026-11-19T08:21:00-09:00",
+    "onset": "2026-11-19T08:21:00-09:00",
+    "expires": "2026-11-19T12:00:00-09:00",
+    "ends": "2026-11-19T12:00:00-09:00",
+    "status": "Actual",
+    "messageType": "Update",
+    "category": "Met",
+    "severity": "Moderate",
+    "certainty": "Likely",
+    "urgency": "Expected",
+    "event": "Dense Fog Advisory",
+    "sender": "w-nws.webmaster@noaa.gov",
+    "senderName": "NWS Juneau AK",
+    "headline": "Dense Fog Advisory issued November 19 at 8:21AM AKST until November 19 at 12:00PM AKST by NWS Juneau AK",
+    "description": "* WHAT...Visibility to 1/4 mile or less at times in dense fog.\n\n* WHERE...City and Borough of Juneau, City and Borough of Wrangell,\nKetchikan Gateway Borough, Petersburg Borough, and Prince of Wales\nIsland.\n\n* WHEN...Until noon AKST today.\n\n* IMPACTS...Low visibility could make travel conditions hazardous.",
+    "instruction": "If driving, slow down, use your headlights, and leave plenty of\ndistance ahead of you.",
+    "response": "Execute",
+    "note": null,
+    "parameters": {
+     "AWIPSidentifier": [
+      "NPWAJK"
+     ],
+     "WMOidentifier": [
+      "WWAK77 PAJK 191721"
+     ],
+     "NWSheadline": [
+      "DENSE FOG ADVISORY NOW IN EFFECT UNTIL NOON AKST TODAY"
+     ],
+     "BLOCKCHANNEL": [
+      "EAS",
+      "NWEM",
+      "CMAS"
+     ],
+     "VTEC": [
+      "/O.EXT.PAJK.FG.Y.0044.000000T0000Z-261119T2100Z/"
+     ],
+     "eventEndingTime": [
+      "2026-11-19T12:00:00-09:00"
+     ],
+     "expiredReferences": [
+      "w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.f4214ea7b7f4460b40027ed981353256e22a27a8.003.1,2026-11-18T23:22:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.f4214ea7b7f4460b40027ed981353256e22a27a8.002.1,2026-11-18T23:22:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.f4214ea7b7f4460b40027ed981353256e22a27a8.001.1,2026-11-18T23:22:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.67acf48b4327b2799f47f9db0e53beea12cf3510.002.1,2026-11-18T19:45:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.67acf48b4327b2799f47f9db0e53beea12cf3510.001.1,2026-11-18T19:45:00-09:00 w-nws.webmaster@noaa.gov,urn:oid:2.49.0.1.840.0.70effa705c9f05fb1d5084c31fdd6aaf8388c16b.001.1,2026-11-18T15:51:00-09:00"
+     ]
+    },
+    "scope": "Public",
+    "code": "IPAWSv1.0",
+    "language": "en-US",
+    "web": "http://www.weather.gov",
+    "eventCode": {
+     "SAME": [
+      "NWS"
+     ],
+     "NationalWeatherService": [
+      "FGY"
+     ]
+    }
+   }
+  }
+ ],
+ "title": "Current watches, warnings, and advisories for Alaska",
+ "updated": "2026-11-19T19:07:37+00:00"
+}

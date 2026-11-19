@@ -1,0 +1,146 @@
+{
+    "@context": [
+        "https://geojson.org/geojson-ld/geojson-context.jsonld",
+        {
+            "@version": "1.1",
+            "wx": "https://api.weather.gov/ontology#",
+            "@vocab": "https://api.weather.gov/ontology#"
+        }
+    ],
+    "type": "FeatureCollection",
+    "features": [
+        {
+            "id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.86e550c80c3cf084b169e3f967a1a603d9444a06.004.1",
+            "type": "Feature",
+            "geometry": null,
+            "properties": {
+                "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.86e550c80c3cf084b169e3f967a1a603d9444a06.004.1",
+                "@type": "wx:Alert",
+                "id": "urn:oid:2.49.0.1.840.0.86e550c80c3cf084b169e3f967a1a603d9444a06.004.1",
+                "areaDesc": "Santa Clarita Valley; Malibu Coast; Los Angeles County Beaches; Palos Verdes Hills; Los Angeles County Inland Coast including Downtown Los Angeles; Western Santa Monica Mountains Recreational Area; Eastern Santa Monica Mountains Recreational Area; Calabasas and Agoura Hills; Western San Fernando Valley; Eastern San Fernando Valley; Interstate 5 Corridor; Western San Gabriel Mountains and Highway 14 Corridor; Eastern San Gabriel Mountains; Los Angeles County San Gabriel Valley",
+                "geocode": {
+                    "SAME": [
+                        "006037",
+                        "006111"
+                    ],
+                    "UGC": [
+                        "CAZ088",
+                        "CAZ362",
+                        "CAZ366",
+                        "CAZ367",
+                        "CAZ368",
+                        "CAZ369",
+                        "CAZ370",
+                        "CAZ371",
+                        "CAZ372",
+                        "CAZ373",
+                        "CAZ378",
+                        "CAZ379",
+                        "CAZ380",
+                        "CAZ548"
+                    ]
+                },
+                "affectedZones": [
+                    "https://api.weather.gov/zones/forecast/CAZ088",
+                    "https://api.weather.gov/zones/forecast/CAZ362",
+                    "https://api.weather.gov/zones/forecast/CAZ366",
+                    "https://api.weather.gov/zones/forecast/CAZ367",
+                    "https://api.weather.gov/zones/forecast/CAZ368",
+                    "https://api.weather.gov/zones/forecast/CAZ369",
+                    "https://api.weather.gov/zones/forecast/CAZ370",
+                    "https://api.weather.gov/zones/forecast/CAZ371",
+                    "https://api.weather.gov/zones/forecast/CAZ372",
+                    "https://api.weather.gov/zones/forecast/CAZ373",
+                    "https://api.weather.gov/zones/forecast/CAZ378",
+                    "https://api.weather.gov/zones/forecast/CAZ379",
+                    "https://api.weather.gov/zones/forecast/CAZ380",
+                    "https://api.weather.gov/zones/forecast/CAZ548"
+                ],
+                "references": [
+                    {
+                        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c86e11421f05b06e833013ae6fc7f262a42ed27f.005.1",
+                        "identifier": "urn:oid:2.49.0.1.840.0.c86e11421f05b06e833013ae6fc7f262a42ed27f.005.1",
+                        "sender": "w-nws.webmaster@noaa.gov",
+                        "sent": "2026-11-17T12:14:00-08:00"
+                    },
+                    {
+                        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.c86e11421f05b06e833013ae6fc7f262a42ed27f.006.1",
+                        "identifier": "urn:oid:2.49.0.1.840.0.c86e11421f05b06e833013ae6fc7f262a42ed27f.006.1",
+                        "sender": "w-nws.webmaster@noaa.gov",
+                        "sent": "2026-11-17T12:14:00-08:00"
+                    },
+                    {
+                        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f2d92a687f2534039fe90ffbe31529855cd326e1.005.1",
+                        "identifier": "urn:oid:2.49.0.1.840.0.f2d92a687f2534039fe90ffbe31529855cd326e1.005.1",
+                        "sender": "w-nws.webmaster@noaa.gov",
+                        "sent": "2026-11-17T15:44:00-08:00"
+                    },
+                    {
+                        "@id": "https://api.weather.gov/alerts/urn:oid:2.49.0.1.840.0.f7a9f3535476a8ccb8510480153efb8ca6db19d1.004.1",
+                        "identifier": "urn:oid:2.49.0.1.840.0.f7a9f3535476a8ccb8510480153efb8ca6db19d1.004.1",
+                        "sender": "w-nws.webmaster@noaa.gov",
+                        "sent": "2026-11-17T15:46:00-08:00"
+                    }
+                ],
+                "sent": "2026-11-18T13:53:00-08:00",
+                "effective": "2026-11-18T13:53:00-08:00",
+                "onset": "2026-11-19T06:00:00-08:00",
+                "expires": "2026-11-19T18:00:00-08:00",
+                "ends": "2026-11-19T18:00:00-08:00",
+                "status": "Actual",
+                "messageType": "Update",
+                "category": "Met",
+                "severity": "Severe",
+                "certainty": "Possible",
+                "urgency": "Future",
+                "event": "Flood Watch",
+                "sender": "w-nws.webmaster@noaa.gov",
+                "senderName": "NWS Los Angeles/Oxnard CA",
+                "headline": "Flood Watch issued November 18 at 1:53PM PST until November 19 at 6:00PM PST by NWS Los Angeles/Oxnard CA",
+                "description": "* WHAT...Flooding caused by excessive rainfall continues to be\npossible.\n\n* WHERE...Los Angeles County.\n\n* WHEN...From Thursday morning through Thursday afternoon.\n\n* IMPACTS...Excessive rainfall may result in significant flooding of\nroads and other low-lying areas, heavy flows in creeks and canyons,\nrockslides, mudslides, and debris flows in recent burn scars.\n\n* ADDITIONAL DETAILS...\n- Rain rates up to 1 inch per hour are expected, especially in the\nmountains.\n- http://www.weather.gov/safety/flood",
+                "instruction": "You should monitor later forecasts and be alert for possible Flood\nWarnings. Those living in areas prone to flooding should be prepared\nto take action should flooding develop.",
+                "response": "Prepare",
+                "note": null,
+                "parameters": {
+                    "AWIPSidentifier": [
+                        "FFALOX"
+                    ],
+                    "WMOidentifier": [
+                        "WGUS66 KLOX 182153"
+                    ],
+                    "NWSheadline": [
+                        "FLOOD WATCH REMAINS IN EFFECT FROM THURSDAY MORNING THROUGH THURSDAY AFTERNOON"
+                    ],
+                    "BLOCKCHANNEL": [
+                        "EAS",
+                        "NWEM",
+                        "CMAS"
+                    ],
+                    "EAS-ORG": [
+                        "WXR"
+                    ],
+                    "VTEC": [
+                        "/O.CON.KLOX.FA.A.0004.261119T1400Z-261120T0200Z/"
+                    ],
+                    "eventEndingTime": [
+                        "2026-11-19T18:00:00-08:00"
+                    ]
+                },
+                "scope": "Public",
+                "code": "IPAWSv1.0",
+                "language": "en-US",
+                "web": "http://www.weather.gov",
+                "eventCode": {
+                    "SAME": [
+                        "FFA"
+                    ],
+                    "NationalWeatherService": [
+                        "FAA"
+                    ]
+                }
+            }
+        }
+    ],
+    "title": "Current watches, warnings, and advisories for 34.0901 N, 118.4065 W",
+    "updated": "2026-11-19T19:07:37+00:00"
+}

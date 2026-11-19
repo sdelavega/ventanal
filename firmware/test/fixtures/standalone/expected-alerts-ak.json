@@ -1,0 +1,23 @@
+{
+ "fixture": "nws-alerts-ak.json",
+ "alerts": [
+  {
+   "event": "Flood Watch",
+   "headline": "Flood Watch issued November 19 at 6:29AM AKST until November 19 at 6:00PM AKST by NWS Anchorage AK",
+   "severity": "Severe",
+   "ends_epoch": 1795143600
+  },
+  {
+   "event": "Dense Fog Advisory",
+   "headline": "Dense Fog Advisory issued November 19 at 8:21AM AKST until November 19 at 12:00PM AKST by NWS Juneau AK",
+   "severity": "Moderate",
+   "ends_epoch": 1795122000
+  },
+  {
+   "event": "Coastal Flood Advisory",
+   "headline": "Coastal Flood Advisory issued November 19 at 2:41AM AKST until November 19 at 3:00PM AKST by NWS Fairbanks AK",
+   "severity": "Minor",
+   "ends_epoch": 1795132800
+  }
+ ]
+}

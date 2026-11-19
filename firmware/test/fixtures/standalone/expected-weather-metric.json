@@ -1,0 +1,73 @@
+{
+ "fixture": "open-meteo-90210-metric.json",
+ "units": "metric",
+ "now_epoch": 1795114800,
+ "current": {
+  "temp": 16.1,
+  "humidity": 77,
+  "wind_speed": 12.1,
+  "wind_dir": "SW",
+  "code": 3
+ },
+ "days": [
+  {
+   "date": "2026-11-19",
+   "weekday": "THU",
+   "hi": 17,
+   "lo": 10,
+   "code": 65,
+   "precip": 89
+  },
+  {
+   "date": "2026-11-20",
+   "weekday": "FRI",
+   "hi": 17,
+   "lo": 9,
+   "code": 0,
+   "precip": 0
+  },
+  {
+   "date": "2026-11-21",
+   "weekday": "SAT",
+   "hi": 18,
+   "lo": 9,
+   "code": 3,
+   "precip": 0
+  },
+  {
+   "date": "2026-11-22",
+   "weekday": "SUN",
+   "hi": 18,
+   "lo": 13,
+   "code": 3,
+   "precip": 12
+  },
+  {
+   "date": "2026-11-23",
+   "weekday": "MON",
+   "hi": 19,
+   "lo": 13,
+   "code": 51,
+   "precip": 12
+  },
+  {
+   "date": "2026-11-24",
+   "weekday": "TUE",
+   "hi": 20,
+   "lo": 14,
+   "code": 3,
+   "precip": 21
+  },
+  {
+   "date": "2026-11-25",
+   "weekday": "WED",
+   "hi": 18,
+   "lo": 14,
+   "code": 80,
+   "precip": 21
+  }
+ ],
+ "sunrise": "06:30",
+ "sunset": "16:47",
+ "rain_onset": null
+}

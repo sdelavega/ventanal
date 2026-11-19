@@ -1,0 +1,11 @@
+{
+ "fixture": "nws-90210.json",
+ "alerts": [
+  {
+   "event": "Flood Watch",
+   "headline": "Flood Watch issued November 18 at 1:53PM PST until November 19 at 6:00PM PST by NWS Los Angeles/Oxnard CA",
+   "severity": "Severe",
+   "ends_epoch": 1795140000
+  }
+ ]
+}

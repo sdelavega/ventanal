@@ -1,0 +1,73 @@
+{
+ "fixture": "open-meteo-90210-imperial.json",
+ "units": "imperial",
+ "now_epoch": 1795086000,
+ "current": {
+  "temp": 61.0,
+  "humidity": 77,
+  "wind_speed": 7.5,
+  "wind_dir": "SW",
+  "code": 3
+ },
+ "days": [
+  {
+   "date": "2026-11-19",
+   "weekday": "THU",
+   "hi": 63,
+   "lo": 50,
+   "code": 65,
+   "precip": 89
+  },
+  {
+   "date": "2026-11-20",
+   "weekday": "FRI",
+   "hi": 62,
+   "lo": 49,
+   "code": 0,
+   "precip": 0
+  },
+  {
+   "date": "2026-11-21",
+   "weekday": "SAT",
+   "hi": 65,
+   "lo": 49,
+   "code": 3,
+   "precip": 0
+  },
+  {
+   "date": "2026-11-22",
+   "weekday": "SUN",
+   "hi": 65,
+   "lo": 56,
+   "code": 3,
+   "precip": 12
+  },
+  {
+   "date": "2026-11-23",
+   "weekday": "MON",
+   "hi": 67,
+   "lo": 56,
+   "code": 51,
+   "precip": 12
+  },
+  {
+   "date": "2026-11-24",
+   "weekday": "TUE",
+   "hi": 68,
+   "lo": 57,
+   "code": 3,
+   "precip": 21
+  },
+  {
+   "date": "2026-11-25",
+   "weekday": "WED",
+   "hi": 64,
+   "lo": 56,
+   "code": 80,
+   "precip": 21
+  }
+ ],
+ "sunrise": "06:30",
+ "sunset": "16:47",
+ "rain_onset": "2026-11-19T04:00"
+}
