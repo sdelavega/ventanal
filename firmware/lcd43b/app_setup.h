@@ -78,7 +78,7 @@ bool startSetupPortal() {
     hooks.save = saveSetupRecord;
     hooks.feed = [] {};
     hooks.note = [](const char* line) { lcd::log("%s\n", line); };
-    return setupPortal.begin(setupApName, setupApPassword, hooks);
+    return setupPortal.begin(setupApName, setupApPassword, hooks, lcd::installation.ssid);
 }
 
 bool enterSetup(lcd::SetupReason why) {

@@ -4,6 +4,7 @@
 
 #include "../https_get.h"
 #include "portal.h"
+#include <Arduino.h>
 #include <memory>
 
 namespace portal {
@@ -16,11 +17,17 @@ LocationResult resolveLocation(const char* zip) {
     if (!body) return r;  // why = Network: try again
     char url[160];
     zipUrl(zip, url, sizeof url);
+    uint32_t started = millis();
     HttpsResult got = httpsGet(url, body.get(), cap, deadlineMs, keepServing);
+    portalNote("portal geocode status=%d bytes=%u ms=%lu", got.status, unsigned(got.length),
+               static_cast<unsigned long>(millis() - started));
     r = locationFromZip(got.truncated ? -1 : got.status, body.get());
     if (r.why != LocationResult::Ok) return r;
     timezoneUrl(r.latitude, r.longitude, url, sizeof url);
+    started = millis();
     got = httpsGet(url, body.get(), cap, deadlineMs, keepServing);
+    portalNote("portal timezone status=%d bytes=%u ms=%lu", got.status, unsigned(got.length),
+               static_cast<unsigned long>(millis() - started));
     finishLocation(r, got.truncated ? -1 : got.status, body.get());
     return r;
 }

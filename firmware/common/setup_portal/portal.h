@@ -31,6 +31,28 @@ struct PortalHooks {
 
 enum class PortalOutcome { Running, Saved, TimedOut, Cancelled };
 
+struct ScannedNetwork {
+    std::string ssid;
+    int32_t rssi;
+    int channel;
+};
+
+// The SoftAP and the station share one radio, so joining a network on another
+// channel moves the hotspot and drops the phone. Start the hotspot where the
+// board's network already is (or the strongest one nearby) to avoid the hop.
+inline int chooseApChannel(const std::vector<ScannedNetwork>& scan, const char* preferredSsid) {
+    const ScannedNetwork* best = nullptr;
+    const ScannedNetwork* strongest = nullptr;
+    for (const auto& n : scan) {
+        if (n.channel < 1 || n.channel > 13) continue;
+        if (preferredSsid && *preferredSsid && n.ssid == preferredSsid && (!best || n.rssi > best->rssi))
+            best = &n;
+        if (!strongest || n.rssi > strongest->rssi) strongest = &n;
+    }
+    if (best) return best->channel;
+    return strongest ? strongest->channel : 1;
+}
+
 struct Response {
     int code = 200;
     std::string type = "text/html";
@@ -181,8 +203,9 @@ private:
 // The board side (portal.cpp): SoftAP + DNS + web server around PortalCore.
 class SetupPortal {
 public:
-    // Scans for networks, then starts the WPA2 SoftAP (apPass: 8+ characters).
-    bool begin(const char* apSsid, const char* apPass, PortalHooks hooks);
+    // Scans for networks, then starts the WPA2 SoftAP (apPass: 8+ characters)
+    // on the channel of preferredSsid when it is in range.
+    bool begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid = "");
     PortalOutcome poll(uint32_t nowMs);
     void cancel();
     void end();  // stops serving and takes the SoftAP down
@@ -197,6 +220,9 @@ bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs);
 // Feeds the watchdog and answers the phone during other slow setup work
 // (the ZIP lookup); does nothing when no portal is running.
 void keepServing();
+
+// One line in the board log through the portal's note hook (no names or passwords).
+void portalNote(const char* format, ...);
 #endif
 
 }  // namespace portal

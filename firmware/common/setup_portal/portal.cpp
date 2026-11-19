@@ -29,15 +29,6 @@ struct Runtime {
 
 Runtime* active = nullptr;
 
-void note(const char* format, ...) {
-    if (!active || !active->note) return;
-    char line[96];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(line, sizeof line, format, args);
-    va_end(args);
-    active->note(line);
-}
 
 
 void serviceRequests() {
@@ -93,42 +84,53 @@ void handleRequest() {
     server.send(r.code, r.type.c_str(), r.body.c_str());
 }
 
-std::vector<std::string> scanNetworks() {
-    std::vector<std::pair<int32_t, std::string>> found;
+std::vector<ScannedNetwork> scanNetworks() {
+    std::vector<ScannedNetwork> found;
     const int n = WiFi.scanNetworks();
     for (int i = 0; i < n; ++i) {
         const std::string ssid = WiFi.SSID(i).c_str();
         if (ssid.empty() || ssid.size() > 32) continue;
-        auto same = std::find_if(found.begin(), found.end(), [&](const auto& f) { return f.second == ssid; });
-        if (same == found.end()) found.emplace_back(WiFi.RSSI(i), ssid);
-        else same->first = std::max(same->first, WiFi.RSSI(i));
+        found.push_back({ssid, WiFi.RSSI(i), int(WiFi.channel(i))});
     }
     WiFi.scanDelete();
-    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.first > b.first; });
+    return found;
+}
+
+// The page's list: unique names, strongest first.
+std::vector<std::string> networkNames(std::vector<ScannedNetwork> found) {
+    std::sort(found.begin(), found.end(), [](const auto& a, const auto& b) { return a.rssi > b.rssi; });
     std::vector<std::string> names;
     for (const auto& f : found) {
         if (int(names.size()) == maxNetworks) break;
-        names.push_back(f.second);
+        if (std::find(names.begin(), names.end(), f.ssid) == names.end()) names.push_back(f.ssid);
     }
     return names;
 }
 
 }  // namespace
 
-bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hooks) {
+bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid) {
     if (active || strlen(apPass) < 8) return false;
     auto runtime = std::make_unique<Runtime>();
     runtime->userFeed = hooks.feed;
     runtime->note = hooks.note;
     hooks.feed = feedAndServe;  // long checks keep answering the phone
+    // The station must stay idle while the hotspot runs: background
+    // reconnects scan every channel and the hotspot stops beaconing on its
+    // own (phones took minutes to see it). The old network is forgotten in
+    // RAM only; persistence is off, so nothing saved changes.
     WiFi.persistent(false);
+    WiFi.setAutoReconnect(false);
+    WiFi.disconnect(false, true);
     WiFi.mode(WIFI_AP_STA);
-    WiFi.disconnect(false);
-    std::vector<std::string> networks = scanNetworks();
+    WiFi.setSleep(false);
+    const std::vector<ScannedNetwork> scan = scanNetworks();
+    const int channel = chooseApChannel(scan, preferredSsid);
+    std::vector<std::string> networks = networkNames(scan);
     const size_t scanned = networks.size();
     const IPAddress address(192, 168, 4, 1);
     if (!WiFi.softAPConfig(address, address, IPAddress(255, 255, 255, 0))
-        || !WiFi.softAP(apSsid, apPass)) {  // an 8+ character passphrase means WPA2-PSK
+        || !WiFi.softAP(apSsid, apPass, channel)) {  // an 8+ character passphrase means WPA2-PSK
         WiFi.mode(WIFI_OFF);
         return false;
     }
@@ -138,7 +140,7 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     runtime->server.onNotFound(handleRequest);
     runtime->server.begin();
     active = runtime.release();
-    note("portal ap=up channel=%d networks=%u", int(WiFi.channel()), unsigned(scanned));
+    portalNote("portal ap=up channel=%d chosen=%d networks=%u", int(WiFi.channel()), channel, unsigned(scanned));
     return true;
 }
 
@@ -148,7 +150,7 @@ PortalOutcome SetupPortal::poll(uint32_t nowMs) {
     const int clients = WiFi.softAPgetStationNum();
     if (clients != active->clients) {
         active->clients = clients;
-        note("portal clients=%d sta=%d channel=%d", clients, int(WiFi.status()), int(WiFi.channel()));
+        portalNote("portal clients=%d sta=%d channel=%d", clients, int(WiFi.status()), int(WiFi.channel()));
     }
     return active->core->poll(nowMs);
 }
@@ -170,8 +172,20 @@ void SetupPortal::end() {
     active->server.stop();
     active->dns.stop();
     WiFi.softAPdisconnect(true);
+    WiFi.setSleep(true);
+    WiFi.setAutoReconnect(true);
     delete active;
     active = nullptr;
+}
+
+void portalNote(const char* format, ...) {
+    if (!active || !active->note) return;
+    char line[96];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    active->note(line);
 }
 
 void keepServing() {
@@ -182,19 +196,27 @@ bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs) {
     // One attempt: no background retries hopping the radio (and the SoftAP)
     // between channels, and a rejected password or a missing network ends
     // the wait as soon as the driver reports it instead of at the timeout.
+    // A wrong password ends in a plain STA_DISCONNECTED (status 6), so the
+    // first disconnect event after begin() ends the attempt.
+    static volatile int disconnectReason;
+    disconnectReason = 0;
+    const wifi_event_id_t watch = WiFi.onEvent(
+        [](arduino_event_id_t, arduino_event_info_t info) {
+            disconnectReason = info.wifi_sta_disconnected.reason ? info.wifi_sta_disconnected.reason : -1;
+        },
+        ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.setAutoReconnect(false);
     WiFi.begin(ssid, password[0] ? password : nullptr);
     const uint32_t start = millis();
     wl_status_t status = WiFi.status();
-    while (status != WL_CONNECTED && millis() - start < timeoutMs) {
-        if ((status == WL_CONNECT_FAILED || status == WL_NO_SSID_AVAIL) && millis() - start > 1500) break;
+    while (status != WL_CONNECTED && !disconnectReason && millis() - start < timeoutMs) {
         feedAndServe();
         delay(50);
         status = WiFi.status();
     }
-    note("portal join=%d status=%d ms=%lu", status == WL_CONNECTED, int(status),
-         static_cast<unsigned long>(millis() - start));
-    WiFi.setAutoReconnect(true);
+    WiFi.removeEvent(watch);
+    portalNote("portal join=%d status=%d reason=%d ms=%lu", status == WL_CONNECTED, int(status),
+         int(disconnectReason), static_cast<unsigned long>(millis() - start));
     if (status == WL_CONNECTED) return true;
     WiFi.disconnect(false);  // keep the SoftAP up for another try
     return false;

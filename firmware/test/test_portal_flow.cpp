@@ -147,6 +147,16 @@ static void portal_times_out_after_15_min() {
     assert(stale.poll(59000) == PortalOutcome::Running);
 }
 
+static void hotspot_shares_the_home_network_channel() {
+    const std::vector<ScannedNetwork> scan = {
+        {"Neighbour", -40, 11}, {"Home", -70, 6}, {"Home", -55, 6}, {"Odd", -30, 14}};
+    assert(chooseApChannel(scan, "Home") == 6);       // joining it later needs no channel hop
+    assert(chooseApChannel(scan, "") == 11);          // otherwise the strongest usable network
+    assert(chooseApChannel(scan, "Missing") == 11);
+    assert(chooseApChannel({{"Odd", -30, 14}}, "") == 1);  // channel 14 is not allowed everywhere
+    assert(chooseApChannel({}, "Home") == 1);
+}
+
 static void cancel_ends_the_portal() {
     PortalCore core = freshCore();
     core.cancel();
@@ -163,6 +173,7 @@ int main() {
     host_join_without_zip_skips_locate();
     form_errors_answer_immediately();
     portal_times_out_after_15_min();
+    hotspot_shares_the_home_network_channel();
     cancel_ends_the_portal();
     puts("portal flow: captive redirect, join-before-save, errors, single save, idle timeout passed");
 }
