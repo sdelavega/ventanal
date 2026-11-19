@@ -4,4 +4,6 @@
 // are named here so PlatformIO's library finder links them in.
 #include <DNSServer.h>
 #include <WebServer.h>
+#include "../common/https_get.cpp"
+#include "../common/setup_portal/locate.cpp"
 #include "../common/setup_portal/portal.cpp"

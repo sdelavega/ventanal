@@ -173,6 +173,10 @@ public:
 // A `join` hook for boards: joins as a station while the SoftAP stays up,
 // serving the portal and feeding the watchdog while it waits.
 bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs);
+
+// Feeds the watchdog and answers the phone during other slow setup work
+// (the ZIP lookup); does nothing when no portal is running.
+void keepServing();
 #endif
 
 }  // namespace portal

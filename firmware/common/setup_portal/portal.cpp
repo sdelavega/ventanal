@@ -148,6 +148,10 @@ void SetupPortal::end() {
     active = nullptr;
 }
 
+void keepServing() {
+    feedAndServe();
+}
+
 bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs) {
     WiFi.begin(ssid, password[0] ? password : nullptr);
     const uint32_t start = millis();
