@@ -93,6 +93,9 @@ uint32_t powerPollMs() {
 bool backlightState = false;
 bool backlightKnown = false;
 bool quietBlanking = false;
+// Sole authority on whether the backlight may be lit (display_owner.h).
+lcd::DisplayOwner displayOwner;
+bool updateScreenShowing = false;  // the Updating notice is lit even in quiet hours
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
 lcd::WifiRetry wifiRetry;

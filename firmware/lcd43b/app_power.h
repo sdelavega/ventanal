@@ -22,7 +22,7 @@ void showChargeMe() {
     if(!beginPanel()) {
         lcd::log("power error=panel-resume\n");
         powerSession.chargeFailed(millis());
-        setBacklight(false);
+        backlightRefresh();
         return;
     }
     const int local = drawLocalScene([](lcd::SettingsSurface band) {
@@ -33,7 +33,7 @@ void showChargeMe() {
     if (local >= 0) presentScreen(nullptr, false, nullptr, local);
     else lcd::log("power error=charge-allocation\n");
     powerSession.showCharge(millis());
-    setBacklight(true);
+    backlightRefresh();
     lcd::log("power charge-me seconds=10\n");
 }
 void restoreTouchWake() {
@@ -51,7 +51,7 @@ void restoreTouchWake() {
     } else lcd::log("power error=panel-resume\n");
 }
 void sleepPower() {
-    setBacklight(false);
+    HeldDark asleep(lcd::DarkReason::Sleep);
     if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
     persistDeferred(false); // selection becomes due on the same transition to dark
     // Let loop() drain one file per pass before entering light sleep.

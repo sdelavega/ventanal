@@ -11,6 +11,24 @@ bool setBacklight(bool on);
 void backlightRefresh();
 void reclaimCacheMemory(size_t bytes);
 
+// Hold the screen dark for this scope through the display owner. Release
+// does not relight by itself; the next backlightRefresh() decides, as the
+// direct setBacklight(false) calls this replaces did.
+class HeldDark {
+public:
+    explicit HeldDark(lcd::DarkReason reason, bool needed = true) : reason_(reason), held_(needed) {
+        if (!held_) return;
+        displayOwner.acquire(reason_, millis());
+        backlightRefresh();
+    }
+    ~HeldDark() { if (held_) displayOwner.release(reason_); }
+    HeldDark(const HeldDark&) = delete;
+    HeldDark& operator=(const HeldDark&) = delete;
+private:
+    lcd::DarkReason reason_;
+    bool held_;
+};
+
 // Loop owns these buffers. A scene's packed overlays stay immutable until
 // the bounce callback has switched away from that scene.
 constexpr size_t ClockPixels = size_t(lcd::ART_CORNER.w) * lcd::ART_CORNER.h;
@@ -39,7 +57,7 @@ const uint16_t* framePixels(const uint8_t* frame) {
 void retirePixels(const uint16_t* pixels) {
     if (!panel.references(pixels)) return;
     if (panel.waitForPresent() && !panel.references(pixels)) return;
-    setBacklight(false);
+    HeldDark dark(lcd::DarkReason::Retire);
     const int next = panel.prepare();
     if (next >= 0) {
         panel.present(next, {}, 100);

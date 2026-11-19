@@ -38,8 +38,14 @@ bool showUpdating() {
     });
     if (local < 0) return false;
     clockSlot = -1;
-    if (!presentScreen(nullptr, true, nullptr, local) || !panel.waitForPresent() || !panel.waitForVsync()
-        || !setBacklight(true)) {
+    updateScreenShowing = true;
+    bool lit = presentScreen(nullptr, true, nullptr, local) && panel.waitForPresent() && panel.waitForVsync();
+    if (lit) {
+        backlightRefresh();
+        lit = backlightKnown && backlightState;
+    }
+    if (!lit) {
+        updateScreenShowing = false;
         backlightRefresh();
         return false;
     }
@@ -59,7 +65,8 @@ void runQueuedUpdate() {
             updateNotice = "Update screen unavailable";
         } else {
             delay(1000);  // Leave the notice visible before blanking for the transfer.
-            if (setBacklight(false)) {
+            HeldDark transfer(lcd::DarkReason::Update);
+            if (backlightKnown && !backlightState) {
                 if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
                 refreshWatchdog.subscribe();
                 const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
@@ -80,6 +87,7 @@ void runQueuedUpdate() {
             settingsRefreshPending = true;  // Deliver the failure at the next check-in.
             powerSession.activity(millis());
         }
+        updateScreenShowing = false;
         if (settingsPage.active) showSettings();
         else {
             show(screenIndex);

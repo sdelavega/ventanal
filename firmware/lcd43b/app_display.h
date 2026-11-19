@@ -212,19 +212,36 @@ void logRefreshLabel() {
 // The quiet window comes from the live manifest (persisted at boot, then
 // refreshed with every accepted manifest) and only applies once the wall
 // clock is trustworthy: before the first NTP sync the backlight stays on.
-void backlightRefresh() {
-    quietBlanking = false;
-    if (!powerSession.screenOn) {
-        setBacklight(false);
-        return;
+lcd::DisplayInputs displayInputs() {
+    lcd::DisplayInputs in;
+    in.panelRunning = panel.handle() != nullptr;
+    in.screenOn = powerSession.screenOn;
+    in.chargeShowing = powerSession.chargeShowing;
+    in.installQueued = installQueued != lcd::UpdateSource::None || updateScreenShowing;
+    in.now = millis();
+    in.touchWakeUntil = touchUntilMs;
+    if (in.screenOn && !in.chargeShowing) {
+        tm local{};
+        const time_t now = time(nullptr);
+        localtime_r(&now, &local);
+        in.quiet = lcd::quietApplies(local.tm_year + 1900,
+                                     local.tm_hour * 60 + local.tm_min,
+                                     state.manifest);
     }
-    if(powerSession.chargeShowing) { setBacklight(panel.handle() != nullptr); return; }
-    tm local{};
-    const time_t now = time(nullptr);
-    localtime_r(&now, &local);
-    const bool quiet = lcd::quietApplies(local.tm_year + 1900,
-                                         local.tm_hour * 60 + local.tm_min,
-                                         state.manifest);
-    quietBlanking = quiet && installQueued == lcd::UpdateSource::None && millis() >= touchUntilMs;
-    setBacklight(!quietBlanking && panel.handle());
+    return in;
+}
+
+const char* lastDisplayReason = nullptr;
+
+// Apply the display owner's decision. The owner is the only authority on
+// whether the screen may be lit; this is the only place that asks it.
+void backlightRefresh() {
+    const auto in = displayInputs();
+    quietBlanking = displayOwner.quietBlanking(in);
+    const auto decision = displayOwner.decide(in, true);
+    if (decision.reason != lastDisplayReason) {
+        lastDisplayReason = decision.reason;
+        lcd::log("display reason=%s\n", decision.reason);
+    }
+    setBacklight(decision.lit);
 }

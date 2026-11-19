@@ -56,6 +56,7 @@
 #include "overlay.h"
 #include "panel.h"
 #include "power_session.h"
+#include "display_owner.h"
 #include "persist.h"
 #include "transport.h"
 #include "owner.h"
@@ -134,7 +135,7 @@ void setup() {
     Wire.begin(8, 9);   // SDA=GPIO8, SCL=GPIO9, shared by expander and touch
     Wire.setClock(400000);
     if (!expander.begin()) lcd::log("error=ch422g-begin\n");
-    setBacklight(false);
+    backlightRefresh();  // panel not started yet: the owner reports Off
     allocateLocalPages();
     installationReady = lcd::initializeInstallation(pendingUpdate);
     if (installationReady && !prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
@@ -201,7 +202,7 @@ void setup() {
 #ifdef VENTANAL_LCD_DIAG_HW
     beginPanel();
     scanBus();
-    setBacklight(true);
+    backlightRefresh();
     lcd::hwProbeBegin();
     return;  // no network worker or private configuration values in probe logs
 #endif
@@ -371,17 +372,21 @@ void loop() {
         if (stressProfile == 2) {
             lcd::log("diag matrix=done\n");
         } else {
-            setBacklight(false);
-            if (!stopPanel()) {
-                lcd::log("diag matrix=failed panel-stop\n");
-                ESP.restart();
+            bool restarted = false;
+            {
+                HeldDark restart(lcd::DarkReason::Diag);
+                if (!stopPanel()) {
+                    lcd::log("diag matrix=failed panel-stop\n");
+                    ESP.restart();
+                }
+                ++stressProfile;
+                scanOtherCore = stressProfile == 2;
+                Panel::setInterruptLevel(3);
+                lcd::log("diag matrix profile=%u level=3 split=%d\n", stressProfile, scanOtherCore);
+                restarted = beginPanel();
+                if (restarted) show(screenIndex);
             }
-            ++stressProfile;
-            scanOtherCore = stressProfile == 2;
-            Panel::setInterruptLevel(3);
-            lcd::log("diag matrix profile=%u level=3 split=%d\n", stressProfile, scanOtherCore);
-            if (beginPanel()) {
-                show(screenIndex);
+            if (restarted) {
                 backlightRefresh();
                 stressCycles = stressSettingsCycles = 0;
                 stressStartMs = millis();

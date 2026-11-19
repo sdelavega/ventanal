@@ -30,12 +30,15 @@ bool litFrameSaveAllowed(uint32_t now) {
 class ScanoutSavePause {
 public:
     explicit ScanoutSavePause(bool saving = true) : restore_(saving && backlightState) {
-        if (restore_) setBacklight(false);
+        if (!restore_) return;
+        displayOwner.acquire(lcd::DarkReason::Save, millis());
+        backlightRefresh();
     }
     ~ScanoutSavePause() {
         if (!restore_) return;
         if (!(panel.waitForVsync() && panel.waitForVsync() && panel.waitForPresent()))
             lcd::log("panel save pause scanout=timeout\n");
+        displayOwner.release(lcd::DarkReason::Save);
         backlightRefresh();
     }
 private:
