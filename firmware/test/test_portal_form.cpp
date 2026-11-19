@@ -151,6 +151,71 @@ static void page_never_echoes_secrets() {
     assert(contains(page, "https://frame.test"));  // the host itself is not secret
 }
 
+// What the board is set up with now: the portal starts from it.
+static PortalFields currentPaired(const char* host = "https://frame.test") {
+    PortalFields c{};
+    strcpy(c.ssid, "Synthetic Net");
+    strcpy(c.password, "synthetic-pass");
+    strcpy(c.zip, "12345");
+    strcpy(c.host, host);
+    strcpy(c.pairing, "desk");
+    strcpy(c.certificate, "-----BEGIN CERTIFICATE-----current");
+    memset(c.deviceKey, 'c', 64);
+    return c;
+}
+
+static void unchanged_host_needs_no_secrets() {
+    const PortalFields current = currentPaired();
+    PortalFields f{};
+    // Host and pairing as shown, certificate and key left blank: keep the pairing.
+    assert(parsePortalForm("ssid=Synthetic+Net&zip=12345&host=https%3A%2F%2Fframe.test&pairing=desk", f, &current)
+           == FormError::None);
+    assert(!strcmp(f.host, "https://frame.test") && !strcmp(f.pairing, "desk"));
+    assert(!strcmp(f.certificate, current.certificate) && !strcmp(f.deviceKey, current.deviceKey));
+    // Host fields cleared without ticking Leave: still the current host.
+    assert(parsePortalForm("ssid=Synthetic+Net&zip=12345", f, &current) == FormError::None);
+    assert(!strcmp(f.host, "https://frame.test") && !f.leaveHost);
+    // The bench's plain-HTTP host is kept as it is (only a new pairing must be HTTPS).
+    PortalFields bench = currentPaired("http://bench.test");
+    bench.pairing[0] = bench.certificate[0] = bench.deviceKey[0] = '\0';
+    assert(parsePortalForm("ssid=Synthetic+Net&host=http%3A%2F%2Fbench.test", f, &bench) == FormError::None);
+    assert(!strcmp(f.host, "http://bench.test") && !f.zip[0]);
+    // A different host is a new pairing and needs everything.
+    assert(parsePortalForm("ssid=n&zip=12345&host=https%3A%2F%2Fother.test&pairing=desk", f, &current)
+           == FormError::Host);
+}
+
+static void leave_host_clears_the_pairing() {
+    const PortalFields current = currentPaired();
+    PortalFields f{};
+    assert(parsePortalForm("ssid=Synthetic+Net&zip=12345&leave_host=1&host=https%3A%2F%2Fframe.test&pairing=desk",
+                           f, &current) == FormError::None);
+    assert(f.leaveHost && !f.host[0] && !f.pairing[0] && !f.certificate[0] && !f.deviceKey[0]);
+    assert(parsePortalForm("ssid=Synthetic+Net&leave_host=1", f, &current) == FormError::Zip);  // standalone needs a ZIP
+}
+
+static void password_kept_for_the_same_network() {
+    const PortalFields current = currentPaired();
+    PortalFields f{};
+    assert(parsePortalForm("ssid=Synthetic+Net&password=&zip=12345", f, &current) == FormError::None);
+    assert(!strcmp(f.password, "synthetic-pass"));
+    assert(parsePortalForm("ssid=Other+Net&password=&zip=12345", f, &current) == FormError::None);
+    assert(!f.password[0]);  // another network with no password: an open network
+    assert(parsePortalForm("ssid=Synthetic+Net&password=new-password&zip=12345", f, &current) == FormError::None);
+    assert(!strcmp(f.password, "new-password"));
+}
+
+static void page_offers_leave_only_with_a_host() {
+    const PortalFields current = currentPaired();
+    const std::string paired = renderPortalPage(current, {}, FormError::None, "");
+    assert(contains(paired, "name=leave_host") && contains(paired, "<details open>"));
+    assert(contains(paired, "placeholder=\"unchanged\""));
+    assert(!contains(paired, "synthetic-pass") && !contains(paired, "current") && !contains(paired, std::string(64, 'c').c_str()));
+    PortalFields alone{};
+    strcpy(alone.ssid, "n");
+    assert(!contains(renderPortalPage(alone, {}, FormError::None, ""), "name=leave_host"));
+}
+
 static void page_stays_small() {
     std::vector<std::string> nets;
     for (int i = 0; i < 20; ++i) nets.push_back(std::string(32, char('a' + i)));
@@ -169,5 +234,9 @@ int main() {
     page_prefills_and_reports();
     page_never_echoes_secrets();
     page_stays_small();
+    unchanged_host_needs_no_secrets();
+    leave_host_clears_the_pairing();
+    password_kept_for_the_same_network();
+    page_offers_leave_only_with_a_host();
     puts("portal form: AP credentials, parsing, host pairing, QR and page escaping passed");
 }

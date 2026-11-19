@@ -37,14 +37,17 @@ inline bool setupCancelVisible(SetupReason why) { return why == SetupReason::Use
 
 template<size_t N>
 inline void copyText(char (&dst)[N], const char* src) {
-    strncpy(dst, src, N - 1);
-    dst[N - 1] = '\0';
+    const size_t n = strnlen(src, N - 1);
+    memmove(dst, src, n);  // memmove: callers may copy a field onto itself
+    dst[n] = '\0';
 }
 
-// The new record: the portal's answers over the current one. Host pairing
-// is kept unless the portal supplied a new one (leaving a host is explicit,
-// in a later task), and the profile and forced revision are kept so a
-// private build's seed stays write-once.
+// The new record: the portal's answers over the current one. The pairing
+// comes from the portal (which keeps the stored one unless a new one is given)
+// and is dropped only when "Leave the host" was ticked; the profile and forced
+// revision are kept so a private build's seed stays write-once. The board's
+// cache and screen state are untouched: the restart after saving picks the
+// new mode.
 inline void installationFromPortal(const Installation& current, const portal::PortalFields& f,
                                    const portal::LocationResult& where, Installation& r) {
     if (&r != &current) r = current;
@@ -61,7 +64,9 @@ inline void installationFromPortal(const Installation& current, const portal::Po
         r.callState = uint8_t(CallState::None);
         r.callCheckedAt = 0;
     }
-    if (f.host[0]) {
+    if (f.leaveHost) {
+        r.host[0] = r.pairing[0] = r.certificate[0] = r.deviceKey[0] = '\0';
+    } else if (f.host[0]) {
         copyText(r.host, f.host);
         copyText(r.pairing, f.pairing);
         copyText(r.certificate, f.certificate);
@@ -73,6 +78,24 @@ inline void installationFromPortal(const Installation& current, const portal::Po
         r.latitude = where.latitude;
         r.longitude = where.longitude;
     }
+}
+
+// The portal starts from the stored record (secrets are used, never shown).
+inline portal::PortalFields portalFieldsFrom(const Installation& r) {
+    portal::PortalFields f{};
+    copyText(f.ssid, r.ssid);
+    copyText(f.password, r.password);
+    copyText(f.zip, r.zip);
+    f.units = r.units;
+    f.clock24h = r.clock24h;
+    f.quietStart = r.quietStart;
+    f.quietEnd = r.quietEnd;
+    copyText(f.callSign, r.callSign);
+    copyText(f.host, r.host);
+    copyText(f.pairing, r.pairing);
+    copyText(f.certificate, r.certificate);
+    copyText(f.deviceKey, r.deviceKey);
+    return f;
 }
 
 inline Installation installationFromPortal(const Installation& current, const portal::PortalFields& f,

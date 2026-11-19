@@ -67,8 +67,12 @@ inline constexpr char portalAddress[] = "http://192.168.4.1/";
 
 class PortalCore {
 public:
-    PortalCore(PortalHooks hooks, std::vector<std::string> networks, uint32_t nowMs)
-        : hooks_(hooks), networks_(std::move(networks)), lastActivity_(nowMs) {}
+    // `current` is what the board is set up with now; the form starts from it
+    // (secrets are used but never shown) and blank secrets mean "unchanged".
+    PortalCore(PortalHooks hooks, std::vector<std::string> networks, uint32_t nowMs,
+               const PortalFields& current = PortalFields{})
+        : hooks_(hooks), networks_(std::move(networks)), lastActivity_(nowMs), pending_(current),
+          current_(current) {}
 
     Response handleGet(const std::string& path, uint32_t nowMs) {
         lastActivity_ = nowMs;
@@ -87,7 +91,7 @@ public:
         if (path != "/save" || state_ != State::Form) return currentPage();  // ignore double taps
         status_.clear();
         failed_ = false;
-        error_ = parsePortalForm(body, pending_);
+        error_ = parsePortalForm(body, pending_, &current_);
         if (error_ == FormError::None) {
             state_ = State::Checking;
             checkPending_ = true;
@@ -170,7 +174,7 @@ private:
     Response currentPage() const {
         Response r;
         if (state_ == State::Form) {
-            r.body = renderPortalPage(pending_, networks_, error_, status_.c_str());
+            r.body = renderPortalPage(pending_, networks_, error_, status_.c_str(), current_.host[0] != 0);
             return r;
         }
         const bool saved = state_ == State::Saved;
@@ -192,6 +196,7 @@ private:
     uint32_t savedAt_ = 0;
     State state_ = State::Form;
     PortalFields pending_{};
+    PortalFields current_{};
     FormError error_ = FormError::None;
     std::string status_;
     bool cancelled_ = false;
@@ -205,7 +210,8 @@ class SetupPortal {
 public:
     // Scans for networks, then starts the WPA2 SoftAP (apPass: 8+ characters)
     // on the channel of preferredSsid when it is in range.
-    bool begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid = "");
+    bool begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid = "",
+               const PortalFields* current = nullptr);
     PortalOutcome poll(uint32_t nowMs);
     void cancel();
     void end();  // stops serving and takes the SoftAP down

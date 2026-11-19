@@ -181,6 +181,39 @@ static void setup_uses_portal_host_fields() {
     assert(!strcmp(r.host, "https://other.test") && !strcmp(r.pairing, "lounge") && r.deviceKey[0] == 'b');
 }
 
+static void leave_host_clears_credentials_keeps_zip() {
+    portal::PortalFields f = fields();
+    f.leaveHost = 1;
+    const Installation r = installationFromPortal(pairedRecord(), f, located());
+    assert(validInstallation(r) && standalone(r));
+    assert(!r.host[0] && !r.pairing[0] && !r.certificate[0] && !r.deviceKey[0]);
+    assert(!strcmp(r.zip, "90210") && !strcmp(r.timezone, "PST8PDT,M3.2.0,M11.1.0"));
+    assert(!strcmp(r.profile, "desk-display") && r.forcedRevision == 3);
+}
+
+static void portal_starts_from_the_record() {
+    const Installation current = pairedRecord();
+    const portal::PortalFields f = portalFieldsFrom(current);
+    assert(!strcmp(f.ssid, "old-network") && !strcmp(f.password, "old-password"));
+    assert(!strcmp(f.host, "https://frame.test/") && !strcmp(f.pairing, "desk") && f.deviceKey[0] == 'a');
+    assert(!strcmp(f.callSign, "K1ABC") && f.quietStart == current.quietStart && f.clock24h == current.clock24h);
+    // Saving the untouched form gives back the same pairing.
+    const Installation same = installationFromPortal(current, f, portal::LocationResult{});
+    assert(!strcmp(same.host, current.host) && !strcmp(same.certificate, current.certificate));
+}
+
+static void setup_screen_has_the_iphone_hint() {
+    std::vector<uint16_t> px(size_t(WIDTH) * HEIGHT, 0x1234);
+    SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", "", false, "", true, nullptr};
+    drawSetupPage(SettingsSurface(px.data()), screen);
+    bool inked = false;
+    for (int y = SETUP_HINT.y; y < SETUP_HINT.y + SETUP_HINT.h; ++y)
+        for (int x = SETUP_HINT.x; x < SETUP_HINT.x + SETUP_HINT.w; ++x) inked = inked || px[size_t(y) * WIDTH + x];
+    assert(inked);
+    assert(!overlaps(SETUP_HINT, SETUP_CANCEL) && !overlaps(SETUP_HINT, setupQrLayout(QR_MAX_MODULES).box));
+    assert(SETUP_HINT.y >= SETUP_QR_AREA.y + SETUP_QR_AREA.h && SETUP_HINT.y + SETUP_HINT.h <= HEIGHT);
+}
+
 static void first_boot_without_record_enters_setup() {
     assert(bootSetup(false, false) == BootSetup::FirstBoot);   // nothing stored
     assert(bootSetup(true, false) == BootSetup::FirstBoot);    // stored but not usable here yet
@@ -207,6 +240,9 @@ int main() {
     first_setup_builds_a_standalone_record();
     setup_keeps_an_existing_host_pairing();
     setup_uses_portal_host_fields();
+    leave_host_clears_credentials_keeps_zip();
+    portal_starts_from_the_record();
+    setup_screen_has_the_iphone_hint();
     first_boot_without_record_enters_setup();
     cancel_returns_when_record_usable();
     puts("lcd43b setup: Settings control, setup screen and QR, record from the portal, boot and exit rules passed");

@@ -15,6 +15,7 @@ namespace lcd {
 inline constexpr ReadoutRect SETUP_TEXT{150, 90, 340, 280};
 inline constexpr ReadoutRect SETUP_QR_AREA{500, 96, 276, 276};
 inline constexpr ReadoutRect SETUP_CANCEL{150, 384, 200, 56};
+inline constexpr ReadoutRect SETUP_HINT{500, 384, 290, 44};  // under the code, beside Cancel
 inline constexpr int QR_MAX_MODULES = 41;  // QR version 6; the hotspot payload needs version 3-4
 
 struct QrBits {
@@ -82,6 +83,9 @@ inline void drawSetupPage(SettingsSurface px, const SetupScreen& s) {
         drawFitted(px, ClockTime, s.status, 150, 332, SETUP_TEXT.w, s.statusFailed ? rgb565(255, 85, 85) : sky);
     if (s.note && *s.note) drawFitted(px, ArtDate, s.note, 150, 358, SETUP_TEXT.w, light);
     if (s.cancel) updateButton(px, SETUP_CANCEL, "Cancel");
+    // iPhones can take a minute or more to list the hotspot (bench, 1.1.0).
+    px.text(ArtDate, "On an iPhone the network can take", SETUP_HINT.x, SETUP_HINT.y + 16, light);
+    px.text(ArtDate, "a minute or two to appear.", SETUP_HINT.x, SETUP_HINT.y + 36, light);
     if (!s.qr || s.qr->size <= 0 || s.qr->size > QR_MAX_MODULES) return;
     const SetupQrLayout q = setupQrLayout(s.qr->size);
     settingsBox(px, q.box, white);

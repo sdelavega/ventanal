@@ -85,7 +85,10 @@ bool startSetupPortal() {
     hooks.save = saveSetupRecord;
     hooks.feed = [] {};
     hooks.note = [](const char* line) { lcd::log("%s\n", line); };
-    return setupPortal.begin(setupApName, setupApPassword, hooks, lcd::installation.ssid);
+    static portal::PortalFields current;  // 4.9 KB: not on the loop stack
+    current = lcd::validInstallation(lcd::installation) ? lcd::portalFieldsFrom(lcd::installation)
+                                                        : portal::PortalFields{};
+    return setupPortal.begin(setupApName, setupApPassword, hooks, lcd::installation.ssid, &current);
 }
 
 bool enterSetup(lcd::SetupReason why) {

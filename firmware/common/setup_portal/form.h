@@ -28,6 +28,7 @@ struct PortalFields {
     char pairing[33]{};
     char certificate[4096]{};
     char deviceKey[65]{};
+    uint8_t leaveHost = 0;   // the "Leave the host" box was ticked
 };
 
 enum class FormError { None, Ssid, Password, Zip, Quiet, CallSign, Host, Pairing, Malformed };
@@ -158,16 +159,21 @@ inline bool httpsHost(const std::string& host) {
 
 }  // namespace detail
 
-inline FormError parsePortalForm(const char* body, PortalFields& out) {
+// `current` is what the board is set up with now (null on a first setup).
+// Blank secrets mean "unchanged": the Wi-Fi password when the network is the
+// same one, and the host pairing when the host and pairing name are as shown
+// (or cleared) and no new certificate or key was given. A host is dropped
+// only when "Leave the host" is ticked.
+inline FormError parsePortalForm(const char* body, PortalFields& out, const PortalFields* current = nullptr) {
     using namespace detail;
     out = PortalFields{};
     std::string ssid, ssidOther, password, zip, units = "imperial", clock = "24";
-    std::string quietStart, quietEnd, call, host, pairing, certificate, deviceKey;
+    std::string quietStart, quietEnd, call, host, pairing, certificate, deviceKey, leave;
     struct { const char* name; std::string* value; } fields[] = {
         {"ssid", &ssid}, {"ssid_other", &ssidOther}, {"password", &password}, {"zip", &zip},
         {"units", &units}, {"clock", &clock}, {"quiet_start", &quietStart}, {"quiet_end", &quietEnd},
         {"call", &call}, {"host", &host}, {"pairing", &pairing}, {"certificate", &certificate},
-        {"device_key", &deviceKey},
+        {"device_key", &deviceKey}, {"leave_host", &leave},
     };
     for (const char* p = body; *p;) {
         const char* end = p + strcspn(p, "&");
@@ -181,6 +187,7 @@ inline FormError parsePortalForm(const char* body, PortalFields& out) {
 
     if (ssid.empty()) ssid = ssidOther;
     if (ssid.empty() || !copyField(out.ssid, ssid)) return FormError::Ssid;
+    if (password.empty() && current && ssid == current->ssid) password = current->password;
     if ((!password.empty() && password.size() < 8) || !copyField(out.password, password))
         return FormError::Password;
     if (units != "imperial" && units != "metric") return FormError::Malformed;
@@ -209,7 +216,16 @@ inline FormError parsePortalForm(const char* body, PortalFields& out) {
         if (c != '\r') pem += c;
     pem = trimmed(pem);
     const bool anyHost = !host.empty() || !pairing.empty() || !pem.empty() || !deviceKey.empty();
-    if (anyHost) {
+    const bool keepHost = current && current->host[0] && pem.empty() && deviceKey.empty()
+        && (host.empty() || host == current->host) && (pairing.empty() || pairing == current->pairing);
+    if (!leave.empty() && leave != "0") {
+        out.leaveHost = 1;  // host fields are ignored: the board will run on its own
+    } else if (keepHost) {
+        copyField(out.host, current->host);  // as stored, including a bench plain-HTTP host
+        copyField(out.pairing, current->pairing);
+        copyField(out.certificate, current->certificate);
+        copyField(out.deviceKey, current->deviceKey);
+    } else if (anyHost) {
         if (!httpsHost(host) || !copyField(out.host, host)) return FormError::Host;
         if (pem.find("-----BEGIN CERTIFICATE-----") == std::string::npos || !copyField(out.certificate, pem))
             return FormError::Host;
@@ -221,7 +237,7 @@ inline FormError parsePortalForm(const char* body, PortalFields& out) {
     }
 
     zip = trimmed(zip);
-    if (zip.empty() ? !anyHost : !zipValid(zip)) return FormError::Zip;  // standalone needs a ZIP
+    if (zip.empty() ? !out.host[0] : !zipValid(zip)) return FormError::Zip;  // standalone needs a ZIP
     copyField(out.zip, zip);
     return FormError::None;
 }
@@ -246,7 +262,9 @@ inline std::string htmlEscape(const char* s) {
 // The Wi-Fi password, certificate and device key are never written back into
 // the page: a failed submit asks for them again.
 inline std::string renderPortalPage(const PortalFields& prefill, const std::vector<std::string>& networks,
-                                    FormError error, const char* status) {
+                                    FormError error, const char* status, int offerLeave = -1) {
+    const bool leaveOffered = offerLeave < 0 ? prefill.host[0] != 0 : offerLeave != 0;
+    const char* unchanged = " placeholder=\"unchanged\"";
     auto clockText = [](int16_t m) {
         if (m < 0 || m >= 24 * 60) return std::string();
         const char t[] = {char('0' + m / 600), char('0' + m / 60 % 10), ':',
@@ -283,7 +301,8 @@ inline std::string renderPortalPage(const PortalFields& prefill, const std::vect
     page += std::string("<label>") + (networks.empty() ? "Wi-Fi network" : "Other network (if not listed)")
         + "</label><input name=ssid_other maxlength=32 value=\""
         + htmlEscape(listed ? "" : prefill.ssid) + "\">"
-        "<label>Wi-Fi password</label><input name=password type=password maxlength=64 autocomplete=off>"
+        "<label>Wi-Fi password</label><input name=password type=password maxlength=64 autocomplete=off"
+        + (prefill.password[0] ? unchanged : "") + ">"
         "<label>ZIP code</label><input name=zip inputmode=numeric maxlength=10 value=\""
         + htmlEscape(prefill.zip) + "\">"
         "<div class=row><div><label>Units</label><select name=units>"
@@ -296,12 +315,18 @@ inline std::string renderPortalPage(const PortalFields& prefill, const std::vect
         "<input name=quiet_end type=time value=\"" + clockText(prefill.quietEnd) + "\"></div></div>"
         "<label>Amateur radio call sign (optional, for the solar screen)</label>"
         "<input name=call maxlength=10 autocapitalize=characters value=\"" + htmlEscape(prefill.callSign) + "\">"
-        "<details" + (prefill.host[0] ? " open" : "") + "><summary>Use a Ventanal host</summary>"
-        "<label>Host address</label><input name=host type=url placeholder=\"https://\" value=\""
+        "<details" + (prefill.host[0] || leaveOffered ? " open" : "") + "><summary>Use a Ventanal host</summary>"
+        + (leaveOffered ? std::string("<label><input type=checkbox name=leave_host value=1")
+                              + (prefill.leaveHost ? " checked" : "")
+                              + " style=width:auto> Leave the host and run on its own</label>"
+                        : std::string())
+        + "<label>Host address</label><input name=host type=url placeholder=\"https://\" value=\""
         + htmlEscape(prefill.host) + "\">"
         "<label>Pairing name</label><input name=pairing maxlength=32 value=\"" + htmlEscape(prefill.pairing) + "\">"
-        "<label>Host certificate (PEM)</label><textarea name=certificate rows=4></textarea>"
-        "<label>Device key</label><input name=device_key maxlength=64 autocomplete=off></details>"
+        "<label>Host certificate (PEM)</label><textarea name=certificate rows=4"
+        + (prefill.certificate[0] ? unchanged : "") + "></textarea>"
+        "<label>Device key</label><input name=device_key maxlength=64 autocomplete=off"
+        + (prefill.deviceKey[0] ? unchanged : "") + "></details>"
         "<button>Save and connect</button></form></body></html>";
     return page;
 }

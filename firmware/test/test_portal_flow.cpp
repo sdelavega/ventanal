@@ -157,6 +157,26 @@ static void hotspot_shares_the_home_network_channel() {
     assert(chooseApChannel({}, "Home") == 1);
 }
 
+static void portal_starts_from_the_current_settings() {
+    fakenet::reset();
+    PortalFields current{};
+    strcpy(current.ssid, "Synthetic Net");
+    strcpy(current.password, "synthetic-pass");
+    strcpy(current.zip, "12345");
+    strcpy(current.host, "https://frame.test");
+    strcpy(current.pairing, "desk");
+    strcpy(current.certificate, "-----BEGIN CERTIFICATE-----x");
+    memset(current.deviceKey, 'c', 64);
+    PortalCore core(fakenet::hooks(), {"Synthetic Net"}, 1000, current);
+    const Response page = core.handleGet("/", 1000);
+    assert(contains(page.body, "value=\"12345\"") && contains(page.body, "name=leave_host"));
+    // Leave the host, keep the Wi-Fi password: join with the stored password, save standalone.
+    core.handlePost("/save", "ssid=Synthetic+Net&password=&zip=12345&leave_host=1", 2000);
+    settle(core, 2100);
+    assert(fakenet::saves == 1 && !strcmp(fakenet::lastPassword, "synthetic-pass"));
+    assert(fakenet::savedFields.leaveHost && !fakenet::savedFields.host[0]);
+}
+
 static void cancel_ends_the_portal() {
     PortalCore core = freshCore();
     core.cancel();
@@ -174,6 +194,7 @@ int main() {
     form_errors_answer_immediately();
     portal_times_out_after_15_min();
     hotspot_shares_the_home_network_channel();
+    portal_starts_from_the_current_settings();
     cancel_ends_the_portal();
     puts("portal flow: captive redirect, join-before-save, errors, single save, idle timeout passed");
 }

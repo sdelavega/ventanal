@@ -118,7 +118,8 @@ std::vector<std::string> networkNames(std::vector<ScannedNetwork> found) {
 
 }  // namespace
 
-bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid) {
+bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hooks, const char* preferredSsid,
+                        const PortalFields* current) {
     if (active || strlen(apPass) < 8) return false;
     auto runtime = std::make_unique<Runtime>();
     runtime->userFeed = hooks.feed;
@@ -144,7 +145,8 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
         return false;
     }
     if (portalApVariant & 4) WiFi.mode(WIFI_AP);  // station off until a join needs it
-    runtime->core = std::make_unique<PortalCore>(hooks, std::move(networks), millis());
+    runtime->core = std::make_unique<PortalCore>(hooks, std::move(networks), millis(),
+                                                 current ? *current : PortalFields{});
     runtime->dns.setErrorReplyCode(DNSReplyCode::NoError);
     runtime->dns.start(53, "*", address);  // every name resolves to the portal
     runtime->server.onNotFound(handleRequest);
