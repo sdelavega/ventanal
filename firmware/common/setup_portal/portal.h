@@ -78,9 +78,10 @@ public:
             check(nowMs);
             return PortalOutcome::Running;
         case State::Saved:
-            return nowMs - savedAt_ >= portalRestartDelayMs ? PortalOutcome::Saved : PortalOutcome::Running;
+            return elapsed(nowMs, savedAt_) >= portalRestartDelayMs ? PortalOutcome::Saved : PortalOutcome::Running;
         case State::Form:
-            return nowMs - lastActivity_ >= portalIdleTimeoutMs ? PortalOutcome::TimedOut : PortalOutcome::Running;
+            return elapsed(nowMs, lastActivity_) >= portalIdleTimeoutMs ? PortalOutcome::TimedOut
+                                                                        : PortalOutcome::Running;
         }
         return PortalOutcome::Running;
     }
@@ -90,6 +91,14 @@ public:
 
 private:
     enum class State { Form, Checking, Saved };
+
+    // millis() wraps, and a caller may pass a timestamp taken just before
+    // the portal started or last answered: a "now" behind `since` is zero
+    // elapsed time, not a 49-day gap.
+    static uint32_t elapsed(uint32_t nowMs, uint32_t since) {
+        const uint32_t d = nowMs - since;
+        return d > 0x80000000u ? 0 : d;
+    }
 
     void feed() {
         if (hooks_.feed) hooks_.feed();

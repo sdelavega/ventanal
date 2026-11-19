@@ -294,7 +294,7 @@ void loop() {
 #endif
     if (!installationReady) {
         if (setupActive) {
-            setupPoll(now);
+            setupPoll(millis());
             backlightRefresh();
             delay(2);
         } else {
@@ -303,7 +303,7 @@ void loop() {
         return;
     }
     pollTouch(now);
-    setupPoll(now);
+    setupPoll(millis());  // a tap above may just have started setup (after a scan)
     reportBootScanout(now);
     if (lcd::pairingCounterFlash.exchange(false) && !LitNvsWrites) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();

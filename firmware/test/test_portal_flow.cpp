@@ -131,6 +131,12 @@ static void portal_times_out_after_15_min() {
     assert(core.poll(1000 + 25 * 60 * 1000) == PortalOutcome::TimedOut);
     PortalCore wrap = freshCore(0xffffff00u);     // millis() wraps after ~49 days
     assert(wrap.poll(0x100) == PortalOutcome::Running);
+    // A caller's timestamp taken before the portal started (the network scan
+    // runs in between) is not 49 days of idling.
+    PortalCore stale = freshCore(50000);
+    assert(stale.poll(46000) == PortalOutcome::Running);
+    stale.handleGet("/", 60000);
+    assert(stale.poll(59000) == PortalOutcome::Running);
 }
 
 static void cancel_ends_the_portal() {
