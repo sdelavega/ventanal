@@ -71,6 +71,7 @@
 #include <memory>
 #include <string>
 #include "sync.h"
+#include "local_provider.h"
 #include "touch.h"
 #include <esp_sntp.h>
 

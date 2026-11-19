@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "installation.h"
+#include "log.h"
 #include "../common/release_key.h"
 
 #if !defined(VENTANAL_RELEASE_BUILD) && defined(VENTANAL_LCD_CONFIG)
@@ -53,6 +54,20 @@ bool initializeInstallation(bool pendingUpdate) {
 #else
     if (!loadInstallation(installation, nullptr, 0, !pendingUpdate)) return false;
 #endif
-    return installationTransportAllowed(installation, VENTANAL_TEST_RELEASE_KEY);
+#ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
+    // Diagnostic, RAM only: run standalone against the public sample ZIP
+    // (90210) with the stored Wi-Fi. Nothing is saved; a normal build boots
+    // with the stored record unchanged.
+    installation.host[0] = installation.pairing[0] = installation.certificate[0] = installation.deviceKey[0] = '\0';
+    strlcpy(installation.zip, "90210", sizeof installation.zip);
+    strlcpy(installation.place, "Beverly Hills, CA", sizeof installation.place);
+    strlcpy(installation.timezone, "PST8PDT,M3.2.0,M11.1.0", sizeof installation.timezone);
+    installation.latitude = 34.0901f;
+    installation.longitude = -118.4065f;
+    log("diag standalone-sample ram-only=1\n");
+#endif
+    // A standalone board needs no host transport: it fetches its own data.
+    return standalone(installation) ? validInstallation(installation)
+                                    : installationTransportAllowed(installation, VENTANAL_TEST_RELEASE_KEY);
 }
 }  // namespace lcd

@@ -255,6 +255,8 @@ void refreshWorker(void*) {
     refreshWatchdog.subscribe();
     if (refreshCheckingUpdates) {
         githubStatus = lcd::checkGithub(githubLastCheck, githubStaging, refreshWatchdog);
+    } else if (lcd::standalone(lcd::installation)) {
+        lcd::runLocalRefresh(refreshIds, refreshStaging, refreshWatchdog, refreshCache);
     } else {
         lcd::runRefresh(lcd::installation.host, lcd::installation.profile, refreshIds,
                         refreshStaging, refreshWatchdog, refreshSettings, refreshSkips,

@@ -61,8 +61,6 @@ bool saveSetupRecord(const portal::PortalFields& fields, const portal::LocationR
 }
 
 const char* setupNote() {
-    if (lcd::validInstallation(lcd::installation) && lcd::standalone(lcd::installation))
-        return "Standalone mode needs a later update. Use a host for now.";
     return setupReason == lcd::SetupReason::FirstBoot ? "This board is not set up yet." : "";
 }
 

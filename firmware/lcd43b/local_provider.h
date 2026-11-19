@@ -1,0 +1,15 @@
+// SPDX-License-Identifier: GPL-3.0-or-later
+// Copyright (C) 2026 Stephen de la Vega
+#pragma once
+
+#include "sync.h"
+
+namespace lcd {
+
+// One standalone refresh pass (no host): fills `result` the way runRefresh()
+// does, publishing frames through cache.publish. Blocking; run it on the
+// refresh worker.
+void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
+                     const ResidentCache& cache);
+
+}  // namespace lcd
