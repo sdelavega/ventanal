@@ -79,6 +79,7 @@ void settingsTap(int x,int y) {
     const auto hit=lcd::hitSettings(x,y,solarPublished(),settingsBatteryButton());
     lcd::log("settings hit=%d x=%d y=%d\n",int(hit),x,y);
     if(hit==lcd::SettingsHit::Done) { closeSettings("done"); return; }
+    if(hit==lcd::SettingsHit::SetupWifi) { enterSetup(lcd::SetupReason::UserRequested); return; }
     auto next=settings;
     const bool accepted=lcd::applySettingsHit(next,hit,solarPublished(),settingsBatteryMv());
     if(accepted && applyDeviceSettings(next, hit)) {
@@ -88,6 +89,10 @@ void settingsTap(int x,int y) {
 }
 
 void handleGesture(Gesture gesture, int x, int y) {
+    if (setupActive) {
+        if (gesture == Gesture::Next || gesture == Gesture::Previous) setupTap(x, y);
+        return;
+    }
     if(settingsPage.active) {
         if(gesture==Gesture::Next || gesture==Gesture::Previous) settingsTap(x,y);
         return;

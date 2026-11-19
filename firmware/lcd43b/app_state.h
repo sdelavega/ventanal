@@ -32,6 +32,13 @@ bool settingsDirty = false;
 int settingsReturnSlot=0;
 bool settingsRefreshPending=false;
 bool installationReady = false;
+// Wi-Fi setup (app_setup.h); declared here for the earlier parts that route to it.
+bool setupActive = false;
+bool setupQueued = false;
+bool showSetup();
+void setupTap(int x, int y);
+void setupPoll(uint32_t now);
+bool enterSetup(lcd::SetupReason why);
 bool updatesPage = false;
 bool checkQueued = false;
 bool refreshCheckingUpdates = false;

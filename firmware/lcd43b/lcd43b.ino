@@ -62,6 +62,13 @@
 #include "owner.h"
 #include "screens.h"
 #include "settings_page.h"
+#include "setup_record.h"
+#include "setup_screen.h"
+#include "../common/setup_portal/locate.h"
+#include <esp_mac.h>
+#include <esp_random.h>
+#include <qrcode.h>
+#include <string>
 #include "sync.h"
 #include "touch.h"
 #include <esp_sntp.h>
@@ -101,6 +108,7 @@ namespace {
 #include "app_refresh.h"
 #include "app_update.h"
 #include "app_input.h"
+#include "app_setup.h"
 #include "app_power.h"
 #include "app_diag_probes.h"
 
@@ -207,9 +215,14 @@ void setup() {
     return;  // no network worker or private configuration values in probe logs
 #endif
     if (!installationReady) {
+        if (updateBoot.pending) lcd::rollbackUpdate();
+        if (lcd::bootSetup(lcd::validInstallation(lcd::installation), installationReady)
+                == lcd::BootSetup::FirstBoot && enterSetup(lcd::SetupReason::FirstBoot)) {
+            backlightRefresh();
+            return;
+        }
         show(screenIndex);
         backlightRefresh();
-        if (updateBoot.pending) lcd::rollbackUpdate();
         return;
     }
     sntp_set_time_sync_notification_cb(onNtpSync);
@@ -280,10 +293,17 @@ void loop() {
     return;
 #endif
     if (!installationReady) {
-        delay(100);
+        if (setupActive) {
+            setupPoll(now);
+            backlightRefresh();
+            delay(2);
+        } else {
+            delay(100);
+        }
         return;
     }
     pollTouch(now);
+    setupPoll(now);
     reportBootScanout(now);
     if (lcd::pairingCounterFlash.exchange(false) && !LitNvsWrites) restartScanout("pairing-counter");
     if(ntpRtcPending.exchange(false)) saveRtcAfterNtp();

@@ -24,7 +24,8 @@ int main(int argc,char** argv) {
     assert(hitSettings(310,134,true,true)==SettingsHit::None);
     assert(hitSettings(425,145,true,true)==SettingsHit::None);
     assert(hitSettings(770,316,false,false)==SettingsHit::None);
-    assert(hitSettings(400,380,true,false)==SettingsHit::None);
+    assert(hitSettings(160,380,true,false)==SettingsHit::None);
+    assert(hitSettings(400,380,true,false)==SettingsHit::SetupWifi);
     assert(hitSettings(-1,100,true,true)==SettingsHit::None);
     assert(inUpdateControl(UPDATE_MENU, 500, 55));
     assert(hitUpdates(640, 130, true, false, false) == UpdateHit::HostInstall);
@@ -50,9 +51,9 @@ int main(int argc,char** argv) {
     assert(px.front()==0x1234 && px.back()==0x1234);
     for(int y=0;y<26;++y) for(int x=548;x<752;++x) assert(px[1+y*WIDTH+x]==0);
     for(int y=290;y<342;++y) for(int x=630;x<780;++x) assert(px[1+y*WIDTH+x]==0);
-    for(int y=374;y<426;++y) for(int x=150;x<580;++x) assert(px[1+y*WIDTH+x]==0);
+    for(int y=374;y<426;++y) for(int x=150;x<360;++x) assert(px[1+y*WIDTH+x]==0);
     drawSettingsPage(px.data()+1,s,true,true,"VENTANAL · TEST · OFFLINE · v1.0.0");
-    assert(px[1+400*WIDTH+360]!=0); // generic calibration control is drawn
+    assert(px[1+400*WIDTH+352]!=0); // generic calibration control is drawn
     drawUpdatePage(px.data()+1, "65535.65535.65535", "2.0.0", "Checked within the last week", false);
     assert(px.front()==0x1234 && px.back()==0x1234);
     assert(hitUpdates(660, 410, true, true, true, true) == UpdateHit::Cancel);

@@ -130,6 +130,7 @@ const uint8_t* screenFrame(int slot) {
 
 bool show(int index) {
     if (!powerSession.screenOn || powerSession.chargeShowing) return false;
+    if (setupActive) return showSetup();
     if (settingsPage.active) return showSettings();
     const int slot = screenSlot(index);
     if (slot < 0) {

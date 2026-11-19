@@ -9,7 +9,7 @@
 namespace lcd {
 enum class SettingsHit { None, Brightness25, Brightness50, Brightness75, Brightness100,
     Timeout1, Timeout5, Timeout15, TimeoutNever, ToggleArt, ToggleWeather, ToggleSolar,
-    BatteryFull, Done };
+    BatteryFull, Done, SetupWifi };
 struct SettingsControl { SettingsHit hit; ReadoutRect rect; const char* label; };
 constexpr SettingsControl SETTINGS_CONTROLS[] = {
     {SettingsHit::Brightness25,{310,82,110,52},"25%"},
@@ -23,7 +23,8 @@ constexpr SettingsControl SETTINGS_CONTROLS[] = {
     {SettingsHit::ToggleArt,{310,290,150,52},"ART"},
     {SettingsHit::ToggleWeather,{470,290,150,52},"WEATHER"},
     {SettingsHit::ToggleSolar,{630,290,150,52},"SOLAR"},
-    {SettingsHit::BatteryFull,{150,374,430,52},"BATTERY IS FULL - SET AS 100%"},
+    {SettingsHit::BatteryFull,{150,374,210,52},"BATTERY IS FULL - SET AS 100%"},
+    {SettingsHit::SetupWifi,{370,374,226,52},"SETUP WI-FI"},
     {SettingsHit::Done,{610,384,170,56},"DONE"}
 };
 inline ReadoutRect settingsDamage(SettingsHit hit) {
@@ -152,7 +153,8 @@ inline void drawSettingsPage(SettingsSurface px,const DeviceSettings& s,bool sol
             || (c.hit==SettingsHit::ToggleArt && s.showArt)
             || (c.hit==SettingsHit::ToggleWeather && s.showWeather)
             || (c.hit==SettingsHit::ToggleSolar && s.showSolar);
-        const bool button=c.hit==SettingsHit::Done || c.hit==SettingsHit::BatteryFull;
+        const bool button=c.hit==SettingsHit::Done || c.hit==SettingsHit::BatteryFull
+            || c.hit==SettingsHit::SetupWifi;
         settingsBox(px,c.rect,button?orange:(selected?(toggle?orange:sky):rgb565(58,58,74)),c.rect.h/2);
         const auto& font=c.hit==SettingsHit::BatteryFull?ArtDate:ClockTime;
         const int x=c.rect.x+(c.rect.w-textWidth(font,c.label))/2;

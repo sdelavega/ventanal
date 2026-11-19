@@ -271,7 +271,7 @@ void refreshWorker(void*) {
 // Kick a refresh on the worker task; loop() keeps servicing touch and the
 // backlight while it runs. At most one worker may be in flight.
 bool startRefresh(bool redraw, bool check = false) {
-    if (refreshBusy) return false;
+    if (refreshBusy || setupActive || setupQueued) return false;
     refreshCheckingUpdates = check;
     if (!check) {
         formatOtaReport(refreshOtaReport, updateBoot.journal.record);
