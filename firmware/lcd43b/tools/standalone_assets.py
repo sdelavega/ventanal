@@ -27,10 +27,12 @@ sys.path.insert(0, str(ROOT / 'server/src'))
 from ventanal.devices.lcd_lcars import LCD_COLOURS, draw_lcd_frame  # noqa: E402
 from ventanal.weather.data import WMO_LONG, WMO_SHORT  # noqa: E402
 from ventanal.devices.lcd_weather import SECTIONS as WEATHER_SECTIONS  # noqa: E402
+from ventanal.devices.lcd_solar import SECTIONS as SOLAR_SECTIONS  # noqa: E402
 
 FONT_DIR = ROOT / 'server/src/ventanal/fonts'
-TEXT = ''.join(chr(c) for c in range(32, 127)) + '°·…'
+TEXT = ''.join(chr(c) for c in range(32, 127)) + '°·…≈Å–'
 DIGITS = '0123456789-°…'
+NUMBER = '0123456789.-…'
 # Art credits name artists and places from everywhere: Latin-1 and Latin
 # Extended-A, plus typographic punctuation.
 LATIN = (''.join(chr(c) for c in range(32, 127)) + ''.join(chr(c) for c in range(0xa0, 0x180))
@@ -53,6 +55,14 @@ FACES = [
     ('Antonio14', 'antonio/Antonio-Regular', 14, TEXT),
     ('Antonio13', 'antonio/Antonio-Regular', 13, TEXT),
     ('Antonio12', 'antonio/Antonio-Regular', 12, TEXT),
+    # The solar screen (devices/lcd_solar.py render_lcd_solar).
+    ('AntonioBold90', 'antonio/Antonio-Bold', 90, NUMBER),
+    ('AntonioBold34', 'antonio/Antonio-Bold', 34, TEXT),
+    ('AntonioBold18', 'antonio/Antonio-Bold', 18, TEXT),
+    ('AntonioBold17', 'antonio/Antonio-Bold', 17, TEXT),
+    ('Antonio18', 'antonio/Antonio-Regular', 18, TEXT),
+    ('Antonio15', 'antonio/Antonio-Regular', 15, TEXT),
+    ('Antonio11', 'antonio/Antonio-Regular', 11, TEXT),
     # Art credits (devices/lcd43b.py render_art).
     ('InterBold12', 'inter/Inter-Bold', 12, LATIN),
     ('Inter11', 'inter/Inter-Medium', 11, LATIN),
@@ -135,6 +145,12 @@ def chrome_header():
     out += ['// The sidebar blocks: labels are black, white on gray (draw_lcd_frame).',
             'inline constexpr FrameSection WEATHER_SECTIONS[] = {']
     out += [f'    {{{y},{h},0x{0xffff if colour == "gray" else 0:04x}}},' for y, h, colour, _ in WEATHER_SECTIONS]
+    out += ['};']
+    solar = Image.new('RGB', (800, 480))
+    draw_lcd_frame(solar, [(y, h, colour, '') for y, h, colour, _ in SOLAR_SECTIONS], clock_block='orange')
+    out += ['inline constexpr ChromeSpan SOLAR_CHROME[] = {'] + chrome_spans(solar) + ['};']
+    out += ['inline constexpr FrameSection SOLAR_SECTIONS[] = {']
+    out += [f'    {{{y},{h},0x{0xffff if colour == "gray" else 0:04x}}},' for y, h, colour, _ in SOLAR_SECTIONS]
     out += ['};', '// The server\'s LCD palette (devices/lcd_lcars.LCD_COLOURS), 0xRRGGBB.', 'namespace colour {']
     for name, value in sorted({**LCD_COLOURS, 'white': '#ffffff', 'black': '#000000'}.items()):
         out.append(f'inline constexpr uint32_t {name} = 0x{value.lstrip("#").lower()};')

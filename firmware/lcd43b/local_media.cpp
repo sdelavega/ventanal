@@ -112,6 +112,30 @@ bool composeArtJpeg(const uint8_t* jpeg, size_t length, local::Frame f, const lo
     return local::composeArt(f, scaledWidth, scaledHeight, decode, credit);
 }
 
+bool drawSunJpeg(const uint8_t* jpeg, size_t length, local::Frame f, Watchdog& watchdog) {
+    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> pool(
+        static_cast<uint8_t*>(heap_caps_malloc(JpegPool, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), heap_caps_free);
+    if (!pool) return false;
+    local::ArtResampler resampler;
+    JpegSession session{jpeg, length, 0, &resampler, &watchdog};
+    JDEC jd{};
+    if (jd_prepare(&jd, jpegInput, pool.get(), JpegPool, &session) != JDR_OK) return false;
+    const int width = int(jd.width), height = int(jd.height);
+    int scale = 0;  // 1/2^s, while the halved crop still covers the disc
+    while (scale < 3 && local::sunCrop(width >> (scale + 1), height >> (scale + 1)).w >= local::SUN_RECT.w) ++scale;
+    // tjpgd rounds scaled sizes up: (n + 2^s - 1) >> s.
+    const int scaledWidth = (width + (1 << scale) - 1) >> scale, scaledHeight = (height + (1 << scale) - 1) >> scale;
+    if (!resampler.begin(f, local::SUN_RECT, local::sunCrop(scaledWidth, scaledHeight), scaledWidth, scaledHeight))
+        return false;
+    session.position = 0;
+    JDEC pass{};
+    if (jd_prepare(&pass, jpegInput, pool.get(), JpegPool, &session) != JDR_OK
+        || jd_decomp(&pass, jpegOutput, BYTE(scale)) != JDR_OK)
+        return false;
+    resampler.finish();
+    return true;
+}
+
 size_t artBodyHeaderBytes(const local::ArtCredit& c) {
     return 8 + c.title.size() + c.artist.size() + c.date.size() + c.museum.size() + 4;
 }

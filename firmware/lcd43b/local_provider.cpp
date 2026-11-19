@@ -2,17 +2,19 @@
 // Copyright (C) 2026 Stephen de la Vega
 //
 // Standalone refresh: with no host configured, the board fetches its own
-// weather (Open-Meteo, NWS) every pass and its own art once a local day
+// weather (Open-Meteo, NWS) every pass, space weather (NOAA SWPC, NASA SDO)
+// every three hours when a call sign is set, and its own art once a local day
 // (Cleveland and the Met), draws the frames and hands them over exactly as a
 // downloaded host frame is handed over: decoded into the staging buffer, with
 // a zlib body for the cache. Cache, owner state, skips, overlays and power
-// code are unchanged. The solar screen is dropped until the board draws it.
+// code are unchanged.
 
 #include "local_provider.h"
 
 #include "../common/https_get.h"
 #include "installation.h"
 #include "local/art_day.h"
+#include "local/render_solar.h"
 #include "local/render_weather.h"
 #include "local_media.h"
 #include "log.h"
@@ -23,6 +25,8 @@
 #include <esp_heap_caps.h>
 #include <esp_mac.h>
 #include <memory>
+#include <string>
+#include <vector>
 
 namespace lcd {
 namespace {
@@ -138,6 +142,100 @@ void keepSlot(int slot, FrameInfo& info, const char currentIds[SCREEN_SLOTS][17]
     if (!info.present) return;
     strlcpy(result.frameIds[slot], currentIds[slot], sizeof result.frameIds[slot]);
     result.frameOk[slot] = true;
+}
+
+// ---- solar -------------------------------------------------------------------
+
+constexpr char SwpcBase[] = "https://services.swpc.noaa.gov/";
+constexpr char SdoUrl[] = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0171.jpg";
+constexpr int64_t SolarSeconds = 3 * 3600;
+
+// RAM only: after a restart the screen is drawn again on the first pass.
+int64_t solarDrawnAt = 0;
+std::vector<std::string> lastSolarAlerts;
+// The day's SDO image (the server fetches it once a UTC day too).
+uint8_t* sunJpeg = nullptr;
+size_t sunLength = 0;
+int64_t sunDay = -1;
+
+bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog, bool allowCut = false) {
+    char url[128];
+    snprintf(url, sizeof url, "%s%s", SwpcBase, path);
+    const HttpsResult got = get(url, body, watchdog);
+    log("standalone solar %s status=%d bytes=%u\n", path, got.status, unsigned(got.length));
+    return got.status == 200 && (allowCut || !got.truncated);
+}
+
+bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
+    PsramBuffer body(256 * 1024);  // the X-ray file is the largest: about 160 KB
+    if (!body.data) return false;
+    const bool ok = solarProduct("text/daily-solar-indices.txt", body, watchdog)
+        && local::parseDailyIndices(body.data, s.sfi, s.ssn)
+        && solarProduct("products/noaa-planetary-k-index.json", body, watchdog) && local::parseKp(body.data, s)
+        // A cut-off X-ray file still holds the readings before the cut.
+        && solarProduct("json/goes/primary/xrays-6-hour.json", body, watchdog, true) && local::parseXray(body.data, s.xray)
+        && solarProduct("products/noaa-scales.json", body, watchdog) && local::parseScales(body.data, s)
+        && solarProduct("text/3-day-forecast.txt", body, watchdog);
+    if (!ok) return false;
+    local::parseForecastKp(body.data, s.kpMax);
+    std::vector<local::AlertRow> rows;
+    if (solarProduct("products/alerts.json", body, watchdog) && local::parseAlertRows(body.data, rows))
+        lastSolarAlerts = local::activeAlerts(rows, time(nullptr));  // otherwise the last good set
+    s.alerts = lastSolarAlerts;
+    return true;
+}
+
+void fetchSun(time_t now, Watchdog& watchdog) {
+    const int64_t day = int64_t(now) / 86400;
+    if (sunJpeg && sunDay == day) return;
+    PsramBuffer body(512 * 1024);
+    if (!body.data) return;
+    const HttpsResult got = get(SdoUrl, body, watchdog);
+    log("standalone sun status=%d bytes=%u\n", got.status, unsigned(got.length));
+    if (got.status != 200 || got.truncated || !got.length) return;  // keep yesterday's
+    auto* copy = static_cast<uint8_t*>(heap_caps_malloc(got.length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
+    if (!copy) return;
+    memcpy(copy, body.data, got.length);
+    heap_caps_free(sunJpeg);
+    sunJpeg = copy;
+    sunLength = got.length;
+    sunDay = day;
+}
+
+bool showsSolar() {
+    return installation.callSign[0] && installation.callState != uint8_t(CallState::Rejected);
+}
+
+// Space weather every three hours; otherwise the cached frame stays.
+void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
+                  const ResidentCache& cache) {
+    FrameInfo& info = result.manifest.screens[2];
+    if (currentIds[2][0] && solarDrawnAt && int64_t(now) - solarDrawnAt < SolarSeconds) {
+        keepSlot(2, info, currentIds, result);
+        return;
+    }
+    auto solar = std::make_unique<local::LocalSolar>();
+    if (!fetchSolar(*solar, watchdog) || !cache.staging) {
+        keepSlot(2, info, currentIds, result);
+        result.frameFailed[2] = true;
+        result.frameOk[2] = false;
+        return;
+    }
+    fetchSun(now, watchdog);
+    local::SolarScreen screen;
+    screen.callSign = installation.callSign;
+    screen.latitude = installation.latitude;
+    screen.longitude = installation.longitude;
+    const uint32_t started = millis();
+    bool sun = false;
+    {
+        ScanScope activity(ScanActivity::Inflate);
+        local::renderSolar(stagingFrame(cache), *solar, screen, now, [&](local::Frame f) {
+            return sun = sunJpeg && drawSunJpeg(sunJpeg, sunLength, f, watchdog);
+        });
+    }
+    log("standalone render slot=solar sun=%d ms=%lu\n", sun, static_cast<unsigned long>(millis() - started));
+    if (publishStaged(2, info, currentIds, result, watchdog, cache)) solarDrawnAt = now;
 }
 
 // ---- art ---------------------------------------------------------------------
@@ -332,9 +430,12 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
     m.clock24h = installation.clock24h;
     m.quietStart = installation.quietStart;
     m.quietEnd = installation.quietEnd;
-    m.screens[2].present = false;  // solar: not drawn on the board yet
-    result.dropSlot[2] = true;
-    if (currentIds[2][0]) cache.publish(2, nullptr, {});
+    if (!showsSolar()) {  // the solar screen is for licensed amateurs
+        m.screens[2].present = false;
+        result.dropSlot[2] = true;
+        if (currentIds[2][0]) cache.publish(2, nullptr, {});
+        solarDrawnAt = 0;
+    }
     result.manifestOk = true;
 
     // Weather first: it changes every pass and is quick.
@@ -366,6 +467,9 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
             }
         }
     }
+    watchdog.feed();
+
+    if (showsSolar()) refreshSolar(now, currentIds, result, watchdog, cache);
     watchdog.feed();
 
     // Art once a local day; otherwise keep the cached set.

@@ -64,6 +64,7 @@ bool initializeInstallation(bool pendingUpdate) {
     strlcpy(installation.timezone, "PST8PDT,M3.2.0,M11.1.0", sizeof installation.timezone);
     installation.latitude = 34.0901f;
     installation.longitude = -118.4065f;
+    if (!installation.callSign[0]) strlcpy(installation.callSign, "N0CALL", sizeof installation.callSign);  // shows solar
     log("diag standalone-sample ram-only=1\n");
 #endif
     // A standalone board needs no host transport: it fetches its own data.

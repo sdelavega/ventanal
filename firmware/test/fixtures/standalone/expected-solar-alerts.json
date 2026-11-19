@@ -1,0 +1,68 @@
+{
+ "now_epoch": 1794700183,
+ "active": [
+  "ALERT: Type II Radio Emission · Nov 14 2249 UTC",
+  "ALERT: Type IV Radio Emission · Nov 14 2249 UTC",
+  "EXTENDED WARNING: Geomagnetic K-index of 4 expected · UNTIL Nov 19 0900 UTC",
+  "WARNING: Geomagnetic K-index of 5 expected · UNTIL Nov 19 0300 UTC",
+  "WATCH: Geomagnetic Storm Category G1 Predicted · Nov 17 G1, Nov 18 G1"
+ ],
+ "cases": [
+  {
+   "alerts": [
+    "ALERT: Type II Radio Emission · Nov 14 2249 UTC",
+    "ALERT: Type IV Radio Emission · Nov 14 2249 UTC",
+    "EXTENDED WARNING: Geomagnetic K-index of 4 expected · UNTIL Nov 19 0900 UTC",
+    "WARNING: Geomagnetic K-index of 5 expected · UNTIL Nov 19 0300 UTC",
+    "WATCH: Geomagnetic Storm Category G1 Predicted · Nov 17 G1, Nov 18 G1"
+   ],
+   "label": "ALERT",
+   "message": "WATCH GEOMAGNETIC STORM G1 · NOV 17, NOV 18 / RADIO BLACKOUT · NOV 14 2249 UTC",
+   "fitted": "WATCH GEOMAGNETIC STORM G1 · NOV 17, NOV 18 / RADIO BLACKOUT · NOV 14 2249 UTC"
+  },
+  {
+   "alerts": [
+    "WATCH: Geomagnetic Storm Category G1 Predicted · Nov 20 G1, Nov 21 G2"
+   ],
+   "label": "WATCH",
+   "message": "GEOMAGNETIC STORM G1 G2 · NOV 20, NOV 21",
+   "fitted": "GEOMAGNETIC STORM G1 G2 · NOV 20, NOV 21"
+  },
+  {
+   "alerts": [
+    "WARNING: Geomagnetic K-index of 5 expected · UNTIL Nov 20 0600 UTC"
+   ],
+   "label": "ALERT",
+   "message": "WARNING GEOMAGNETIC STORM · UNTIL NOV 20 0600 UTC",
+   "fitted": "WARNING GEOMAGNETIC STORM · UNTIL NOV 20 0600 UTC"
+  },
+  {
+   "alerts": [
+    "ALERT: X-Ray Flux exceeded M5 · Nov 19 1015 UTC",
+    "ALERT: Electron 2MeV Integral Flux exceeded 1000pfu · Nov 19 1250 UTC"
+   ],
+   "label": "ALERT",
+   "message": "RADIO BLACKOUT · NOV 19 1015 UTC / ELECTRON FLUX · NOV 19 1250 UTC",
+   "fitted": "RADIO BLACKOUT · NOV 19 1015 UTC / ELECTRON FLUX · NOV 19 1250 UTC"
+  },
+  {
+   "alerts": [
+    "ALERT: Geomagnetic K-index of 6 · Nov 19 0300 UTC",
+    "WARNING: Geomagnetic K-index of 4 expected · UNTIL Nov 19 2359 UTC",
+    "WATCH: Geomagnetic Storm Category G3 Predicted · Nov 20 G3, Nov 21 G2, Nov 22 G1"
+   ],
+   "label": "ALERT",
+   "message": "WATCH GEOMAGNETIC STORM G3 G2 G1 · NOV 20, NOV 21, NOV 22 / GEOMAGNETIC STORM · NOV 19 0300 UTC",
+   "fitted": "WATCH GEOMAGNETIC STORM G3 G2 G1 · NOV 20, NOV 21, NOV 22 …"
+  },
+  {
+   "alerts": [
+    "ALERT: Proton Event 10MeV Integral Flux exceeded 10pfu · Nov 19 0720 UTC",
+    "ALERT: Type II Radio Emission · Nov 19 0655 UTC"
+   ],
+   "label": "ALERT",
+   "message": "SOLAR RADIATION · NOV 19 0720 UTC / RADIO BLACKOUT · NOV 19 0655 UTC",
+   "fitted": "SOLAR RADIATION · NOV 19 0720 UTC / RADIO BLACKOUT · NOV 19 0655 UTC"
+  }
+ ]
+}

@@ -8,6 +8,7 @@
 
 #include "deferred_save.h"
 #include "local/art_compose.h"
+#include "local/render_solar.h"
 #include "sync.h"
 
 namespace lcd {
@@ -20,6 +21,11 @@ bool deflateFrame(const uint8_t* frame, FrameBody& body, Watchdog& watchdog);
 // server's layout and credit; false for a progressive or damaged JPEG.
 bool composeArtJpeg(const uint8_t* jpeg, size_t length, local::Frame f, const local::ArtCredit& credit,
                     Watchdog& watchdog);
+
+// Draws the SDO image (a baseline JPEG) into local::SUN_RECT of `f`, cropped
+// like the server's crop_sun() and decoded at the smallest scale that still
+// covers the disc; false for an unreadable JPEG.
+bool drawSunJpeg(const uint8_t* jpeg, size_t length, local::Frame f, Watchdog& watchdog);
 
 // Art is cached as its source, not its pixels (a photo barely compresses and
 // PSRAM has no room for a second 768 KB copy): a "VNA1" body holds the credit

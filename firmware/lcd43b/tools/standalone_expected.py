@@ -103,6 +103,93 @@ def art_expected():
          'museum': c.museum, 'image_url': c.image_url, 'width': c.width, 'height': c.height} for c in found]}
 
 
+SOLAR_FILES = {
+    'daily-solar-indices.txt': 'swpc-daily.txt', 'noaa-planetary-k-index.json': 'swpc-kp.json',
+    'xrays-6-hour.json': 'swpc-xray.json', '3-day-forecast.txt': 'swpc-forecast.txt',
+    'alerts.json': 'swpc-alerts.json', 'noaa-scales.json': 'swpc-scales.json',
+    'latest_1024_0171.jpg': 'sdo-171.jpg',
+}
+
+
+def solar_now():
+    """The newest X-ray reading's time: the moment the captured data describes."""
+    from datetime import timezone
+    rows = json.loads((FIXTURES / 'swpc-xray.json').read_text())
+    stamp = max(r['time_tag'] for r in rows)
+    return datetime.fromisoformat(stamp.replace('Z', '+00:00')).astimezone(timezone.utc)
+
+
+def solar_data(now=None):
+    import tempfile
+    from ventanal.solar.data import fetch_solar
+
+    def handler(request):
+        name = SOLAR_FILES[str(request.url).rsplit('/', 1)[1]]
+        return httpx.Response(200, content=(FIXTURES / name).read_bytes())
+    with tempfile.TemporaryDirectory() as cache:
+        return fetch_solar(httpx.Client(transport=httpx.MockTransport(handler)), Path(cache), now or solar_now())
+
+
+def solar_expected():
+    from ventanal.solar.conditions import conditions, grid_square
+    from ventanal.solar.data import forecast_days
+    from ventanal.solar.render import alert_summary, forecast_label, integer_k, kp_notation
+    now = solar_now()
+    s = solar_data(now)
+    est = conditions(s.sfi, s.k, s.a, s.xray)
+    label, message = alert_summary(s.alerts)
+    return {
+        'now_epoch': int(now.timestamp()), 'sfi': s.sfi, 'ssn': s.ssn, 'xray': s.xray, 'k': s.k, 'a': s.a,
+        'integer_k': integer_k(s.k), 'kp': [[t, k] for t, k in s.kp], 'alerts': s.alerts,
+        'scales_now': {key: (s.scales.get('0', {}).get(key, {}) or {}).get('Scale') for key in ('R', 'S', 'G')},
+        'forecast': [{'date': d, 'kp_max': k, 'kp_notation': kp_notation(k), 'label': forecast_label(k, g),
+                      'r': r, 's': p, 'g': g} for d, k, r, p, g in forecast_days(s)],
+        'conditions': {'bands': [list(b) for b in est.bands], 'muf': est.muf, 'noise': est.noise, 'field': est.field},
+        'alert_label': label, 'alert_message': message, 'grid_90210': grid_square(34.0901, -118.4065),
+    }
+
+
+def alerts_now():
+    """An hour after a real issue time, choosing the moment with the most
+    active products, so active_alerts() runs on real messages."""
+    from datetime import timedelta, timezone
+    from ventanal.solar.data import active_alerts
+    rows = json.loads((FIXTURES / 'swpc-alerts.json').read_text())
+    best, best_count = None, -1
+    for row in rows:
+        at = datetime.fromisoformat(row['issue_datetime']).replace(tzinfo=timezone.utc) + timedelta(hours=1)
+        count = len(active_alerts(rows, at))
+        if count > best_count or (count == best_count and best is not None and at > best):
+            best, best_count = at, count
+    return best
+
+
+SUMMARY_CASES = [
+    ['WATCH: Geomagnetic Storm Category G1 Predicted · Nov 20 G1, Nov 21 G2'],
+    ['WARNING: Geomagnetic K-index of 5 expected · UNTIL Nov 20 0600 UTC'],
+    ['ALERT: X-Ray Flux exceeded M5 · Nov 19 1015 UTC', 'ALERT: Electron 2MeV Integral Flux exceeded 1000pfu · Nov 19 1250 UTC'],
+    ['ALERT: Geomagnetic K-index of 6 · Nov 19 0300 UTC',
+     'WARNING: Geomagnetic K-index of 4 expected · UNTIL Nov 19 2359 UTC',
+     'WATCH: Geomagnetic Storm Category G3 Predicted · Nov 20 G3, Nov 21 G2, Nov 22 G1'],
+    ['ALERT: Proton Event 10MeV Integral Flux exceeded 10pfu · Nov 19 0720 UTC',
+     'ALERT: Type II Radio Emission · Nov 19 0655 UTC'],
+]
+
+
+def solar_alerts_expected():
+    from ventanal.solar.data import active_alerts
+    from ventanal.solar.render import alert_fit, alert_summary
+    now = alerts_now()
+    rows = json.loads((FIXTURES / 'swpc-alerts.json').read_text())
+    active = active_alerts(rows, now)
+    cases = []
+    for alerts in [active] + SUMMARY_CASES:
+        label, message = alert_summary(alerts)
+        fitted, size = alert_fit(message, 550) if label else (message, 14)
+        cases.append({'alerts': alerts, 'label': label, 'message': message, 'fitted': fitted})
+    return {'now_epoch': int(now.timestamp()), 'active': active, 'cases': cases}
+
+
 OUTPUTS = {
     'expected-weather-imperial.json': lambda: weather_expected('open-meteo-90210-imperial.json', 'imperial'),
     'expected-weather-metric.json': lambda: weather_expected('open-meteo-90210-metric.json', 'metric'),
@@ -110,6 +197,8 @@ OUTPUTS = {
     'expected-alerts-90210.json': lambda: alerts_expected('nws-90210.json'),
     'expected-alerts-ak.json': lambda: alerts_expected('nws-alerts-ak.json'),
     'expected-art-winter.json': art_expected,
+    'expected-solar.json': solar_expected,
+    'expected-solar-alerts.json': solar_alerts_expected,
 }
 
 

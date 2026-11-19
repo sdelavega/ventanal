@@ -5,6 +5,7 @@
 // (the same ones tools/standalone_render.py asks the server for) and writes
 // them as PPM images for tools/standalone_compare.py.
 #include "../lcd43b/local/art_compose.h"
+#include "../lcd43b/local/render_solar.h"
 #include "../lcd43b/local/render_weather.h"
 #include <cassert>
 #include <cstdio>
@@ -95,6 +96,39 @@ static void renderArtCase(const std::string& dir, const char* name, std::vector<
     writePpm(dir + "/" + name + ".ppm", px);
 }
 
+// tools/standalone_render.py SOLAR_CASES: the captured SWPC products, with
+// the case's alerts in place of the capture's own when it names some.
+static void renderSolarCase(const std::string& dir, const char* name, const Image& sun, std::vector<uint16_t>& px) {
+    LocalSolar s{};
+    if (!parseDailyIndices(fixture("swpc-daily.txt").c_str(), s.sfi, s.ssn) || !parseKp(fixture("swpc-kp.json").c_str(), s)
+        || !parseXray(fixture("swpc-xray.json").c_str(), s.xray) || !parseScales(fixture("swpc-scales.json").c_str(), s))
+        exit(1);
+    parseForecastKp(fixture("swpc-forecast.txt").c_str(), s.kpMax);
+    const int64_t now = fixtureNow("expected-solar.json");
+    std::vector<AlertRow> rows;
+    if (!parseAlertRows(fixture("swpc-alerts.json").c_str(), rows)) exit(1);
+    s.alerts = activeAlerts(rows, now);
+    std::ifstream in(dir + "/" + name + "-alerts.json");
+    std::stringstream text;
+    text << in.rdbuf();
+    JsonDocument doc;
+    if (deserializeJson(doc, text.str())) exit(2);
+    if (!doc.isNull()) {
+        s.alerts.clear();
+        for (JsonVariantConst a : doc.as<JsonArrayConst>()) s.alerts.push_back(a.as<const char*>());
+    }
+    SolarScreen screen;
+    screen.callSign = "N0CALL";
+    screen.latitude = 34.0901f;  // as stored in the installation record
+    screen.longitude = -118.4065f;
+    renderSolar(Frame{px.data()}, s, screen, now, [&](Frame f) {
+        ArtResampler r;
+        return r.begin(f, SUN_RECT, sunCrop(sun.width, sun.height), sun.width, sun.height) && feedBlocks(sun, r)
+            && (r.finish(), true);
+    });
+    writePpm(dir + "/" + name + ".ppm", px);
+}
+
 int main(int argc, char** argv) {
     if (argc != 2) {
         fprintf(stderr, "usage: %s OUT_DIR\n", argv[0]);
@@ -125,5 +159,8 @@ int main(int argc, char** argv) {
     }
     for (const char* name : {"art-cover-aic", "art-wide-cleveland", "art-wide-met"})  // standalone_render.ART_CASES
         renderArtCase(argv[1], name, px);
+    const Image sun = readPpm(std::string(argv[1]) + "/solar-sun-input.ppm");
+    for (const char* name : {"solar-quiet", "solar-alerts", "solar-long-alert"})  // standalone_render.SOLAR_CASES
+        renderSolarCase(argv[1], name, sun, px);
     return 0;
 }

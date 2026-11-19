@@ -14,9 +14,10 @@ from types import SimpleNamespace
 ROOT = Path(__file__).resolve().parents[3]
 sys.path.insert(0, str(ROOT / 'server/src'))
 sys.path.insert(0, str(Path(__file__).parent))
-from standalone_expected import FIXTURES, FixtureClient, fixture_now  # noqa: E402
+from standalone_expected import FIXTURES, SUMMARY_CASES, FixtureClient, alerts_now, fixture_now, solar_data, solar_now  # noqa: E402
 from ventanal.devices.lcd43b import render_art  # noqa: E402
 from ventanal.devices.lcd_weather import render_lcd_weather  # noqa: E402
+from ventanal.devices.lcd_solar import render_lcd_solar  # noqa: E402
 from PIL import Image  # noqa: E402
 import json  # noqa: E402
 from ventanal.weather.data import fetch_alerts, fetch_weather  # noqa: E402
@@ -77,6 +78,46 @@ def write_art_inputs(out):
         (out / f'{name}-credit.json').write_text(json.dumps(art_credit(name)))
 
 
+# name -> alerts on the screen: None keeps the capture's own (none active).
+# The call sign is a placeholder; the board shows the one set up on it.
+SOLAR_CALL = 'N0CALL'
+SOLAR_CASES = {
+    'solar-quiet': None,
+    'solar-alerts': 'active',     # five live products at alerts_now()
+    'solar-long-alert': 3,        # SUMMARY_CASES[3]: elided to fit
+}
+
+
+def solar_alerts(name):
+    choice = SOLAR_CASES[name]
+    if choice is None:
+        return None
+    if choice == 'active':
+        from ventanal.solar.data import active_alerts
+        return active_alerts(json.loads((FIXTURES / 'swpc-alerts.json').read_text()), alerts_now())
+    return SUMMARY_CASES[choice]
+
+
+def solar_case(name):
+    from dataclasses import replace
+    now = solar_now()
+    data = solar_data(now)
+    alerts = solar_alerts(name)
+    if alerts is not None:
+        data = replace(data, alerts=alerts)
+    cfg = SimpleNamespace(ham_call_sign=SOLAR_CALL, latitude=LAT, longitude=LON)
+    return render_lcd_solar(data, cfg, now)
+
+
+def write_solar_inputs(out):
+    """The SDO image at the board's decode scale (TJpgDec at 1/4), and each
+    case's alerts (JSON list, or null for the capture's own)."""
+    with Image.open(FIXTURES / 'sdo-171.jpg') as im:
+        im.convert('RGB').reduce(4).save(out / 'solar-sun-input.ppm')
+    for name in SOLAR_CASES:
+        (out / f'{name}-alerts.json').write_text(json.dumps(solar_alerts(name)))
+
+
 def main():
     out = Path(sys.argv[1])
     out.mkdir(parents=True, exist_ok=True)
@@ -84,8 +125,11 @@ def main():
         weather_case(name).save(out / f'{name}.png')
     for name in ART_CASES:
         art_case(name).save(out / f'{name}.png')
+    for name in SOLAR_CASES:
+        solar_case(name).save(out / f'{name}.png')
     if len(sys.argv) > 2 and sys.argv[2] == '--inputs':
         write_art_inputs(out)
+        write_solar_inputs(out)
 
 
 if __name__ == '__main__':
