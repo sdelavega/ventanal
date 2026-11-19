@@ -10,11 +10,13 @@
 #include "../common/release_key.h"
 #include "inflate.h"
 #include "scanout_diag.h"
+#include "wifi_roam.h"
 #include <vector>
 
 #include "host_request.h"
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
+#include <esp_wifi.h>
 
 #include <algorithm>
 
@@ -22,16 +24,54 @@ namespace lcd {
 
 namespace {
 
-bool wifiConnect(Watchdog& watchdog) {
-    if (WiFi.status() == WL_CONNECTED) return true;
-    WiFi.mode(WIFI_STA);
+bool joinWifi(Watchdog& watchdog) {
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(installation.ssid, installation.password);
     const uint32_t started = millis();
     while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_TIMEOUT_MS) {
         watchdog.feed();
         delay(50);
     }
-    const bool connected = WiFi.status() == WL_CONNECTED;
+    return WiFi.status() == WL_CONNECTED;
+}
+
+int strongestWifiRssi(Watchdog& watchdog) {
+    constexpr uint32_t ScanTimeoutMs = 4000;
+    const uint32_t started = millis();
+    // Channel 0 scans every channel. Filter by SSID in the driver.
+    int count = WiFi.scanNetworks(true, true, false, 120, 0, installation.ssid);
+    while (count == WIFI_SCAN_RUNNING && millis() - started < ScanTimeoutMs) {
+        watchdog.feed();
+        delay(25);
+        count = WiFi.scanComplete();
+    }
+    if (count == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
+    int best = -127;
+    for (int i = 0; i < count; ++i) best = std::max(best, int(WiFi.RSSI(i)));
+    WiFi.scanDelete();
+    return best;
+}
+
+bool wifiConnect(Watchdog& watchdog) {
+    bool connected = WiFi.status() == WL_CONNECTED;
+    if (connected) {
+        const int current = WiFi.RSSI();
+        if (current < WifiRoamThresholdDbm) {
+            const int best = strongestWifiRssi(watchdog);
+            connected = WiFi.status() == WL_CONNECTED;
+            if (connected && shouldRoam(current, best)) {
+                const bool disconnected = WiFi.disconnect(false);
+                connected = disconnected && joinWifi(watchdog);
+                log("wifi roam from_dbm=%d to_dbm=%d ok=%d\n", current, best, int(connected));
+                if (disconnected && !connected) WiFi.disconnect(false);
+            }
+        }
+    }
+    if (!connected) {
+        WiFi.mode(WIFI_STA);
+        connected = joinWifi(watchdog);
+    }
     if (connected) log("wifi connected=1 rssi_dbm=%d\n", int(WiFi.RSSI()));
     else log("wifi connected=0\n");
     return connected;

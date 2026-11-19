@@ -250,6 +250,8 @@ bool joinStation(const char* ssid, const char* password, uint32_t timeoutMs) {
         ARDUINO_EVENT_WIFI_STA_DISCONNECTED);
     WiFi.setAutoReconnect(false);
     if (WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA);  // the hotspot keeps running
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
     WiFi.begin(ssid, password[0] ? password : nullptr);
     const uint32_t start = millis();
     wl_status_t status = WiFi.status();
