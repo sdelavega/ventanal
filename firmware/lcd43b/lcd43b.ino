@@ -68,6 +68,7 @@
 #include <esp_mac.h>
 #include <esp_random.h>
 #include <qrcode.h>
+#include <memory>
 #include <string>
 #include "sync.h"
 #include "touch.h"
@@ -115,6 +116,7 @@ namespace {
 }  // namespace
 
 void setup() {
+    WiFi.persistent(false);  // keep the Wi-Fi driver out of the small shared NVS partition
     const bool pendingUpdate = lcd::armUpdateDeadline();
 #if ARDUINO_USB_CDC_ON_BOOT && ARDUINO_USB_MODE
     // HWCDC (native USB-Serial/JTAG): keep the last boot lines while no

@@ -3,10 +3,12 @@
 #pragma once
 
 #include "../common/call_state.h"
-#include "../common/installation.h"
+#include <Preferences.h>
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <vector>
 
 namespace lcd {
 inline constexpr uint32_t installationSchema = 2;
@@ -97,17 +99,204 @@ inline bool installationTransportAllowed(const Installation& config, bool bench)
 // The loader read `length` stored bytes over a default record, so a whole
 // schema-1 blob already sits in place with the schema-2 fields at their
 // defaults; only the schema number changes.
-inline bool migrateInstallation(Installation& config, size_t length) {
-    if (config.schema != 1 || length != installationSchema1Bytes) return false;
-    config.schema = installationSchema;
+// ---- Storage --------------------------------------------------------------
+//
+// NVS here is a 20 KB partition shared with Wi-Fi, PHY calibration and the
+// cache bookkeeping. Rewriting a large blob in place when it is nearly full
+// can lose the old value along with the failed new one (seen on the bench in
+// 1.1.0 development), so the record is never rewritten in place:
+//   * two slots, "inst-a" and "inst-b", each a header (magic, generation,
+//     length, CRC-32) and a compact payload: the struct without the unused
+//     tail of the 4 KB certificate field (a standalone record is ~0.7 KB);
+//   * a save goes to the slot that does not hold the newest record, is read
+//     back, and only then is the older slot (and any legacy record) removed;
+//   * the pre-1.1 "installation" key is read when no slot is usable and is
+//     removed only after its migrated copy is safely in a slot.
+
+inline constexpr char installationSlotA[] = "inst-a";
+inline constexpr char installationSlotB[] = "inst-b";
+inline constexpr uint32_t installationBlobMagic = 0x32524956;  // "VIR2"
+inline constexpr size_t installationBlobHeader = 16;
+inline constexpr size_t installationCertOffset = offsetof(Installation, certificate);
+inline constexpr size_t installationTailOffset = offsetof(Installation, deviceKey);
+inline constexpr size_t installationTailBytes = sizeof(Installation) - installationTailOffset;
+static_assert(installationTailOffset == installationCertOffset + sizeof(Installation{}.certificate));
+
+inline uint32_t installationCrc32(const uint8_t* data, size_t length) {
+    uint32_t crc = 0xffffffffu;
+    for (size_t i = 0; i < length; ++i) {
+        crc ^= data[i];
+        for (int bit = 0; bit < 8; ++bit) crc = (crc >> 1) ^ (0xedb88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+inline std::vector<uint8_t> packInstallation(const Installation& config) {
+    const auto* bytes = reinterpret_cast<const uint8_t*>(&config);
+    const size_t cert = strnlen(config.certificate, sizeof config.certificate - 1) + 1;
+    std::vector<uint8_t> payload(bytes, bytes + installationCertOffset);
+    payload.insert(payload.end(), bytes + installationCertOffset, bytes + installationCertOffset + cert);
+    payload.back() = 0;
+    payload.insert(payload.end(), bytes + installationTailOffset, bytes + sizeof config);
+    return payload;
+}
+
+inline bool unpackInstallation(const uint8_t* payload, size_t length, Installation& out) {
+    if (length < installationCertOffset + 1 + installationTailBytes) return false;
+    const size_t cert = length - installationCertOffset - installationTailBytes;
+    const uint8_t* text = payload + installationCertOffset;
+    if (cert > sizeof out.certificate || text[cert - 1] || memchr(text, 0, cert - 1)) return false;
+    out = Installation{};
+    auto* bytes = reinterpret_cast<uint8_t*>(&out);
+    memcpy(bytes, payload, installationCertOffset);
+    memcpy(bytes + installationCertOffset, text, cert);
+    memcpy(bytes + installationTailOffset, text + cert, installationTailBytes);
     return true;
 }
 
+inline void putLe32(std::vector<uint8_t>& out, size_t at, uint32_t value) {
+    for (int i = 0; i < 4; ++i) out[at + i] = uint8_t(value >> (8 * i));
+}
+inline uint32_t getLe32(const uint8_t* in) {
+    return uint32_t(in[0]) | uint32_t(in[1]) << 8 | uint32_t(in[2]) << 16 | uint32_t(in[3]) << 24;
+}
+
+inline std::vector<uint8_t> encodeInstallationBlob(const std::vector<uint8_t>& payload, uint32_t generation) {
+    std::vector<uint8_t> blob(installationBlobHeader);
+    putLe32(blob, 0, installationBlobMagic);
+    putLe32(blob, 4, generation);
+    putLe32(blob, 8, uint32_t(payload.size()));
+    putLe32(blob, 12, installationCrc32(payload.data(), payload.size()));
+    blob.insert(blob.end(), payload.begin(), payload.end());
+    return blob;
+}
+#ifdef VENTANAL_HOST_TEST
+inline std::vector<uint8_t> encodeInstallationBlobForTest(const std::vector<uint8_t>& payload, uint32_t g) {
+    return encodeInstallationBlob(payload, g);
+}
+#endif
+
+enum class SlotState { Absent, Corrupt, Future, Ok };
+
+struct InstallationSlot {
+    SlotState state = SlotState::Absent;
+    uint32_t generation = 0;
+    std::unique_ptr<Installation> record;  // heap: the struct is 4.8 KB
+};
+
+inline InstallationSlot readInstallationSlot(Preferences& prefs, const char* key) {
+    InstallationSlot slot;
+    const size_t length = prefs.getBytesLength(key);
+    if (!length) return slot;
+    slot.state = SlotState::Corrupt;
+    if (length < installationBlobHeader || length > installationBlobHeader + sizeof(Installation)) return slot;
+    std::vector<uint8_t> blob(length);
+    if (prefs.getBytes(key, blob.data(), length) != length) return slot;
+    const uint8_t* payload = blob.data() + installationBlobHeader;
+    const size_t payloadLength = length - installationBlobHeader;
+    if (getLe32(blob.data()) != installationBlobMagic || getLe32(blob.data() + 8) != payloadLength
+        || getLe32(blob.data() + 12) != installationCrc32(payload, payloadLength))
+        return slot;
+    auto record = std::make_unique<Installation>();
+    if (!unpackInstallation(payload, payloadLength, *record)) return slot;
+    if (record->schema > installationSchema) {
+        slot.state = SlotState::Future;
+        return slot;
+    }
+    if (record->schema != installationSchema || !validInstallation(*record)) return slot;
+    slot.state = SlotState::Ok;
+    slot.generation = getLe32(blob.data() + 4);
+    slot.record = std::move(record);
+    return slot;
+}
+
+inline const InstallationSlot* newestSlot(const InstallationSlot& a, const InstallationSlot& b) {
+    if (a.state != SlotState::Ok) return b.state == SlotState::Ok ? &b : nullptr;
+    if (b.state != SlotState::Ok) return &a;
+    return b.generation > a.generation ? &b : &a;
+}
+
+// Saves a valid record without ever touching the newest stored copy first.
+inline bool saveInstallation(const Installation& config) {
+    if (!validInstallation(config)) return false;
+    Preferences prefs;
+    if (!prefs.begin(installationNamespace, false)) return false;
+    const InstallationSlot a = readInstallationSlot(prefs, installationSlotA);
+    const InstallationSlot b = readInstallationSlot(prefs, installationSlotB);
+    const InstallationSlot* newest = newestSlot(a, b);
+    const bool targetB = newest == &a || (!newest && a.state == SlotState::Future);
+    const char* target = targetB ? installationSlotB : installationSlotA;
+    const char* other = targetB ? installationSlotA : installationSlotB;
+    const std::vector<uint8_t> blob = encodeInstallationBlob(packInstallation(config),
+                                                             newest ? newest->generation + 1 : 1);
+    bool saved = prefs.putBytes(target, blob.data(), blob.size()) == blob.size();
+    if (saved) {
+        std::vector<uint8_t> check(blob.size());
+        saved = prefs.getBytesLength(target) == blob.size()
+            && prefs.getBytes(target, check.data(), check.size()) == check.size() && check == blob;
+    }
+    if (saved) {
+        if (prefs.isKey(other)) prefs.remove(other);
+        if (prefs.isKey(installationKey)) prefs.remove(installationKey);
+    }
+    prefs.end();
+    return saved;
+}
+
+// The pre-1.1 record under "installation": schema 1 (4700 bytes), or a whole
+// schema-2 struct from 1.1.0 development builds. Never rewritten here.
+inline SlotState readLegacyInstallation(Preferences& prefs, Installation& out) {
+    const size_t length = prefs.getBytesLength(installationKey);
+    if (!length) return SlotState::Absent;
+    if (length != installationSchema1Bytes && length != sizeof(Installation)) return SlotState::Corrupt;
+    auto record = std::make_unique<Installation>();
+    if (prefs.getBytes(installationKey, record.get(), length) != length) return SlotState::Corrupt;
+    if (record->schema > installationSchema) return SlotState::Future;
+    const bool schema1 = length == installationSchema1Bytes && record->schema == 1;
+    const bool schema2 = length == sizeof(Installation) && record->schema == installationSchema;
+    if (!schema1 && !schema2) return SlotState::Corrupt;
+    record->schema = installationSchema;  // schema-2 fields kept their defaults past 4700 bytes
+    if (!validInstallation(*record)) return SlotState::Corrupt;
+    out = *record;
+    return SlotState::Ok;
+}
+
+// Loads the newest usable record. A valid seed (private builds) is written
+// only when nothing usable is stored or its forced revision changed; a record
+// from newer firmware is left alone. persistMigration=false (an update not yet
+// confirmed) never writes.
 inline bool loadInstallation(Installation& out, const Installation* seed = nullptr,
                              uint32_t forceRevision = 0, bool persistMigration = true) {
-    return loadInstallationSettings(out, installationNamespace, installationKey, seed,
-                                    forceRevision, persistMigration, validInstallation,
-                                    migrateInstallation);
+    out = Installation{};
+    const bool canSeed = seed && validInstallation(*seed);
+    bool usable = false, legacy = false;
+    {
+        Preferences prefs;
+        if (!prefs.begin(installationNamespace, !canSeed)) return false;  // read-only start creates nothing
+        const InstallationSlot a = readInstallationSlot(prefs, installationSlotA);
+        const InstallationSlot b = readInstallationSlot(prefs, installationSlotB);
+        if (a.state == SlotState::Future || b.state == SlotState::Future) return false;
+        if (const InstallationSlot* newest = newestSlot(a, b)) {
+            out = *newest->record;
+            usable = true;
+        } else {
+            const SlotState old = readLegacyInstallation(prefs, out);
+            if (old == SlotState::Future) return false;
+            usable = legacy = old == SlotState::Ok;
+        }
+    }
+    if (canSeed && (!usable || (forceRevision && out.forcedRevision != forceRevision))) {
+        auto replacement = std::make_unique<Installation>(*seed);
+        replacement->forcedRevision = forceRevision;
+        if (saveInstallation(*replacement)) {
+            out = *replacement;
+            return true;
+        }
+    } else if (legacy && persistMigration) {
+        saveInstallation(out);  // on failure the legacy record stays for the next boot
+    }
+    if (!usable) out = Installation{};
+    return usable;
 }
 
 #ifdef VENTANAL_HOST_TEST

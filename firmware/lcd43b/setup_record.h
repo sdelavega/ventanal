@@ -45,9 +45,9 @@ inline void copyText(char (&dst)[N], const char* src) {
 // is kept unless the portal supplied a new one (leaving a host is explicit,
 // in a later task), and the profile and forced revision are kept so a
 // private build's seed stays write-once.
-inline Installation installationFromPortal(const Installation& current, const portal::PortalFields& f,
-                                           const portal::LocationResult& where) {
-    Installation r = current;
+inline void installationFromPortal(const Installation& current, const portal::PortalFields& f,
+                                   const portal::LocationResult& where, Installation& r) {
+    if (&r != &current) r = current;
     r.schema = installationSchema;
     copyText(r.ssid, f.ssid);
     copyText(r.password, f.password);
@@ -73,6 +73,12 @@ inline Installation installationFromPortal(const Installation& current, const po
         r.latitude = where.latitude;
         r.longitude = where.longitude;
     }
+}
+
+inline Installation installationFromPortal(const Installation& current, const portal::PortalFields& f,
+                                           const portal::LocationResult& where) {
+    Installation r;
+    installationFromPortal(current, f, where, r);
     return r;
 }
 

@@ -14,7 +14,9 @@ public:
     inline static bool failBegin = false;
     inline static bool failStateRead = false;
     inline static bool failStringWrite = false;
-    inline static std::string failWriteKey;
+    inline static std::string failWriteKey;   // fails writes to keys starting with this
+    inline static bool eraseOnFailedWrite = false;  // real NVS lost the old value this way
+    inline static int writes = 0;
     inline static int stateReadFailures = 0;
     inline static int stateReads = 0;
     bool isKey(const char* k) { return opened && values->count(k); }
@@ -38,8 +40,18 @@ public:
         memcpy(p,values->at(k).data(),n); return n;
     }
     size_t putBytes(const char* k,const void* p,size_t n) {
-        if(!opened || readOnly || failWriteKey==k) return 0;
+        if(!opened || readOnly) return 0;
+        if(!failWriteKey.empty() && std::string(k).rfind(failWriteKey,0)==0) {
+            if(eraseOnFailedWrite) values->erase(k);
+            return 0;
+        }
+        ++writes;
         const auto* b=static_cast<const uint8_t*>(p); (*values)[k]={b,b+n}; return n;
+    }
+    bool remove(const char* k) {
+        if(!opened || readOnly || !values->count(k)) return false;
+        values->erase(k);
+        return true;
     }
     // Typed scalar/string access (the lcd43b sketch and host tests use the
     // same Preferences API as the real core).

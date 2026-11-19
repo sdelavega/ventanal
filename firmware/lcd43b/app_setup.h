@@ -38,21 +38,18 @@ void buildSetupQr() {
 // The portal's save hook: one write of the whole record, with scanout
 // paused like every other lit NVS write. The board restarts afterwards.
 bool saveSetupRecord(const portal::PortalFields& fields, const portal::LocationResult& where) {
-    const lcd::Installation next = lcd::installationFromPortal(lcd::installation, fields, where);
-    if (!lcd::validInstallation(next)) {
+    auto next = std::make_unique<lcd::Installation>();  // 4.8 KB: not on the loop stack
+    lcd::installationFromPortal(lcd::installation, fields, where, *next);
+    if (!lcd::validInstallation(*next)) {
         lcd::log("setup save=0 reason=invalid\n");
         return false;
     }
     bool saved = false;
     {
         ScanoutSavePause pause;
-        Preferences record;
-        if (record.begin(lcd::installationNamespace, false)) {
-            saved = record.putBytes(lcd::installationKey, &next, sizeof next) == sizeof next;
-            record.end();
-        }
+        saved = lcd::saveInstallation(*next);  // two-slot store: a failed write keeps the old record
     }
-    lcd::log("setup save=%d mode=%s\n", saved, lcd::standalone(next) ? "standalone" : "host");
+    lcd::log("setup save=%d mode=%s\n", saved, lcd::standalone(*next) ? "standalone" : "host");
     return saved;
 }
 
