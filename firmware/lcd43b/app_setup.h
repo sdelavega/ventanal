@@ -108,6 +108,13 @@ bool enterSetup(lcd::SetupReason why) {
     lcd::log("setup start reason=%s ap=%s\n", why == lcd::SetupReason::FirstBoot ? "first-boot" : "user",
              setupApName);
     showSetup();
+#ifdef VENTANAL_LCD_DIAG_SETUP_DARK
+    // Diagnostic: is scan-out (PSRAM traffic) what keeps phones from seeing
+    // the hotspot? Hold the backlight off and stop the panel while setup runs.
+    displayOwner.acquire(lcd::DarkReason::Diag, millis());
+    backlightRefresh();
+    lcd::log("diag setup-dark panel_stopped=%d\n", stopPanel());
+#endif
     return true;
 }
 
@@ -115,6 +122,9 @@ void leaveSetup() {
     setupPortal.end();
     WiFi.mode(WIFI_OFF);  // the next refresh joins as a station again
     setupActive = false;
+#ifdef VENTANAL_LCD_DIAG_SETUP_DARK
+    displayOwner.release(lcd::DarkReason::Diag);
+#endif
     touchPoller.controlsMode(false);
     powerSession.activity(millis());
     lcd::log("setup leave\n");
@@ -129,7 +139,9 @@ void setupPoll(uint32_t now) {
     powerSession.activity(now);  // keep the password on screen while setup runs
     switch (lcd::afterSetup(setupPortal.poll(now), setupReason)) {
     case lcd::SetupNext::Stay:
+#ifndef VENTANAL_LCD_DIAG_SETUP_DARK
         if (setupShownStatus != setupPortal.status()) showSetup();
+#endif
         break;
     case lcd::SetupNext::Restart:
         lcd::log("setup saved restart=1\n");
