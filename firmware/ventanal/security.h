@@ -8,8 +8,7 @@
 #include <cstring>
 #include <vector>
 #ifdef VENTANAL_HOST_TEST
-#include <CommonCrypto/CommonDigest.h>
-#include <CommonCrypto/CommonHMAC.h>
+#include <sodium.h>  // host tests on macOS and Linux (CI)
 #else
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -43,7 +42,10 @@ inline bool securityConfigured() {
 inline std::string hmacHex(const std::string& key,const std::string& data) {
     unsigned char out[32];
 #ifdef VENTANAL_HOST_TEST
-    CCHmac(kCCHmacAlgSHA256,key.data(),key.size(),data.data(),data.size(),out);
+    crypto_auth_hmacsha256_state state;
+    crypto_auth_hmacsha256_init(&state,reinterpret_cast<const unsigned char*>(key.data()),key.size());
+    crypto_auth_hmacsha256_update(&state,reinterpret_cast<const unsigned char*>(data.data()),data.size());
+    crypto_auth_hmacsha256_final(&state,out);
 #else
     if(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
         reinterpret_cast<const unsigned char*>(key.data()),key.size(),
@@ -53,10 +55,10 @@ inline std::string hmacHex(const std::string& key,const std::string& data) {
 }
 struct FrameHash {
 #ifdef VENTANAL_HOST_TEST
-    CC_SHA256_CTX ctx;
-    FrameHash() { CC_SHA256_Init(&ctx); }
-    void add(const void* p,size_t n) { CC_SHA256_Update(&ctx,p,static_cast<CC_LONG>(n)); }
-    std::string finish() { unsigned char out[32]; CC_SHA256_Final(out,&ctx); return hexBytes(out,32); }
+    crypto_hash_sha256_state ctx;
+    FrameHash() { crypto_hash_sha256_init(&ctx); }
+    void add(const void* p,size_t n) { crypto_hash_sha256_update(&ctx,static_cast<const unsigned char*>(p),n); }
+    std::string finish() { unsigned char out[32]; crypto_hash_sha256_final(&ctx,out); return hexBytes(out,32); }
 #else
     mbedtls_sha256_context ctx;
     FrameHash() { mbedtls_sha256_init(&ctx); mbedtls_sha256_starts(&ctx,0); }

@@ -31,6 +31,7 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 #include <memory>
 #include <new>
 #include <type_traits>
+#include <cmath>
 #include "cache.h"
 #include "overlay.h"
 
