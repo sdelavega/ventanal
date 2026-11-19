@@ -20,6 +20,10 @@ ROOT = Path(__file__).resolve().parents[3]
 FIXTURES = ROOT / 'firmware/test/fixtures/standalone'
 sys.path.insert(0, str(ROOT / 'server/src'))
 from ventanal.weather.data import fetch_alerts, fetch_weather  # noqa: E402
+import httpx  # noqa: E402
+from ventanal.art.sources.aic import AICSource  # noqa: E402
+from ventanal.art.sources.cleveland import ClevelandSource  # noqa: E402
+from ventanal.art.sources.met import MetSource  # noqa: E402
 
 
 class FixtureClient:
@@ -71,12 +75,41 @@ def alerts_expected(name):
          'ends_epoch': int(a.ends.timestamp()) if a.ends else None} for a in alerts]}
 
 
+def art_client():
+    """Serve the museum fixtures by URL. met-search-winter.json is assembled
+    from two real Met searches ("winter": four objects the Met filter drops;
+    "winter landscape": print 54428, kept) so both outcomes are covered."""
+    def handler(request):
+        url = str(request.url)
+        if 'api.artic.edu' in url:
+            name = 'aic-search-winter.json'
+        elif 'clevelandart.org' in url:
+            name = 'cleveland-search-winter.json'
+        elif '/v1.1/search' in url:
+            name = 'met-search-winter.json'
+        else:
+            name = f'met-object-{url.rsplit("/", 1)[1]}.json'
+        return httpx.Response(200, content=(FIXTURES / name).read_bytes())
+    return httpx.Client(transport=httpx.MockTransport(handler))
+
+
+def art_expected():
+    client = art_client()
+    found = []
+    for source, limit in ((AICSource(), 12), (ClevelandSource(), 12), (MetSource(), 5)):
+        found += source.search_term('winter', limit, client)
+    return {'term': 'winter', 'candidates': [
+        {'source': c.source, 'object_id': c.object_id, 'title': c.title, 'artist': c.artist, 'date': c.date,
+         'museum': c.museum, 'image_url': c.image_url, 'width': c.width, 'height': c.height} for c in found]}
+
+
 OUTPUTS = {
     'expected-weather-imperial.json': lambda: weather_expected('open-meteo-90210-imperial.json', 'imperial'),
     'expected-weather-metric.json': lambda: weather_expected('open-meteo-90210-metric.json', 'metric'),
     'expected-weather-early.json': lambda: weather_expected('open-meteo-90210-imperial.json', 'imperial', hour=3),
     'expected-alerts-90210.json': lambda: alerts_expected('nws-90210.json'),
     'expected-alerts-ak.json': lambda: alerts_expected('nws-alerts-ak.json'),
+    'expected-art-winter.json': art_expected,
 }
 
 
