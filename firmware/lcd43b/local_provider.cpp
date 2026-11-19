@@ -46,9 +46,9 @@ struct PsramBuffer {
     PsramBuffer& operator=(const PsramBuffer&) = delete;
 };
 
-HttpsResult get(const char* url, PsramBuffer& body, Watchdog& watchdog) {
+HttpsResult get(const char* url, PsramBuffer& body, Watchdog& watchdog, const char* range = nullptr) {
     fetchWatchdog = &watchdog;
-    return httpsGet(url, body.data, body.cap, 20000, feedFetch);
+    return httpsGet(url, body.data, body.cap, 20000, feedFetch, range);
 }
 
 // Alerts survive a failed NWS request: the screen keeps the last good set.
@@ -159,22 +159,24 @@ uint8_t* sunJpeg = nullptr;
 size_t sunLength = 0;
 int64_t sunDay = -1;
 
-bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog, bool allowCut = false) {
+bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog,
+                  bool allowCut = false, const char* range = nullptr) {
     char url[128];
     snprintf(url, sizeof url, "%s%s", SwpcBase, path);
-    const HttpsResult got = get(url, body, watchdog);
+    const HttpsResult got = get(url, body, watchdog, range);
     log("standalone solar %s status=%d bytes=%u\n", path, got.status, unsigned(got.length));
-    return got.status == 200 && (allowCut || !got.truncated);
+    return (got.status == 200 || (range && got.status == 206)) && (allowCut || !got.truncated);
 }
 
 bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
-    PsramBuffer body(256 * 1024);  // the X-ray file is the largest: about 160 KB
+    PsramBuffer body(256 * 1024);  // also fits a full X-ray response (about 160 KB)
     if (!body.data) return false;
     const bool ok = solarProduct("text/daily-solar-indices.txt", body, watchdog)
         && local::parseDailyIndices(body.data, s.sfi, s.ssn)
         && solarProduct("products/noaa-planetary-k-index.json", body, watchdog) && local::parseKp(body.data, s)
-        // A cut-off X-ray file still holds the readings before the cut.
-        && solarProduct("json/goes/primary/xrays-6-hour.json", body, watchdog, true) && local::parseXray(body.data, s.xray)
+        // The tail contains the latest readings, even if its last row is cut off.
+        && solarProduct("json/goes/primary/xrays-6-hour.json", body, watchdog, true, "bytes=-8192")
+        && local::parseXray(body.data, s.xray)
         && solarProduct("products/noaa-scales.json", body, watchdog) && local::parseScales(body.data, s)
         && solarProduct("text/3-day-forecast.txt", body, watchdog);
     if (!ok) return false;

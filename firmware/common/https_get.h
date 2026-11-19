@@ -16,10 +16,12 @@
 inline constexpr char publicUserAgent[] = "Ventanal/" VENTANAL_FIRMWARE_VERSION;
 
 struct HttpsResult {
-    int status = -1;        // HTTP status, or -1 when no response arrived
+    int status = -1;        // HTTP status, or -1 on a transport failure
     size_t length = 0;      // bytes stored in the buffer (NUL-terminated after them)
     bool truncated = false; // the body did not fit in the buffer: treat as failure
 };
 
 // buffer receives the body plus a terminating NUL, so cap must be > 0.
-HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlineMs, void (*feed)());
+// A non-null range is sent as the value of the Range request header.
+HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlineMs, void (*feed)(),
+                     const char* range = nullptr);

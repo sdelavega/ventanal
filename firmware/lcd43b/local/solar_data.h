@@ -247,17 +247,25 @@ inline void xrayClass(double flux, char (&out)[12]) {
         }
 }
 
-// xrays-6-hour.json: the newest 0.1-0.8 nm reading. SWPC has served this
-// file without its closing ']' (2026-11-19); an array cut off between rows
-// is read up to its last complete row.
+// xrays-6-hour.json: the newest 0.1-0.8 nm reading. A byte-range response
+// can start mid-row, and SWPC has served the file without its closing ']'.
 inline bool parseXray(const char* json, char (&out)[12]) {
+    if (!json) return false;
+    while (std::isspace(static_cast<unsigned char>(*json))) ++json;
+    std::string array;
+    if (*json != '[') {
+        json = strstr(json, "{\"time_tag\"");
+        if (!json) return false;
+        array = '[';
+        array += json;
+        json = array.c_str();
+    }
     JsonDocument filter;
     filter[0]["time_tag"] = true;
     filter[0]["flux"] = true;
     filter[0]["energy"] = true;
     JsonDocument doc;
-    const DeserializationError error = json ? deserializeJson(doc, json, DeserializationOption::Filter(filter))
-                                            : DeserializationError::InvalidInput;
+    const DeserializationError error = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if ((error && error != DeserializationError::IncompleteInput) || !doc.is<JsonArrayConst>()) return false;
     std::string bestTag;
     double bestFlux = -1;

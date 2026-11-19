@@ -8,7 +8,8 @@
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
 
-HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlineMs, void (*feed)()) {
+HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlineMs, void (*feed)(),
+                     const char* range) {
     HttpsResult result;
     if (!cap || strncmp(url, "https://", 8)) return result;
     buffer[0] = '\0';
@@ -20,9 +21,11 @@ HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlin
     config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
     if (!client) return result;
+    const bool rangeReady = !range || esp_http_client_set_header(client, "Range", range) == ESP_OK;
     const uint32_t started = millis();
     int64_t announced = -1;
-    if (esp_http_client_open(client, 0) == ESP_OK && (announced = esp_http_client_fetch_headers(client)) >= 0) {
+    if (rangeReady && esp_http_client_open(client, 0) == ESP_OK
+        && (announced = esp_http_client_fetch_headers(client)) >= 0) {
         result.status = esp_http_client_get_status_code(client);
         // A body the server says is too big is refused before reading it.
         if (announced > 0 && size_t(announced) >= cap) result.truncated = true;

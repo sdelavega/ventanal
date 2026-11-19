@@ -111,6 +111,25 @@ static void xray_tolerates_a_cut_off_file() {
     puts("xray_tolerates_a_cut_off_file ok");
 }
 
+static void xray_reads_a_tail() {
+    const std::string whole = fixture("swpc-xray.json");
+    char full[12], tail[12];
+    assert(parseXray(whole.c_str(), full) && !strcmp(full, "B4.9"));
+    for (size_t size : {8192u, 3000u}) {
+        assert(whole.size() > size);
+        assert(parseXray(whole.c_str() + whole.size() - size, tail) && !strcmp(full, tail));
+    }
+
+    const size_t firstRow = whole.find("{\"time_tag\"", whole.size() - 3000);
+    const size_t lastRow = whole.rfind("{\"time_tag\"");
+    assert(firstRow != std::string::npos && firstRow < lastRow);
+    const std::string cut = " \t\n" + whole.substr(firstRow + 20, lastRow - firstRow);
+    assert(parseXray(cut.c_str(), tail));
+    assert(!parseXray("", tail));
+    assert(!parseXray(" \"flux\": 4.9e-7}]", tail));
+    puts("xray_reads_a_tail ok");
+}
+
 static void labels() {
     assert(kpNotation(2.67) == "3-" && kpNotation(3.33) == "3+" && kpNotation(3.0) == "3" && kpNotation(9.5) == "9");
     assert(forecastLabel(5.67, "") == "G2 STORM" && forecastLabel(2, "3") == "G3 STORM" && forecastLabel(4.33, "") == "ACTIVE");
@@ -127,5 +146,6 @@ int main() {
     solar_matches_server();
     alerts_match_server();
     xray_tolerates_a_cut_off_file();
+    xray_reads_a_tail();
     labels();
 }
