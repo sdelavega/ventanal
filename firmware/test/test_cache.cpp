@@ -19,6 +19,7 @@ constexpr size_t chunkSize = 32768;
 std::vector<uint8_t> frame;
 std::vector<size_t> offsets;
 size_t stopBefore = 0;
+bool slowLink = false;
 
 int rangedResponse() {
     const auto range = lastHeaders.find("Range");
@@ -31,6 +32,8 @@ int rangedResponse() {
         return HTTPC_ERROR_READ_TIMEOUT;
     }
     assert(end < frame.size() && end - start + 1 <= chunkSize);
+    // Model 256 kbit/s of payload throughput plus a 300 ms request round trip.
+    if (slowLink) delay(300 + (end - start + 32) / 32);
     response.assign(frame.begin()+start, frame.begin()+end+1);
     advertisedSize = response.size();
     fakeResponseHeaders["Content-Range"] = "bytes " + std::to_string(start) + "-" +
@@ -61,6 +64,26 @@ void epaper_abort_after_bytes_still_aborts() {
 #else
 const ScreenInfo weather{"0123456789abcdef", "/frame", {}};
 const ManifestFrameSlots manifestFrames{nullptr, &weather};
+
+void weather_completes_in_two_wakes_at_256_kbit() {
+    prepareRanges();
+    files.erase(cachePath);
+    slowLink = true;
+    assert(!fetchFrame(url.c_str(), cachePath, 6500));
+    const size_t checkpoint = files.at(partialPath).size();
+    assert(!files.count(cachePath) && checkpoint >= chunkSize && checkpoint < frame.size());
+
+    fakeClock = 0;
+    expectedHashes.clear();
+    prepareRanges();
+    sweepFramePartials(manifestFrames);
+    assert(fetchFrame(url.c_str(), cachePath, 65000));
+    assert(offsets.front() == checkpoint && fakeClock < 65000);
+    assert(files.at(cachePath) == frame && !files.count(partialPath));
+    slowLink = false;
+    fakeGetResponse = nullptr;
+    expectedHashes.clear();
+}
 
 void epaper_frame_resumes_after_sleep() {
     prepareRanges();
@@ -242,6 +265,7 @@ int main() {
     epaper_frame_hash_checked();
     orphaned_committed_frame_is_promoted_or_removed();
     epaper_sd_commit_and_fallback();
+    weather_completes_in_two_wakes_at_256_kbit();
     std::cout << "cache tests passed\n";
 #endif
 }

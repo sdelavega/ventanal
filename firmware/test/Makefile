@@ -122,6 +122,15 @@ test-epaper-cache: build/test_cache build/test_cache_abort
 	./build/test_cache
 	./build/test_cache_abort
 
+.PHONY: test-epaper-wake
+test: test-epaper-wake
+test-epaper-wake: build/test_wake
+	@result=0; for case in weather_fetched_first_when_due first_frame_uses_remaining_budget \
+		later_frames_get_leftover_budget sd_not_probed_when_nothing_due \
+		no_card_result_cached_until_cold_boot_or_24h; do \
+		./build/test_wake $$case || result=1; \
+	done; exit $$result
+
 EPAPER_CACHE_STORAGE := ../common/resume/fs_store.cpp ../common/resume/storage.cpp
 build/test_cache build/test_cache_abort build/test_secure_transport: $(EPAPER_CACHE_STORAGE)
 build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h ../ventanal/net.h $(wildcard ../common/resume/*.h)

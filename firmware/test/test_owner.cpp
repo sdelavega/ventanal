@@ -41,6 +41,6 @@ int main() {
     assert(strstr(query,"0000000000000002~aaaaaaaaaaaaaaaa"));
     queue.acknowledge(false); assert(queue.count==8);
     queue.acknowledge(true); assert(queue.count==0);
-    assert(canDownloadSpare(100000) && !canDownloadSpare(105000));
+    assert(frameWakeRemainingMs(100000)==5000 && frameWakeRemainingMs(105000)==0);
     std::cout<<"owner: debounce, cycling, queue and download budget passed\n";
 }

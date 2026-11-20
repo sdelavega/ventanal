@@ -12,7 +12,8 @@ inline constexpr std::array<const char*, 8> frameCachePaths{
 };
 using ManifestFrameSlots = std::array<const ScreenInfo*, frameCachePaths.size()>;
 
-bool fetchFrame(const char* url, const char* path);
+inline constexpr uint32_t frameBudgetMs = 30000;
+bool fetchFrame(const char* url, const char* path, uint32_t budgetMs = frameBudgetMs);
 bool canStageExtraFrame(const char* path);
 // Call after fetching a valid manifest. Bit i marks a recovered cache slot.
 uint8_t sweepFramePartials(const ManifestFrameSlots& frames);

@@ -16,9 +16,10 @@
 #include <Wire.h>
 #ifndef VENTANAL_HOST_TEST
 #include <system/inkplateSemaphore.h>
+#endif
+#include <esp_rtc_time.h>
 #include "sd_card.h"
 #include "../common/resume/storage.h"
-#endif
 #include <driver/rtc_io.h>
 #include <driver/gpio.h>
 #include "settings.h"
@@ -30,6 +31,7 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 #include "net.h"
 #include "quiet.h"
 #include "owner.h"
+#include <algorithm>
 #include <memory>
 #include <new>
 #include <type_traits>
@@ -121,6 +123,21 @@ RTC_DATA_ATTR float batteryHistory[4] = {};
 RTC_DATA_ATTR uint8_t batteryCount = 0;
 RTC_DATA_ATTR ventanal::ContentStaleness contentStaleness{};
 RTC_DATA_ATTR bool downloadFailureDrawn = false;
+RTC_DATA_ATTR uint64_t sdProbeRetryAtUs = 0;
+bool sdProbeAttempted = false;
+
+void prepareDownloadStorage() {
+    constexpr uint64_t retryDelayUs = 24ULL * 60 * 60 * 1000000;
+    // The RTC counter includes deep sleep and is independent of SNTP.
+    if (sdProbeAttempted || esp_rtc_get_time_us() < sdProbeRetryAtUs) return;
+    sdProbeAttempted = true;
+    const bool mounted = mountSdCard();
+    sdProbeRetryAtUs = mounted ? 0 : esp_rtc_get_time_us() + retryDelayUs;
+    selectPartialStore(mounted);
+#ifndef VENTANAL_HOST_TEST
+    if (mounted) sweepPartials(ventanal::trustedEpoch(time(nullptr)), [](const PartialMeta&) { return true; });
+#endif
+}
 #if VENTANAL_WAKETEST == 2 || VENTANAL_SPARESTEST
 RTC_DATA_ATTR uint8_t testWakeCount = 0;
 #endif
@@ -412,9 +429,7 @@ void sleepCritical(Preferences& prefs, const State& state, int pct, bool chargeA
 }
 }
 void sleepHardware(uint32_t seconds, bool allowWake) {
-#ifndef VENTANAL_HOST_TEST
     unmountSdCard();
-#endif
 #if VENTANAL_STATELOSTTEST
     if(seconds) seconds=10;
 #endif
@@ -539,6 +554,8 @@ void setup() {
     WakeCause wake=raw==ESP_SLEEP_WAKEUP_EXT0 ? WakeCause::Button :
                    raw==ESP_SLEEP_WAKEUP_TIMER ? WakeCause::Timer : WakeCause::ColdBoot;
     const auto reset=esp_reset_reason();
+    sdProbeAttempted = false;
+    if (reset == ESP_RST_POWERON) sdProbeRetryAtUs = 0;
     Preferences prefs;
     const bool persisted=prefs.begin("ventanal",false);
     if(persisted && !contentStaleness.lastNewEpoch) contentStaleness.restore(prefs);
@@ -811,8 +828,7 @@ void setup() {
     }
     if(!mounted) Serial.println("error=cache-mount");
 #ifndef VENTANAL_HOST_TEST
-    selectPartialStore(mountSdCard());
-    sweepPartials(seedRtcTime(), [](const PartialMeta&) { return true; });
+    if (mounted) sweepPartials(seedRtcTime(), [](const PartialMeta&) { return true; });
 #endif
 #if VENTANAL_ERASE_CACHE
     if(mounted) {
@@ -896,6 +912,12 @@ void setup() {
             *cachedFrames[slot] = *incomingFrames[slot];
             if (slot >= 3 && slot < 5) strcpy(state.extraNames[slot-3], manifestExtras.names[slot-3]);
         };
+        const auto recoverFrames = [&] {
+            const auto recovered = sweepFramePartials(incomingFrames);
+            for (unsigned slot = 0; slot < frameCachePaths.size(); ++slot)
+                if (recovered & (1u << slot)) acceptFrame(slot);
+            return recovered;
+        };
         if(manifestOk) {
             if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
             if(persisted && !storeBattery(prefs,manifestBatteryFullMv)) Serial.println("error=battery-calibration-save");
@@ -906,11 +928,7 @@ void setup() {
                 sleepCritical(prefs,state,pct,chargeAttempted);
                 return;
             }
-            if(mounted) {
-                const auto recovered = sweepFramePartials(incomingFrames);
-                for (unsigned slot = 0; slot < frameCachePaths.size(); ++slot)
-                    if (recovered & (1u << slot)) acceptFrame(slot);
-            }
+            if(mounted) recoverFrames();
             if(state.owner.queue.count) Serial.printf("skip reports acknowledged count=%u\n",unsigned(state.owner.queue.count));
             state.owner.queue.acknowledge(true);
             state.owner.mainChanged(art.id);
@@ -919,20 +937,30 @@ void setup() {
         Serial.printf("manifest ok=%d ms=%lu\n",!offline,static_cast<unsigned long>(millis()-start));
         start=millis();
         if(!offline && persisted && quietHours.valid()) storeQuiet(prefs,quietHours);
-        // Reserve 30 seconds for display and shutdown after a 60-second transfer.
+        // OTA runs first and retains its own transfer and install reserves.
         const bool otaFailed=online && persisted && mounted && millis()-wakeStarted<90000
             && tryOta(prefs,otaBoot,manifestOk,timeSynced,pct,
                       quietStart(installation.quietStart),quietEnd(installation.quietEnd),
+                      prepareDownloadStorage,
                       [] { ESP_ERROR_CHECK(esp_task_wdt_reset_user(wakeWatchdog)); });
         if(otaFailed) Serial.println("download deferred=failed-ota");
         if(!offline && mounted && !otaFailed) {
-            // All eight slots share an absolute wake deadline, measured from
-            // watchdog arming. Frame downloads and display don't feed it.
+            // Weather gets first use of the remaining wake budget. It does
+            // not move the cursor that keeps the other slots in rotation.
+            constexpr unsigned weatherSlot=1;
+            bool firstFrame=true, sdFramesSwept=false;
+            const auto recoverSdFrames = [&] {
+                if (sdFramesSwept || partialsOnFlash()) return;
+                sdFramesSwept = true;
+                if(recoverFrames() && persisted) save(prefs,state);
+            };
+            recoverSdFrames();
             uint8_t next=0;
             if(persisted) prefs.getBytes("dl-next",&next,sizeof next);
             if(next>=frameCachePaths.size()) next=0;
-            for(unsigned step=0;step<frameCachePaths.size();++step) {
-                const unsigned slot=(next+step)%frameCachePaths.size();
+            for(unsigned step=0;step<=frameCachePaths.size();++step) {
+                const unsigned slot=step==0 ? weatherSlot : (next+step-1)%frameCachePaths.size();
+                if(step && slot==weatherSlot) continue;
                 auto* cached=cachedFrames[slot];
                 const auto* incoming=incomingFrames[slot];
                 const char* path=frameCachePaths[slot];
@@ -956,21 +984,34 @@ void setup() {
                     }
                     continue;
                 }
-                if(!canDownloadSpare(millis()-wakeStarted)) {
-                    uint8_t deferred=slot;
-                    if(persisted) prefs.putBytes("dl-next",&deferred,sizeof deferred);
-                    Serial.printf("download deferred slot=%u wake-budget\n",slot);
-                    break;
-                }
-                // Persist progress before a transfer: a timeout/failure cannot
-                // monopolize subsequent wakes. The first deferred slot wins.
-                uint8_t following=(slot+1)%frameCachePaths.size();
-                if(persisted) prefs.putBytes("dl-next",&following,sizeof following);
-                if(extra && !canStageExtraFrame(path)) {
-                    Serial.println("extra download deferred=filesystem-budget"); continue;
+                if(frameWakeRemainingMs(millis()-wakeStarted)) {
+                    // A timeout or failure still advances the round-robin cursor.
+                    const uint8_t following=(slot+1)%frameCachePaths.size();
+                    if(persisted && slot!=weatherSlot) prefs.putBytes("dl-next",&following,sizeof following);
+                    if(extra && !canStageExtraFrame(path)) {
+                        Serial.println("extra download deferred=filesystem-budget"); continue;
+                    }
+                    prepareDownloadStorage();
+                    recoverSdFrames();
+                    if(!strcmp(cached->id,incoming->id) && LittleFS.exists(path)) continue;
+                    if(extra && !partialsOnFlash() && !canStageExtraFrame(path)) {
+                        Serial.println("extra download deferred=filesystem-budget"); continue;
+                    }
                 }
                 const String url=String(installation.host)+incoming->url;
-                if(fetchFrame(url.c_str(),path)) {
+                const auto remaining=frameWakeRemainingMs(millis()-wakeStarted);
+                if(!remaining) {
+                    if(persisted && slot!=weatherSlot) {
+                        const uint8_t deferred=slot;
+                        prefs.putBytes("dl-next",&deferred,sizeof deferred);
+                    }
+                    Serial.printf("download deferred slot=%u wake-budget\n",slot);
+                    if(slot==weatherSlot) continue;
+                    break;
+                }
+                const auto budget=firstFrame ? remaining : std::min(remaining,frameBudgetMs);
+                firstFrame=false;
+                if(fetchFrame(url.c_str(),path,budget)) {
                     acceptFrame(slot);
                     save(prefs,state); // Publish the ID only after the file is committed.
                 }

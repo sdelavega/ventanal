@@ -170,7 +170,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
                            const ReleaseInfo& release, const char* url, RangeTransport& transport,
                            uint32_t started, OtaAttemptState& attempts, const char* version,
                            const char* approval, StillAllowed stillAllowed, bool& installed,
-                           bool& deferred, void (*feed)()) {
+                           bool& deferred, void (*prepareStorage)(), void (*feed)()) {
     auto available = attempts;
     const bool newOffer = scopeOtaAttemptState(available, version, approval);
     if (available.attempts.count >= otaAttemptLimit) return OtaFailure::Attempts;
@@ -181,6 +181,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
         return result;
     };
     if (!stillAllowed()) return deferInstall("schedule");
+    prepareStorage();
     const auto elapsed = millis() - started;
     if (elapsed >= transferMs) {
         logOtaStage(OtaStage::NoProgress, "budget", 0, release.size, logTransferOutcome);
@@ -229,7 +230,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
 template<class StillAllowed>
 OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
                        OtaAttemptState& attempts, StillAllowed stillAllowed, bool& installed,
-                       bool& deferred, void (*feed)()) {
+                       bool& deferred, void (*prepareStorage)(), void (*feed)()) {
     // An approval scopes the attempt budget even when its metadata or path
     // cannot be trusted. Older hosts omit it, so use a bounded path hint.
     char hint[otaVersionCapacity]{};
@@ -259,7 +260,7 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
     const auto started = otaClock();
     HostRangeTransport transport(url.c_str(), started, transferMs, idleMs);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
-                           version, offer.approval, stillAllowed, installed, deferred, feed);
+                           version, offer.approval, stillAllowed, installed, deferred, prepareStorage, feed);
 }
 
 #if VENTANAL_OTA_GITHUB
@@ -331,7 +332,7 @@ struct GithubResponse {
 
 template<class StillAllowed>
 OtaFailure installGithub(Preferences& prefs, OtaAttemptState& attempts, StillAllowed stillAllowed,
-                         bool& installed, bool& deferred, void (*feed)()) {
+                         bool& installed, bool& deferred, void (*prepareStorage)(), void (*feed)()) {
     const auto* target = installSlot();
     if (!target) return OtaFailure::Slot;
     const uint32_t metadataStarted = millis();
@@ -406,7 +407,7 @@ OtaFailure installGithub(Preferences& prefs, OtaAttemptState& attempts, StillAll
     const auto started = otaClock();
     OtaGithubTransport transport(url.c_str(), transferMs, otaClock, nullptr);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
-                           tag + 1, "", stillAllowed, installed, deferred, feed);
+                           tag + 1, "", stillAllowed, installed, deferred, prepareStorage, feed);
 }
 #endif
 }  // namespace
@@ -506,7 +507,7 @@ bool otaCacheLayout() {
 }
 
 bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
-            int battery, int quietStart, int quietEnd, void (*feed)()) {
+            int battery, int quietStart, int quietEnd, void (*prepareStorage)(), void (*feed)()) {
     auto allowed = [&] { return otaCanInstall(battery, localMinute(), quietStart, quietEnd); };
     if (boot.pending || (boot.record.result != OtaResult::None && boot.record.failure != OtaFailure::Attempts)
         || !allowed()) return false;
@@ -521,10 +522,11 @@ bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeS
     bool installed = false;
     bool deferred = false;
     if (manifestOk && manifestFirmware.release[0]) {
-        failure = installHost(prefs, manifestFirmware, attemptState, allowed, installed, deferred, feed);
+        failure = installHost(prefs, manifestFirmware, attemptState, allowed, installed, deferred,
+                              prepareStorage, feed);
 #if VENTANAL_OTA_GITHUB
     } else if (otaGithubCheckDue(timeSynced, now, prefs.getLong64(githubCheckKey, 0))) {
-        failure = installGithub(prefs, attemptState, allowed, installed, deferred, feed);
+        failure = installGithub(prefs, attemptState, allowed, installed, deferred, prepareStorage, feed);
         if (!deferred && (failure == OtaFailure::None || failure == OtaFailure::Attempts)
             && prefs.putLong64(githubCheckKey, now) != sizeof now) Serial.println("ota error=nvs-week");
 #endif

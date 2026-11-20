@@ -5,7 +5,9 @@
 #include "../ventanal/cache.h"
 #include "../ventanal/net.h"
 #include "../ventanal/overlay.h"
+#include "../ventanal/sd_card.h"
 #include <Preferences.h>
+#include <esp_rtc_time.h>
 #include <esp_sleep.h>
 #include <esp_system.h>
 #include <vector>
@@ -20,6 +22,19 @@ static ScreenInfo art{"aaaaaaaaaaaaaaaa","/frames/art",{1092,22,480,26,false}};
 static ScreenInfo weather{"bbbbbbbbbbbbbbbb","/frames/weather",{1236,30,334,136,true}};
 static uint32_t wifiDelay=0, timeDelay=0, manifestDelay=0, frameDelay=0;
 static std::vector<std::string> downloadPaths;
+static std::vector<uint32_t> downloadBudgets;
+static unsigned sdProbes = 0;
+static bool sdPresent = false, sdSelected = false;
+static bool otaAccepted = false;
+static uint64_t sdTimeUs = 0;
+bool mountSdCard() { ++sdProbes; return sdPresent; }
+void unmountSdCard() { sdSelected = false; }
+bool partialsOnFlash() { return !sdSelected; }
+uint64_t esp_rtc_get_time_us() { return sdTimeUs; }
+void selectPartialStore(bool mounted) {
+    sdSelected = mounted;
+    Serial.println(mounted ? "storage partials=sd" : "storage partials=flash");
+}
 bool wifiConnect(uint32_t) { ++connections; delay(wifiDelay); return online; }
 bool syncTime() { delay(timeDelay); return online; }
 bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
@@ -35,13 +50,20 @@ bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
 }
 uint8_t sweepFramePartials(const ManifestFrameSlots& frames) {
     assert(fetchedManifest && !strcmp(frames[0]->id, art.id) && !strcmp(frames[1]->id, weather.id));
-    fetchedManifest=false;
     ++frameSweeps;
     if (!recoverWeather) return 0;
     files["/weather.vnf"]={2};
     return 1u << 1;
 }
-bool fetchFrame(const char*,const char* path) { ++downloads; downloadPaths.push_back(path); delay(frameDelay); if(frameOK) files[path]={1}; return frameOK; }
+bool fetchFrame(const char*, const char* path, uint32_t budget) {
+    ++downloads;
+    downloadPaths.push_back(path);
+    downloadBudgets.push_back(budget);
+    delay(std::min(frameDelay, budget));
+    if (!frameOK || frameDelay > budget) return false;
+    files[path] = {1};
+    return true;
+}
 bool canStageExtraFrame(const char*) { return LittleFS.totalBytes() >= LittleFS.usedBytes() + 960016 + 65536; }
 static std::string blitted;
 
@@ -66,7 +88,11 @@ bool confirmOtaBoot(Preferences&, OtaBoot& boot, bool manifestOk, bool screenDra
 }
 void rollbackOtaBoot() { esp_restart(); }
 bool otaCacheLayout() { return otaLayout; }
-bool tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int, void (*)()) { return otaFails; }
+bool tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int,
+            void (*prepareStorage)(), void (*)()) {
+    if (otaAccepted) prepareStorage();
+    return otaFails;
+}
 #include "../ventanal/ventanal.cpp"
 static void simulateBoot(esp_reset_reason_t reason) {
     fakeReset=reason;
@@ -92,7 +118,91 @@ static void wake(int cause, bool critical=false) {
         assert(buttonArmed && (timerUs>0)==hostSettingsAvailable);
     }
 }
-int main() {
+static void weather_fetched_first_when_due() {
+    manifestExtras.count=1;
+    manifestExtras.spares[0]=art;
+    preferences["dl-next"]={5};
+    wake(0);
+    assert((downloadPaths==std::vector<std::string>{"/weather.vnf", "/spare0.vnf", "/art.vnf"}));
+}
+
+static void first_frame_uses_remaining_budget() {
+    wifiDelay=20000;
+    frameDelay=45000;
+    wake(0);
+    assert(downloadBudgets.front()>83000 && downloadBudgets.front()<85000);
+    assert(files.count("/weather.vnf"));
+}
+
+static void later_frames_get_leftover_budget() {
+    frameDelay=10000;
+    wake(0);
+    assert(downloadBudgets.size()==2 && downloadBudgets[1]==30000);
+    fakeReset=ESP_RST_DEEPSLEEP;
+    fakeClock=0;
+    downloadBudgets.clear();
+    files.clear();
+    frameDelay=90000;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(downloadBudgets.size()==2 && downloadBudgets[1]>13000 && downloadBudgets[1]<15000);
+    assert(files.count("/weather.vnf") && !files.count("/art.vnf"));
+}
+
+static void sd_not_probed_when_nothing_due() {
+    sdPresent=true;
+    wake(0);
+    assert(sdProbes==1);
+    fakeReset=ESP_RST_DEEPSLEEP;
+    Serial.output.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(sdProbes==1 && Serial.output.find("storage partials=")==std::string::npos);
+    strcpy(weather.id,"cccccccccccccccc");
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(sdProbes==2 && Serial.output.find("storage partials=sd\n")!=std::string::npos);
+    otaAccepted=true;
+    const auto priorDownloads=downloads;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(sdProbes==3 && downloads==priorDownloads);
+}
+
+static void no_card_result_cached_until_cold_boot_or_24h() {
+    constexpr uint64_t dayUs=24ULL*60*60*1000000;
+    wake(0);
+    assert(sdProbes==1 && Serial.output.find("storage partials=flash\n")!=std::string::npos);
+    fakeReset=ESP_RST_DEEPSLEEP;
+    sdTimeUs=dayUs-1;
+    Serial.output.clear();
+    files.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(sdProbes==1 && Serial.output.find("storage partials=")==std::string::npos);
+    sdTimeUs=dayUs;
+    files.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(sdProbes==2);
+    fakeReset=ESP_RST_POWERON;
+    sdTimeUs=0;
+    files.clear();
+    wake(0);
+    assert(sdProbes==3);
+}
+
+int main(int argc, char** argv) {
+    if (argc>1) {
+        const std::pair<const char*, void (*)()> cases[]{
+            {"weather_fetched_first_when_due", weather_fetched_first_when_due},
+            {"first_frame_uses_remaining_budget", first_frame_uses_remaining_budget},
+            {"later_frames_get_leftover_budget", later_frames_get_leftover_budget},
+            {"sd_not_probed_when_nothing_due", sd_not_probed_when_nothing_due},
+            {"no_card_result_cached_until_cold_boot_or_24h", no_card_result_cached_until_cold_boot_or_24h},
+        };
+        for (const auto& [name, run] : cases) {
+            if (strcmp(argv[1], name)) continue;
+            run();
+            puts(name);
+            return 0;
+        }
+        return 1;
+    }
     hostSettingsAvailable=false;
     fakeReset=ESP_RST_POWERON;
     fakeWake=0;

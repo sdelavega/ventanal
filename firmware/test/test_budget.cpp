@@ -12,17 +12,17 @@ int main() {
     for(int i=0;i<3;++i) manifestExtras.spares[i]=art;
     displayHook=[] { delay(20000); };
     fakeReset=ESP_RST_POWERON;
-    const char* expected[]={"/art.vnf","/weather.vnf","/solar.vnf","/extra0.vnf","/extra1.vnf","/spare0.vnf","/spare1.vnf","/spare2.vnf"};
+    const char* expected[]={"/weather.vnf","/art.vnf","/solar.vnf","/extra0.vnf","/extra1.vnf","/spare0.vnf","/spare1.vnf","/spare2.vnf"};
     for(int round=0;round<4;++round) {
         // Reset MCU clock each wake; NVS cursor must survive this.
         fakeClock=0; downloadPaths.clear();
         wake(round?ESP_SLEEP_WAKEUP_TIMER:0);
         assert(downloadPaths.size()==2);
         assert(downloadPaths[0]==expected[2*round] && downloadPaths[1]==expected[2*round+1]);
-        assert(fakeClock<=155000 && watchdogFeeds==0);
+        assert(fakeClock<=126000 && watchdogFeeds==0);
         fakeReset=ESP_RST_DEEPSLEEP;
     }
-    assert(canDownloadSpare(104999) && !canDownloadSpare(105000));
+    assert(frameWakeRemainingMs(104999)==1 && frameWakeRemainingMs(105000)==0);
     // Always-changing core art must not starve deferred solar/extras/spares.
     files.clear(); preferences.clear();
     for(int round=0;round<4;++round) {
@@ -31,12 +31,12 @@ int main() {
         wake(ESP_SLEEP_WAKEUP_TIMER);
         assert(downloadPaths[0]==expected[2*round]);
     }
-    // Failed transfers also advance fairly and never commit an incoming ID.
+    // Unfinished weather retains priority while failed attempts rotate other slots.
     files.clear(); preferences.clear(); frameOK=false;
     for(int round=0;round<4;++round) {
         fakeClock=0; downloadPaths.clear();
         wake(ESP_SLEEP_WAKEUP_TIMER);
-        assert(downloadPaths.size()==2 && downloadPaths[0]==expected[2*round]);
+        assert(downloadPaths.size()==2 && downloadPaths[0]==expected[0] && downloadPaths[1]==expected[round+1]);
     }
     frameOK=true;
     // A charge-me PON stall shuts down immediately with all wake sources disabled.
@@ -46,5 +46,5 @@ int main() {
     try { refreshPanel(); assert(false); } catch(const Sleeping&) {}
     assert(timerUs==0 && !buttonArmed && pwrHeld && pwrLevel==0);
     assert(pendingPanel.magic==0 && pendingPanel.attempts==0 && !timerRunning);
-    puts("budget: 8 screens, 30s transfers, durable priority, changing-art fairness, no watchdog feeds, charge-me limit passed");
+    puts("budget: 8 screens, shared deadline, durable rotation, no watchdog feeds, charge-me limit passed");
 }

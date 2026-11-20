@@ -334,12 +334,14 @@ debounce. Holding the second press remains a double press; it cannot become a
 long press. Classification does not wait for release after recognizing a long or
 double press. Battery protection and bounded panel recovery still apply.
 
-All frame slots (art, weather, solar, two Extras and three spares) share a
-105-second cutoff from watchdog arming for starting downloads. A final 30-second
-transfer can finish by 135 seconds, leaving 45 seconds for blit/readout, a normal
-20-second refresh, PON detection (3 seconds, then a fresh boot) and shutdown.
-The watchdog stays unfed throughout networking and display. A separate NVS
-`dl-next` cursor records the first deferred slot; it runs first next wake, even
-when earlier art changes every wake. Transfers and failed attempts advance the
-cursor so a bad slot cannot starve others. Spares now share the pre-display pass.
-A stuck display still reaches the 180-second watchdog; that is intentional.
+Frame transfers share a 105-second deadline from the start of the wake. Once
+OTA checks and any OTA work have run, due weather gets first use of the remaining
+time. The first frame transfer can use the entire remainder. Each later transfer
+gets up to 30 seconds within the same deadline. This leaves time for blit/readout,
+panel refresh, PON detection and shutdown before the 180-second watchdog.
+
+The NVS `dl-next` cursor rotates the other slots independently of weather.
+Transfers and failed attempts advance it, and the first slot deferred for lack
+of time resumes the rotation on the next wake. The e-paper probes SD when a
+frame is due for download or an accepted OTA reaches staging. A failed probe
+selects LittleFS and suppresses further probes for 24 hours or until a cold boot.

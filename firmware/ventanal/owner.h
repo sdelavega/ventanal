@@ -67,5 +67,8 @@ struct OwnerState {
         if(strcmp(mainId,id)) { strcpy(mainId,id); cursor=-1; overrideArt={}; }
     }
 };
-// Reserve 30 s transfer + 45 s for slow FS, scheduling and watchdog margin.
-inline bool canDownloadSpare(uint32_t elapsed) { return elapsed<105000; }
+// Leave 75 s for local work, panel refresh, shutdown and watchdog margin.
+inline uint32_t frameWakeRemainingMs(uint32_t elapsed) {
+    constexpr uint32_t cutoffMs = 105000;
+    return elapsed < cutoffMs ? cutoffMs - elapsed : 0;
+}

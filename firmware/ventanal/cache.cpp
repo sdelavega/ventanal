@@ -18,7 +18,6 @@
 #endif
 namespace {
 constexpr size_t frameSize = 960016;
-constexpr uint32_t frameBudgetMs = 30000;
 constexpr uint32_t frameIdleMs = 15000;
 constexpr char frameValidatorPrefix[] = "frame:";
 
@@ -158,13 +157,13 @@ uint8_t sweepFramePartials(const ManifestFrameSlots& frames) {
     return recovered;
 }
 
-bool fetchFrame(const char* url, const char* path) {
+bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
     const uint32_t started = millis();
     const auto* expected = expectedFrame(url);
     const char* sha = expected ? expected->sha.c_str() : "";
     const char* legacyId = expected && !*sha ? expected->id.c_str() : "";
     const std::string target = frameTarget(path);
-    HostRangeTransport transport(url, started, frameBudgetMs, frameIdleMs,
+    HostRangeTransport transport(url, started, budgetMs, frameIdleMs,
                                  HostRangeTransport::Asset::Frame, VENTANAL_ABORT_AFTER_BYTES);
     auto& store = partialStore();
     const auto result = [&](FetchOutcome outcome, const char* reason) {
@@ -198,10 +197,10 @@ bool fetchFrame(const char* url, const char* path) {
     const time_t epoch = time(nullptr);
     const char* reason = nullptr;
     const auto elapsed = millis() - started;
-    if (elapsed >= frameBudgetMs) return result(FetchOutcome::NoProgress, "budget");
+    if (elapsed >= budgetMs) return result(FetchOutcome::NoProgress, "budget");
     DownloadPower power;
     const bool flash = partialsOnFlash();
-    const auto outcome = resumeFetch(transport, store, target.c_str(), source, frameBudgetMs - elapsed,
+    const auto outcome = resumeFetch(transport, store, target.c_str(), source, budgetMs - elapsed,
         frameClock, epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logTransferOutcome,
         &reason, {}, block.get(), kResumeChunk);
     if (transport.aborted()) {
