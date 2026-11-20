@@ -1,0 +1,11 @@
+interface=@AP_IF@
+driver=nl80211
+ssid2=@SSID_HEX@
+hw_mode=g
+channel=6
+wpa=2
+wpa_key_mgmt=WPA-PSK
+rsn_pairwise=CCMP
+wpa_psk=@PSK@
+logger_syslog=0
+logger_stdout=0
