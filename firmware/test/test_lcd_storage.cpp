@@ -74,6 +74,15 @@ void sweep_keeps_accepted_ota_stage() {
     f.sweep.run(f.store, now);
     assert(f.exists("ota-2.3.4"));
 }
+void sweep_without_manifest_preserves_frame_stages() {
+    Fixture f;
+    f.seed("frame-weather", true);
+    f.seed("frame-weather", false);
+    f.seed("art-met-1", true);
+    f.sweep.run(f.store, now + 7 * 86400);
+    assert(f.exists("frame-weather") && f.exists("frame-weather.part") && f.exists("frame-weather.meta"));
+    assert(!f.exists("art-met-1"));
+}
 void sweep_runs_once_per_day() {
     SweepDay day;
     assert(!day.due(42));
@@ -140,6 +149,7 @@ int main() {
     sweep_removes_unreferenced_art();
     sweep_removes_stale_ota_stage();
     sweep_keeps_accepted_ota_stage();
+    sweep_without_manifest_preserves_frame_stages();
     sweep_runs_once_per_day();
     accepted_offer_survives_reboot();
     superseded_offer_clears_saved_acceptance();

@@ -380,7 +380,7 @@ void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
     if (now < resume_detail::kValidEpoch) return;
     const bool daily = downloadSweepDay.due(now);
     const bool standalone = lcd::standalone(lcd::installation);
-    const bool sweepFrames = (manifest || standalone) && frameSweepDay.due(now);
+    const bool sweepFrames = manifest && frameSweepDay.due(now);
     if (!daily && !sweepFrames) return;
     lcd::DownloadSweep sweep;
     if (daily) {
@@ -398,7 +398,6 @@ void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
     }
     if (sweepFrames) {
         const auto publishedFrame = [manifest](const char* target) -> const lcd::FrameInfo* {
-            if (!manifest) return nullptr;
             for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
                 if (strcmp(target + 6, lcd::SLOT_NAMES[slot])) continue;
                 if (slot >= 3 && slot - 3 >= manifest->spareCount) return nullptr;

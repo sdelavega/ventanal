@@ -29,6 +29,13 @@ class RoundFour(unittest.TestCase):
         sketch = (LCD / "lcd43b.ino").read_text()
         self.assertRegex(sketch, r"(?s)setPartialStoreWriteHook\(.*?scope.emplace\(lcd::ScanActivity::PartialStore\)")
 
+    def test_standalone_sweep_leaves_frame_files(self):
+        refresh = (LCD / "app_refresh.h").read_text()
+        sweep = refresh.split("void sweepDownloads(", 1)[1].split("void refreshWorker", 1)[0]
+        self.assertRegex(sweep, r"const bool sweepFrames = manifest && frameSweepDay\.due\(now\);")
+        worker = refresh.split("void refreshWorker(void*)", 1)[1].split("bool startRefresh", 1)[0]
+        self.assertIn("refreshStaging.manifestOk && !standalone ? &refreshStaging.manifest : nullptr", worker)
+
 
 if __name__ == "__main__":
     unittest.main()

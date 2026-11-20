@@ -368,10 +368,15 @@ void FsStore::sweep(uint32_t epochNow, const ValidatorLive& validatorLive, const
     while (auto entry = directory.openNextFile()) {
         if (entry.isDirectory()) continue;
         const std::string name = entry.name();
-        if (managed && (name.size() <= 5 || !managed(name.substr(0, name.size() - 5).c_str()))) continue;
-        if (!ioError_ && hasSuffix(name, ".temp")) temporaries.push_back(name);
-        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta") || (!ioError_ && hasSuffix(name, ".fail")))
-            targets.push_back(name.substr(0, name.size() - 5));
+        const bool checkpoint = hasSuffix(name, ".part") || hasSuffix(name, ".meta");
+        const bool failed = hasSuffix(name, ".fail");
+        const bool temporary = hasSuffix(name, ".temp");
+        // Strip suffixes for the managed filter only on checkpoints and their housekeeping files.
+        // Committed names already identify the full target.
+        const auto target = checkpoint || failed || temporary ? name.substr(0, name.size() - 5) : name;
+        if (managed && !managed(target.c_str())) continue;
+        if (!ioError_ && temporary) temporaries.push_back(name);
+        if (checkpoint || (!ioError_ && failed)) targets.push_back(target);
     }
     directory.close();
     for (const auto& name : temporaries) remove(root_ + '/' + name);

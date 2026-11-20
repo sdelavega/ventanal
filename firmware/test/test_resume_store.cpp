@@ -238,6 +238,26 @@ void sweep_needs_valid_time() {
     assert(store.size("orphan") == 3);
 }
 
+void sweep_filters_committed_by_full_name() {
+    FakeFS fs;
+    FsStore store(fs);
+    seed(store, "art-met-1", kNow);
+    assert(store.commit("art-met-1"));
+    seed(store, "short", kNow);
+    assert(store.commit("short"));
+    seed(store, "pending", kNow);
+
+    std::vector<std::string> filtered;
+    store.sweep(kNow, [](const char*, const PartialMeta&) { return false; }, [&](const char* target) {
+        filtered.emplace_back(target);
+        return true;
+    });
+    std::sort(filtered.begin(), filtered.end());
+    assert((filtered == std::vector<std::string>{"art-met-1", "pending", "pending", "short"}));
+    assert(store.openCommitted("art-met-1") && store.openCommitted("short"));
+    assert(store.size("pending") == -1);
+}
+
 void find_previous_committed_sun_without_pruning() {
     FsStore store(LittleFS, "/sun");
     for (const char* target : {"sdo-9999", "sdo-20775", "sdo-20776", "art-met-1"}) {
@@ -271,6 +291,7 @@ int main() {
     sd_gone_falls_back_to_flash();
     sweep_removes_old_and_orphaned();
     sweep_needs_valid_time();
+    sweep_filters_committed_by_full_name();
     find_previous_committed_sun_without_pruning();
-    std::puts("resume store: 10 cases passed");
+    std::puts("resume store: 11 cases passed");
 }
