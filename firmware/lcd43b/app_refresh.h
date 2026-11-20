@@ -170,7 +170,7 @@ void applyResidentFrame() {
     const bool changed = strcmp(id, nextId) != 0;
     if (changed) {
         const uint32_t now = ventanal::trustedEpoch(time(nullptr));
-        if (frame.info) contentStaleness.observe(now, true);
+        if (frame.info) contentStaleness.clearOverdue();
         if (frame.slot == 1) {
             // Standalone stamps the render. Host manifests carry no publish time,
             // so use the time the verified weather frame reached the live cache.
@@ -438,9 +438,8 @@ void applyFinishedRefresh() {
     if (staleRollback) hostOffer = {};
     const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
     const bool incomplete = refreshStaging.framesPending || frameFailed;
-    contentStaleness.due = !refreshStaging.manifestOk || incomplete;
     const uint32_t epochNow = ventanal::trustedEpoch(time(nullptr));
-    contentStaleness.observe(epochNow);
+    contentStaleness.observe(epochNow, !refreshStaging.manifestOk || incomplete);
     const bool checkpoint = contentStaleness.checkpointDue(epochNow);
     bool redraw;
     {

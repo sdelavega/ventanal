@@ -20,11 +20,10 @@ inline bool elapsed(uint32_t since, uint32_t now, uint32_t duration) {
     return since >= kValidEpoch && now >= since && now - since >= duration;
 }
 
-inline RefreshLabel labelFor(bool manualRefresh, bool anyFrameFailedPermanently,
-                             uint32_t lastNewContentEpoch, uint32_t epochNow) {
-    if (epochNow < kValidEpoch) return RefreshLabel::None;
+// Manual refresh is immediate. Failure needs 24 hours overdue on a trusted clock.
+inline RefreshLabel labelFor(bool manualRefresh, uint32_t overdueSince, uint32_t epochNow) {
     if (manualRefresh) return RefreshLabel::Refreshing;
-    if (anyFrameFailedPermanently || elapsed(lastNewContentEpoch, epochNow, kContentTimeout))
+    if (elapsed(overdueSince, epochNow, kContentTimeout))
         return RefreshLabel::Failed;
     return RefreshLabel::None;
 }
@@ -33,58 +32,61 @@ inline int weatherAgeHours(uint32_t weatherEpoch, uint32_t epochNow) {
     return elapsed(weatherEpoch, epochNow, kHour) ? int((epochNow - weatherEpoch) / kHour) : -1;
 }
 
-// The RTC/RAM epoch is exact. After loss of retention, the latest checkpoint
-// may be missing arrivals from its next 24 hours. Count from the end of
-// that window (or now, if sooner) to avoid an early warning.
 struct ContentStaleness {
-    uint32_t lastNewEpoch;
+    uint32_t overdueSince;
     uint32_t checkpointEpoch;
-    uint32_t checkpointAttempt;
     bool due;
-    bool clockPendingContent;
     bool checkpointDirty;
+    bool checkpointLoaded;
 
     template<class Store>
     void restore(Store& prefs) {
+        if (checkpointLoaded) return;
+        checkpointLoaded = true;
+        // The old content-epoch key recorded arrivals and cannot date an overdue period.
         uint32_t stored[2]{};
-        if (prefs.getBytes("content-epoch", stored, sizeof stored) == sizeof stored &&
-            stored[0] >= kValidEpoch && stored[1] >= stored[0]) {
-            checkpointEpoch = stored[0];
-            checkpointAttempt = stored[1];
+        if (prefs.getBytes("content-overdue", stored, sizeof stored) == sizeof stored &&
+            stored[1] >= kValidEpoch &&
+            (!stored[0] || (stored[0] >= kValidEpoch && stored[0] <= stored[1]))) {
+            overdueSince = stored[0];
+            checkpointEpoch = stored[1];
+            due = overdueSince != 0;
         }
     }
 
-    void observe(uint32_t now, bool newContent = false) {
-        clockPendingContent |= newContent;
-        if (now < kValidEpoch) return;
-        if (clockPendingContent) {
-            lastNewEpoch = now;
-            clockPendingContent = false;
+    void clearOverdue() {
+        if (overdueSince) {
+            overdueSince = 0;
             checkpointDirty = true;
-        } else if (!lastNewEpoch) {
-            lastNewEpoch = elapsed(checkpointAttempt, now, kContentTimeout)
-                ? checkpointAttempt + kContentTimeout : now;
-            checkpointDirty = !checkpointEpoch;
+        }
+    }
+
+    void observe(uint32_t now, bool isDue) {
+        due = isDue;
+        if (!due) {
+            clearOverdue();
+        } else if (!overdueSince && now >= kValidEpoch) {
+            overdueSince = now;
+            checkpointDirty = true;
         }
     }
 
     bool checkpointDue(uint32_t now) const {
-        return checkpointDirty && lastNewEpoch >= kValidEpoch && now >= lastNewEpoch &&
-            (!checkpointAttempt || elapsed(checkpointAttempt, now, kContentTimeout));
+        return checkpointDirty && now >= kValidEpoch && now >= overdueSince &&
+            (!checkpointEpoch || elapsed(checkpointEpoch, now, kContentTimeout));
     }
 
     template<class Store>
     void checkpoint(Store& prefs, uint32_t now) {
-        checkpointAttempt = now;
-        const uint32_t stored[] = {lastNewEpoch, now};
-        if (prefs.putBytes("content-epoch", stored, sizeof stored) == sizeof stored) {
-            checkpointEpoch = lastNewEpoch;
+        const uint32_t stored[] = {overdueSince, now};
+        if (prefs.putBytes("content-overdue", stored, sizeof stored) == sizeof stored) {
+            checkpointEpoch = now;
             checkpointDirty = false;
         }
     }
 
     RefreshLabel label(bool manual, uint32_t now) const {
-        return labelFor(manual, false, due ? lastNewEpoch : 0, now);
+        return labelFor(manual, overdueSince, now);
     }
 };
 

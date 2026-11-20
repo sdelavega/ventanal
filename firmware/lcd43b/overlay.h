@@ -191,7 +191,7 @@ public:
     }
     RefreshLabel label(uint32_t epochNow, const ventanal::ContentStaleness& content) const {
         const auto policy = content.label(manual_, epochNow);
-        return manual_ || policy == RefreshLabel::Failed ? policy : label_;
+        return policy == RefreshLabel::None ? label_ : policy;
     }
 
 private:

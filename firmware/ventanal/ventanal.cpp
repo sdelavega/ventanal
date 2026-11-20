@@ -558,7 +558,7 @@ void setup() {
     if (reset == ESP_RST_POWERON) sdProbeRetryAtUs = 0;
     Preferences prefs;
     const bool persisted=prefs.begin("ventanal",false);
-    if(persisted && !contentStaleness.lastNewEpoch) contentStaleness.restore(prefs);
+    if(persisted) contentStaleness.restore(prefs);
     auto otaBoot=readOtaBoot(prefs,persisted);
     otaPendingBoot=otaBoot.pending;
     const bool configured=initializeSettings(!otaPendingBoot);
@@ -864,6 +864,7 @@ void setup() {
     }
 #endif
     bool offline=false;
+    bool contentDue=contentStaleness.due;
     bool manifestOk=false;
     uint32_t start=millis();
     if(wake!=WakeCause::Button || longPress || otaPendingBoot) {
@@ -908,7 +909,7 @@ void setup() {
         };
         const auto acceptFrame = [&](unsigned slot) {
             if(strcmp(cachedFrames[slot]->id, incomingFrames[slot]->id) != 0)
-                contentStaleness.observe(ventanal::trustedEpoch(time(nullptr)), true);
+                contentStaleness.clearOverdue();
             *cachedFrames[slot] = *incomingFrames[slot];
             if (slot >= 3 && slot < 5) strcpy(state.extraNames[slot-3], manifestExtras.names[slot-3]);
         };
@@ -1026,14 +1027,14 @@ void setup() {
             for(unsigned i=0;i<state.orderCount;++i) { State item=state; item.active=state.order[i]; Serial.printf("%s%s",i?",":"",screenName(item)); }
             Serial.println("");
         }
-        contentStaleness.due = !manifestOk;
+        contentDue = !manifestOk;
         if (manifestOk) {
             for (unsigned slot=0; slot<frameCachePaths.size(); ++slot) {
                 const auto* incoming=incomingFrames[slot];
                 if (incoming && incoming->id[0] &&
                     (!mounted || strcmp(incoming->id,cachedFrames[slot]->id) != 0 ||
                      !LittleFS.exists(frameCachePaths[slot]))) {
-                    contentStaleness.due = true;
+                    contentDue = true;
                     break;
                 }
             }
@@ -1072,7 +1073,7 @@ void setup() {
     const char* path=selectedPath(state);
     const bool cached=mounted && LittleFS.exists(path);
     const uint32_t epochNow=ventanal::trustedEpoch(time(nullptr));
-    contentStaleness.observe(epochNow);
+    contentStaleness.observe(epochNow,contentDue);
     if(persisted && contentStaleness.checkpointDue(epochNow)) contentStaleness.checkpoint(prefs,epochNow);
     const bool downloadFailure=contentStaleness.label(false,epochNow)==ventanal::RefreshLabel::Failed;
     const bool redraw=downloadFailure!=downloadFailureDrawn || longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));

@@ -455,14 +455,18 @@ int main(int argc, char** argv) {
     frameOK=false;
     const auto priorBadges=downloadFailuresDrawn;
     const uint32_t now=ventanal::trustedEpoch(time(nullptr));
-    contentStaleness.lastNewEpoch=now-ventanal::kContentTimeout+60;
     wake(ESP_SLEEP_WAKEUP_TIMER);
     assert(contentStaleness.due && downloadFailuresDrawn==priorBadges);
-    contentStaleness.lastNewEpoch=now-ventanal::kContentTimeout;
+    assert(contentStaleness.overdueSince>=now);
+    contentStaleness.overdueSince=now-ventanal::kContentTimeout+60;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(contentStaleness.due && downloadFailuresDrawn==priorBadges);
+    contentStaleness.overdueSince=now-ventanal::kContentTimeout;
     wake(ESP_SLEEP_WAKEUP_TIMER);
     assert(downloadFailureDrawn && downloadFailuresDrawn==priorBadges+1);
     frameOK=true;
     wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(!contentStaleness.due && !contentStaleness.overdueSince);
     assert(!downloadFailureDrawn && downloadFailuresDrawn==priorBadges+1);
 
     hostSettingsAvailable=false;

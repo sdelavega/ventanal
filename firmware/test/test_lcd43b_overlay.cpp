@@ -89,12 +89,12 @@ int main() {
         lcd::RefreshLabelState label;
         ventanal::ContentStaleness content{};
         constexpr uint32_t now = ventanal::kValidEpoch;
-        content.observe(now);
         auto current = [&] { return label.label(now, content); };
         assert(current() == lcd::RefreshLabel::None);
         assert(lcd::refreshLabelText(current()) == nullptr);
         label.begin(1000);                    // gesture: immediate feedback
         assert(current() == lcd::RefreshLabel::Refreshing);
+        assert(label.label(0, content) == lcd::RefreshLabel::Refreshing);
         assert(!label.tick(2500));           // no hold timeout while refreshing
         label.finish(3000, false, false, false);   // fetch ok, nothing new
         assert(current() == lcd::RefreshLabel::UpToDate);
@@ -113,13 +113,13 @@ int main() {
         label.finish(21500, false, false, true);    // required frame lost
         assert(current() == lcd::RefreshLabel::None);
         assert(!label.tick(23600));
-        content.due = true;
+        content.observe(now, true);
         const auto overdue = [&] { return label.label(now + ventanal::kContentTimeout, content); };
         assert(overdue() == lcd::RefreshLabel::Failed);
         assert(!strcmp(lcd::refreshLabelText(overdue()), "DOWNLOAD FAILED"));
         assert(!label.tick(24000));
         assert(overdue() == lcd::RefreshLabel::Failed);
-        content.observe(now + ventanal::kContentTimeout, true);
+        content.clearOverdue();
         assert(overdue() == lcd::RefreshLabel::None);
         label.begin(24000);
         label.finish(24500, true, false, true);
