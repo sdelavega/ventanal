@@ -29,6 +29,7 @@ bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
     return true;
 }
 bool fetchFrame(const char*,const char* path) { ++downloads; downloadPaths.push_back(path); delay(frameDelay); if(frameOK) files[path]={1}; return frameOK; }
+bool canStageExtraFrame(const char*) { return LittleFS.totalBytes() >= LittleFS.usedBytes() + 960016 + 65536; }
 static std::string blitted;
 
 bool blitFrame(const char* path,Inkplate&) { blitted=path;return files.count(path); }

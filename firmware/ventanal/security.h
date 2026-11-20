@@ -97,11 +97,11 @@ inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* 
     return true;
 }
 // Verified manifest hashes live only for this wake, never change NVS State ABI.
-struct ExpectedHash { std::string url,sha; };
+struct ExpectedHash { std::string url, sha, id = {}; };
 inline std::vector<ExpectedHash> expectedHashes;
-inline const char* expectedHash(const char* url) {
+inline const ExpectedHash* expectedFrame(const char* url) {
     const std::string origin=installation.host;
-    if(std::string(url).compare(0,origin.size(),origin)!=0) return "";
-    for(const auto& h:expectedHashes) if(h.url==url+origin.size()) return h.sha.c_str();
-    return "";
+    if(std::string(url).compare(0,origin.size(),origin)!=0) return nullptr;
+    for(const auto& h:expectedHashes) if(h.url==url+origin.size()) return &h;
+    return nullptr;
 }

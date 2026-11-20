@@ -199,6 +199,11 @@ fs::File FsStore::openCommitted(const char* target) {
     return faulted_ || base.empty() ? fs::File{} : openRead(base);
 }
 
+bool FsStore::renameCommitted(const char* target, const char* destination) {
+    const auto base = path(target);
+    return !faulted_ && !base.empty() && (fs_.rename(base.c_str(), destination) || fail());
+}
+
 bool FsStore::readExact(fs::File& file, uint8_t* bytes, size_t count) {
     return file.read(bytes, count) == count || fail();
 }

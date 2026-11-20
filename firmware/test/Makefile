@@ -116,13 +116,22 @@ build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makef
 clean:
 	rm -rf build
 
+.PHONY: test-epaper-cache
+test-epaper-cache: build/test_cache build/test_cache_abort
+	./build/test_cache
+	./build/test_cache_abort
+
+EPAPER_CACHE_STORAGE := ../common/resume/fs_store.cpp ../common/resume/storage.cpp
+build/test_cache build/test_cache_abort build/test_secure_transport: $(EPAPER_CACHE_STORAGE)
+build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h $(wildcard ../common/resume/*.h)
+
 build/test_cache: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
 
 build/test_cache_abort: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
 
 build/test_net: test_net.cpp ../ventanal/quiet.h ../ventanal/net.cpp ../ventanal/net.h ../ventanal/config.example.h ../ventanal/http.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -177,7 +186,7 @@ build/test_net build/test_cache build/test_cache_abort build/test_secure_transpo
 
 build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
 
 
 build/test_battcal: test_battcal.cpp ../ventanal/battery.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile

@@ -406,18 +406,6 @@ void sleepCritical(Preferences& prefs, const State& state, int pct, bool chargeA
     prefs.end();
     sleepFor(0,state,false);
 }
-void update(Preferences& prefs, State& state, ScreenInfo& cached,
-            const ScreenInfo& incoming, const char* path) {
-    if(!strcmp(cached.id,incoming.id) && LittleFS.exists(path)) {
-        Serial.printf("download path=%s skipped=unchanged\n",path);
-        return;
-    }
-    const String url=String(installation.host)+incoming.url;
-    if(fetchFrame(url.c_str(),path)) {
-        cached=incoming;
-        save(prefs,state); // An ID advances only after an atomic frame commit.
-    }
-}
 }
 void sleepHardware(uint32_t seconds, bool allowWake) {
 #ifndef VENTANAL_HOST_TEST
@@ -885,6 +873,9 @@ void setup() {
         }
         offline=!manifestOk;
         if(manifestOk) {
+#ifndef VENTANAL_HOST_TEST
+            sweepFramePartials();
+#endif
             if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
             if(persisted && !storeBattery(prefs,manifestBatteryFullMv)) Serial.println("error=battery-calibration-save");
             if(!persisted) batteryFullMv=manifestBatteryFullMv;
@@ -926,11 +917,6 @@ void setup() {
                     const unsigned i=slot-3;
                     cached=&state.extraScreens[i]; incoming=&manifestExtras.extraScreens[i];
                     snprintf(path,sizeof path,"/extra%u.vnf",i);
-                    if(strcmp(state.extraNames[i],manifestExtras.names[i])) {
-                        LittleFS.remove(path); *cached={}; state.extraDrawn[i][0]=0;
-                        if(state.active==static_cast<Screen>(3+i)) { state.active=Screen::Art; state.drawn.any=false; }
-                    }
-                    strcpy(state.extraNames[i],manifestExtras.names[i]);
                 } else {
                     const unsigned i=slot-5;
                     cached=&state.owner.spares[i]; incoming=&manifestExtras.spares[i];
@@ -943,12 +929,20 @@ void setup() {
                         state.solarDrawn[0]=0;
                         if(state.active==Screen::Solar) { state.active=Screen::Art; state.drawn.any=false; }
                     } else if(slot>=3 && slot<5) {
+                        state.extraNames[slot-3][0]=0;
                         state.extraDrawn[slot-3][0]=0;
                         if(state.active==static_cast<Screen>(slot)) { state.active=Screen::Art; state.drawn.any=false; }
                     }
                     continue;
                 }
-                if(!strcmp(cached->id,incoming->id) && LittleFS.exists(path)) continue;
+                const bool extra=slot>=3 && slot<5;
+                if(!strcmp(cached->id,incoming->id) && LittleFS.exists(path)) {
+                    if(extra && strcmp(state.extraNames[slot-3],manifestExtras.names[slot-3])) {
+                        strcpy(state.extraNames[slot-3],manifestExtras.names[slot-3]);
+                        save(prefs,state);
+                    }
+                    continue;
+                }
                 if(!canDownloadSpare(millis()-wakeStarted)) {
                     uint8_t deferred=slot;
                     if(persisted) prefs.putBytes("dl-next",&deferred,sizeof deferred);
@@ -959,10 +953,15 @@ void setup() {
                 // monopolize subsequent wakes. The first deferred slot wins.
                 uint8_t following=(slot+1)%8;
                 if(persisted) prefs.putBytes("dl-next",&following,sizeof following);
-                if(slot>=3 && slot<5 && LittleFS.totalBytes()<LittleFS.usedBytes()+960016+65536) {
+                if(extra && !canStageExtraFrame(path)) {
                     Serial.println("extra download deferred=filesystem-budget"); continue;
                 }
-                update(prefs,state,*cached,*incoming,path);
+                const String url=String(installation.host)+incoming->url;
+                if(fetchFrame(url.c_str(),path)) {
+                    *cached=*incoming;
+                    if(extra) strcpy(state.extraNames[slot-3],manifestExtras.names[slot-3]);
+                    save(prefs,state); // Publish the ID only after the file is committed.
+                }
             }
             state.orderCount=manifestExtras.orderCount;
             for(unsigned i=0;i<state.orderCount;++i) state.order[i]=manifestExtras.order[i];

@@ -60,7 +60,33 @@ int main() {
     assert(!fetchManifest(a,w)); assert(!memcmp(&last,&w,sizeof w));
     responseBody.clear();
     response.assign(960016,0x25); std::copy(header,header+16,response.begin()); advertisedSize=response.size();
-    assert(fetchFrame("https://test:8766/frames/art.vnf","/art.vnf"));
+    constexpr char artUrl[] = "https://test:8766/frames/art.vnf";
+    urlResponses[artUrl] = response;
+    persistentServer = true;
+    sizeFromResponse = true;
+    fakeGetResponse = [] {
+        assert(lastConnectionHeader == "keep-alive");
+        const auto counter = std::stoull(lastHeaders.at("X-Ventanal-Counter"));
+        assert(lastHeaders.at("Authorization") == "Ventanal " +
+            requestProof(deviceKey(), "GET", "/frames/art.vnf", counter));
+        const auto& range = lastHeaders.at("Range");
+        if (range == "bytes=0-32767") {
+            assert(!lastHeaders.count("If-Range"));
+            fakeResponseHeaders["ETag"] = "\"0123456789abcdef\"";
+            fakeResponseHeaders["Content-Range"] = "bytes 0-32767/960016";
+            response.resize(32768);
+            return 206;
+        }
+        assert(range == "bytes=32768-65535" && lastHeaders.at("If-Range") == "\"0123456789abcdef\"");
+        return 200;  // A complete body replaces the checkpoint from offset zero.
+    };
+    const auto requested = requestedUrls.size();
+    assert(fetchFrame(artUrl,"/art.vnf"));
+    assert(requestedUrls.size() == requested + 2);
+    fakeGetResponse = nullptr;
+    sizeFromResponse = false;
+    persistentServer = false;
+    urlResponses.erase(artUrl);
     auto good=files["/art.vnf"];
     response.back()=0x24; // Valid VNF indices, invalid signed digest.
     assert(!fetchFrame("https://test:8766/frames/art.vnf","/art.vnf"));

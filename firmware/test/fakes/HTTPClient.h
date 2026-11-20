@@ -3,6 +3,7 @@
 #pragma once
 inline constexpr int HTTPC_ERROR_CONNECTION_REFUSED=-1, HTTPC_ERROR_NOT_CONNECTED=-4,
     HTTPC_ERROR_CONNECTION_LOST=-5, HTTPC_ERROR_READ_TIMEOUT=-11;
+inline constexpr int HTTPC_DISABLE_FOLLOW_REDIRECTS = 0;
 #include "Arduino.h"
 #include <vector>
 #include <map>
@@ -58,15 +59,20 @@ class HTTPClient {
     WiFiClient* client = nullptr;
     WiFiClient inlineClient;   // body for the single-argument begin()
 public:
-    bool begin(WiFiClient& c, const char* url) { lastUrl=url; client=&c; c.resetResponse(); return !failBegin; }
+    bool begin(WiFiClient& c, const char* url) {
+        lastHeaders.erase("Range");
+        lastHeaders.erase("If-Range");
+        lastUrl=url; client=&c; c.resetResponse(); return !failBegin;
+    }
     bool begin(WiFiClient& c, const String& u) { return begin(c, u.c_str()); }
-    bool begin(const char* url) { lastUrl=url; client=&inlineClient; inlineClient.resetResponse(); return !failBegin; }
+    bool begin(const char* url) { return begin(inlineClient, url); }
     bool begin(const String& u) { return begin(u.c_str()); }
     void setReuse(bool r) { reuse = r; }   // the production code disables keep-alive
     void addHeader(const char* k,const char* v) { lastHeaders[k]=v; }
     String getString() { return responseBody; }
     void setTimeout(unsigned) {}
     void setConnectTimeout(unsigned) {}
+    void setFollowRedirects(int) {}
     void setUserAgent(const char* value) { lastUserAgent=value; }
     void collectHeaders(const char*[], size_t) {}
     String header(const char* key) {

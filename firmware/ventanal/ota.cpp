@@ -198,95 +198,6 @@ void logStage(const char* format, ...) {
     Serial.println(line);
 }
 
-class HostOtaTransport : public RangeTransport {
-public:
-    explicit HostOtaTransport(uint32_t started) : started_(started) {}
-
-    bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
-             const ResponseHeaders& headers, const ChunkSink& sink) override {
-        const auto elapsed = millis() - started_;
-        if (elapsed >= transferMs) return false;
-        TransportClient client;
-        HTTPClient http;
-        configureHttp(http);
-        http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-        http.setConnectTimeout(std::min(uint32_t(transferMs - elapsed), uint32_t(5000)));
-        http.setTimeout(std::min(uint32_t(transferMs - elapsed), idleMs));
-        if (!beginTransport(http, client, source.url)) return false;
-        http.setReuse(false);
-        const char* names[] = {"Content-Range", "ETag"};
-        http.collectHeaders(names, 2);
-        const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
-        http.addHeader("Range", range.c_str());
-        if (*ifRange) http.addHeader("If-Range", ifRange);
-        const bool complete = receive(http, source, headers, sink);
-        finishTransport(http, false);
-        return complete;
-    }
-
-    const char* failureReason() const override { return failure_; }
-
-private:
-    bool reject(const char* reason) { failure_ = reason; return false; }
-
-    bool receive(HTTPClient& http, const ResumeSource& source, const ResponseHeaders& headers,
-                 const ChunkSink& sink) {
-        RangeResponse response{};
-        response.status = http.GET();
-        if (response.status <= 0 || response.status == 408 || response.status == 429 ||
-            response.status >= 500 || millis() - started_ >= transferMs) return false;
-
-        const auto tag = http.header("ETag");
-        if (tag.length() >= sizeof response.validator) return reject("validator");
-        if (tag.length() && (response.status == 200 || response.status == 206)) {
-            const auto expected = std::string("\"") + source.sha256Hex + "\"";
-            if (expected != tag.c_str()) return reject("validator");
-        }
-        memcpy(response.validator, tag.c_str(), tag.length());
-
-        const int length = http.getSize();
-        size_t bodySize = 0;
-        if (response.status == 200) {
-            if (length != int(source.expectedSize)) return reject("size");
-            bodySize = response.total = length;
-        } else if (response.status == 206 || response.status == 416) {
-            const auto range = http.header("Content-Range");
-            if (!resume_detail::parseContentRange(range.c_str(), response)) return reject("range");
-            if (response.status == 206) {
-                bodySize = response.end - response.start + 1;
-                if (bodySize > kResumeChunk || length != int(bodySize)) return reject("size");
-            }
-        }
-
-        if (!headers(response)) return false;
-        if (!bodySize) return true;
-        auto* stream = http.getStreamPtr();
-        if (!stream) return false;
-        uint8_t block[1024];
-        uint32_t last = millis();
-        while (millis() - started_ < transferMs && millis() - last < idleMs) {
-            const int available = stream->available();
-            if (available > 0) {
-                if (!bodySize) return reject("excess");
-                const auto limit = std::min({size_t(available), bodySize, sizeof block});
-                const int count = stream->read(block, limit);
-                if (count <= 0) return false;
-                bodySize -= count;
-                if (!sink(block, count)) return false;
-                last = millis();
-                continue;
-            }
-            if (!http.connected()) return bodySize == 0;
-            if (!bodySize && millis() - last >= 1000) return false;
-            delay(1);
-        }
-        return false;
-    }
-
-    uint32_t started_;
-    const char* failure_ = nullptr;
-};
-
 template<class StillAllowed>
 OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
                            const ReleaseInfo& release, const char* url, RangeTransport& transport,
@@ -381,7 +292,7 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
 
     const auto url = std::string(installation.host) + path;
     const auto started = otaClock();
-    HostOtaTransport transport(started);
+    HostRangeTransport transport(url.c_str(), started, transferMs, idleMs);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
                            version, offer.approval, stillAllowed, installed, deferred, feed);
 }

@@ -32,6 +32,14 @@ int main() {
     manifestExtras.order[2]=Screen::Weather; manifestExtras.orderCount=3;
     digitalReader={}; wake(ESP_SLEEP_WAKEUP_TIMER);
     press(false); wake(ESP_SLEEP_WAKEUP_EXT0); assert(blitted=="/extra0.vnf");
+    // A renamed extra has an incoming frame, but its download has yet to commit.
+    strcpy(manifestExtras.names[0],"extra-replacement");
+    manifestExtras.extraScreens[0]=weather;
+    digitalReader={}; frameOK=false; wake(ESP_SLEEP_WAKEUP_TIMER);
+    auto retained=stored();
+    assert(files.count("/extra0.vnf") && retained.active==Screen::Extra0);
+    assert(!strcmp(retained.extraNames[0],"extra-test") && !strcmp(retained.extraScreens[0].id,art.id));
+    frameOK=true;
     manifestExtras.extraScreens[0]={}; manifestExtras.extraScreens[1]={};
     manifestExtras.order[0]=Screen::Art; manifestExtras.order[1]=Screen::Weather; manifestExtras.orderCount=2;
     digitalReader={}; wake(ESP_SLEEP_WAKEUP_TIMER);

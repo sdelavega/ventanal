@@ -217,6 +217,7 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient) {
         manifestFirmware.release[0] = '\0';
     if (!copyField("approval", manifestFirmware.approval, sizeof manifestFirmware.approval)
         || !validOtaApproval(manifestFirmware.approval)) manifestFirmware.approval[0] = '\0';
+    if(!securityConfigured()) rememberManifestFrames(doc, false);
     manifestExtras=extras;
     art = a;
     weather = w;

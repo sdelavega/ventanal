@@ -111,7 +111,8 @@ inline const char* verificationFailure(PartialStore& store, const char* target,
 inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, const char* target,
                                 const ResumeSource& source, uint32_t budgetMs, uint32_t (*nowMs)(),
                                 uint32_t epochNow, void (*log)(const char*, ...),
-                                const char** failureReason = nullptr, const HashFeed& feed = {}) {
+                                const char** failureReason = nullptr, const HashFeed& feed = {},
+                                uint8_t* chunkBuffer = nullptr) {
     using namespace resume_detail;
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
@@ -183,7 +184,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         bool allocationFailed = false;
         const auto saveChunk = [&] {
             if (!buffered) return true;
-            if (!store.append(target, buffer.get(), buffered)) return false;
+            if (!store.append(target, chunkBuffer, buffered)) return false;
             meta.have += buffered;
             if (epochNow >= kValidEpoch) meta.touchedAt = epochNow;
             if (!store.writeMeta(target, meta)) return false;
@@ -222,16 +223,17 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 rejection = "size";
                 return false;
             }
-            if (count && !buffer) {
+            if (count && !chunkBuffer) {
                 buffer.reset(new (std::nothrow) uint8_t[kResumeChunk]);
                 if (!buffer) {
                     allocationFailed = true;
                     return false;
                 }
+                chunkBuffer = buffer.get();
             }
             while (count) {
                 const size_t copied = std::min(count, size_t(kResumeChunk - buffered));
-                std::memcpy(buffer.get() + buffered, data, copied);
+                std::memcpy(chunkBuffer + buffered, data, copied);
                 buffered += static_cast<uint32_t>(copied);
                 data += copied;
                 count -= copied;
