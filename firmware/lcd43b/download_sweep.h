@@ -25,7 +25,7 @@ struct DownloadSweep {
     std::function<bool(FsStore&, const char*)> otaCommittedMatches;
     // With no verified host manifest yet, leave frame stages for the first check-in.
     FsStore::ValidatorLive frameLive;
-    FsStore::TargetFilter frameCommittedWanted;
+    std::function<bool(FsStore&, const char*)> frameCommittedWanted;
 
     void run(FsStore& store, uint32_t now, bool daily = true) const {
         if (now < resume_detail::kValidEpoch) return;
@@ -55,7 +55,7 @@ struct DownloadSweep {
         for (const auto& entry : entries) {
             const char* target = entry.target.c_str();
             const auto sun = sunDay(target);
-            if (frameCommittedWanted && !std::strncmp(target, "frame-", 6) && !frameCommittedWanted(target)) {
+            if (frameCommittedWanted && !std::strncmp(target, "frame-", 6) && !frameCommittedWanted(store, target)) {
                 store.removeCommitted(target);
             } else if (daily && ((sun && sun != day && sun != previous) ||
                 (isArt(target) && !artLive(target)) ||

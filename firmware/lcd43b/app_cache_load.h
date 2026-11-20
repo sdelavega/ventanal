@@ -17,29 +17,24 @@ bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
     lcd::ScanScope activity(lcd::ScanActivity::LittleFS);
     File file = LittleFS.open(path, "r");
     const size_t bytes = file ? file.size() : 0;
-    if (bytes >= lcd::HEADER_BYTES && bytes <= lcd::FRAME_WIRE_MAX) {
-        // An old cache stores a raw VNR1 frame. The zlib wrapper starts
-        // with a different magic, even if it happens to have the same size.
-        if (bytes == lcd::FRAME_BYTES && file.read(frame, lcd::HEADER_BYTES) == lcd::HEADER_BYTES
-            && lcd::headerValid(frame)) {
-            if (file.read(frame + lcd::HEADER_BYTES, lcd::PIXEL_BYTES) == lcd::PIXEL_BYTES
-                && lcd::cachedFrameValid(frame, id)) return true;
-        } else if (file.seek(0)) {
-            auto* wire = static_cast<uint8_t*>(ps_malloc(bytes));
-            if (wire) {
-                // Standalone art is cached as its source (VNA1): compose it again.
-                const bool read = file.read(wire, bytes) == bytes && lcd::frameHashMatches(wire, bytes, id, 16);
-                bool valid = false;
-                if (read) {
-                    if (lcd::isArtBody(wire, bytes))
-                        valid = lcd::composeArtBody(wire, bytes, frame, bootWatchdog);
-                    else if (lcd::isJpegFrame(wire, bytes))
-                        valid = lcd::decodeHostJpeg(wire, bytes, frame, bootWatchdog);
-                    else
-                        valid = lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame);
+    if (bytes >= 8 && bytes <= lcd::FRAME_WIRE_MAX && lcd::verifyFrameFile(file, id, bootWatchdog)) {
+        uint8_t magic[4];
+        if (file.read(magic, sizeof magic) == sizeof magic && file.seek(0)) {
+            if (!memcmp(magic, lcd::ArtBodyMagic, sizeof magic)) {
+                // Standalone VNA1 art composition still takes a JPEG buffer.
+                auto* wire = static_cast<uint8_t*>(ps_malloc(bytes));
+                if (wire) {
+                    const bool valid = file.read(wire, bytes) == bytes &&
+                        lcd::composeArtBody(wire, bytes, frame, bootWatchdog);
+                    free(wire);
+                    if (valid) return true;
                 }
-                free(wire);
-                if (valid) return true;
+            } else {
+                const auto encoding = !memcmp(magic, "VNR1", sizeof magic) ? lcd::FrameEncoding::Raw
+                    : lcd::isJpegFrame(magic, sizeof magic) ? lcd::FrameEncoding::Jpeg
+                    : lcd::FrameEncoding::Zlib;
+                if (lcd::decodeFrameFile(encoding, file, nullptr, frame, bootWatchdog) ==
+                    lcd::FrameDecode::Complete) return true;
             }
         }
     }

@@ -67,10 +67,7 @@ std::string FsStore::path(const char* target) const {
 }
 
 bool FsStore::fail() {
-    if (!faulted_ && ioError_) {
-        faulted_ = true;
-        ioError_();
-    }
+    if (ioError_ && !faulted_.exchange(true)) ioError_();
     return false;
 }
 
@@ -282,6 +279,15 @@ fs::File FsStore::openCommitted(const char* target) {
 bool FsStore::renameCommitted(const char* target, const char* destination) {
     const auto base = path(target);
     return !faulted_ && !base.empty() && (rename(base, destination) || fail());
+}
+
+bool FsStore::moveCommitted(const char* from, const char* to) {
+    const auto a = path(from), b = path(to);
+    return !faulted_ && !a.empty() && !b.empty() && (rename(a, b) || fail());
+}
+
+bool FsStore::seek(fs::File& file, size_t position) {
+    return file.seek(position) || fail();
 }
 
 bool FsStore::readExact(fs::File& file, uint8_t* bytes, size_t count) {

@@ -10,6 +10,14 @@
 #include <utility>
 #include <vector>
 
+static bool refuseChunkAllocation = false;
+
+void* operator new[](size_t bytes, const std::nothrow_t&) noexcept {
+    if (refuseChunkAllocation && bytes == kResumeChunk) return nullptr;
+    try { return ::operator new[](bytes); }
+    catch (const std::bad_alloc&) { return nullptr; }
+}
+
 namespace {
 
 constexpr char kTarget[] = "/frame";
@@ -345,9 +353,27 @@ void complete_partial_416_verifies() {
     f.checkCommit(transport);
 }
 
+void chunk_allocation_failure_keeps_checkpoint() {
+    for (int status : {200, 206}) {
+        Fixture f;
+        ScriptedTransport transport({{kResumeChunk, 2 * kResumeChunk - 1, "", status}});
+        f.seed(kResumeChunk, kResumeChunk, transport.body);
+        const char* reason = nullptr;
+        refuseChunkAllocation = true;
+        const auto outcome = resumeFetch(transport, f.store, kTarget, f.source, 100,
+                                         nowMs, kEpoch, logLine, &reason);
+        refuseChunkAllocation = false;
+        assert(outcome == FetchOutcome::NoProgress && std::string(reason) == "memory");
+        PartialMeta meta{};
+        assert(f.store.size(kTarget) == kResumeChunk && f.store.readMeta(kTarget, meta));
+        assert(meta.have == kResumeChunk && f.store.writes.empty());
+    }
+}
+
 }  // namespace
 
 int main() {
+    chunk_allocation_failure_keeps_checkpoint();
     fresh_download_completes_in_chunks();
     budget_stops_with_progress_and_resumes();
     validator_change_restarts();
@@ -362,5 +388,5 @@ int main() {
     sha_mismatch_discards();
     no_response_is_no_progress();
     complete_partial_416_verifies();
-    std::puts("test_resume: 14 tests passed");
+    std::puts("test_resume: 15 tests passed");
 }

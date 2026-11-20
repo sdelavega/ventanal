@@ -8,6 +8,7 @@
 
 #include "sync.h"
 #include "../common/release_key.h"
+#include "frame_stream.h"
 #include "inflate.h"
 #include "scanout_diag.h"
 #include "wifi_roam.h"
@@ -171,24 +172,44 @@ static bool writeAll(File& out, const uint8_t* bytes, size_t size) {
     return true;
 }
 
+static bool copyFrameBytes(File& in, File& out, FsStore* store, const char* digest, bool& readable) {
+    Sha256 hash;
+    uint8_t chunk[1024];
+    for (size_t remaining = in.size(); remaining;) {
+        const size_t size = std::min(sizeof chunk, remaining);
+        if (!readFrameBytes(in, store, chunk, size)) return readable = false;
+        if (digest) hash.update(chunk, size);
+        if (!writeAll(out, chunk, size)) return false;
+        remaining -= size;
+    }
+    if (digest && hexBytes(hash.digest(), 32) != digest) return readable = false;
+    return true;
+}
+
 bool writeCachedFrame(const char* path, const FrameBody& body) {
-    return commitFrame(path, [&](File& out) {
-        return writeAll(out, body.bytes.get(), body.size);
+    if (body.bytes) {
+        return commitFrame(path, [&](File& out) {
+            return writeAll(out, body.bytes.get(), body.size);
+        });
+    }
+    if (!body.file) return false;
+    auto& source = *body.file;
+    auto in = source.store.openCommitted(source.target.c_str());
+    bool readable = in && in.size() == body.size;
+    const bool ok = readable && commitFrame(path, [&](File& out) {
+        return copyFrameBytes(in, out, &source.store, source.sha256.c_str(), readable);
     });
+    if (!readable) source.unavailable = true;
+    return ok;
 }
 
 bool copyCachedFrame(const char* path, const char* source) {
     ScanScope activity(ScanActivity::LittleFS);
     File in = LittleFS.open(source, "r");
     if (!in || in.size() < HEADER_BYTES || in.size() > FRAME_WIRE_MAX) return false;
+    bool readable = true;
     return commitFrame(path, [&](File& out) {
-        uint8_t chunk[1024];
-        for (size_t remaining = in.size(); remaining;) {
-            const size_t size = std::min(sizeof chunk, remaining);
-            if (in.read(chunk, size) != size || !writeAll(out, chunk, size)) return false;
-            remaining -= size;
-        }
-        return true;
+        return copyFrameBytes(in, out, nullptr, nullptr, readable);
     });
 }
 
@@ -211,7 +232,7 @@ bool persistCacheSlot(Preferences& prefs, int slot, CacheLocation& current,
         next.alternate = !current.alternate;
         next.frameEpoch = save.frameEpoch;
         const String path = residentPath(slot, next.alternate);
-        if (!save.body.bytes || !writeCachedFrame(path.c_str(), save.body)) return false;
+        if (!writeCachedFrame(path.c_str(), save.body)) return false;
     }
     if (!saveCacheLocation(prefs, slot, next)) return false;
     current = next;
@@ -288,21 +309,64 @@ void logFrameOutcome(const char* slot, size_t total, const FrameDownload& downlo
 
 }  // namespace
 
+FrameDecode decodeFrameFile(FrameEncoding encoding, fs::File& file, FsStore* store,
+                            uint8_t* frame, Watchdog& watchdog) {
+    if (!frame) return FrameDecode::Memory;
+    size_t remaining = file.size();
+    if (!validWireSize(encoding, remaining)) return FrameDecode::Invalid;
+    if (encoding == FrameEncoding::Jpeg) return decodeHostJpegFile(file, store, frame, watchdog);
+    if (encoding == FrameEncoding::Raw) {
+        for (size_t offset = 0; offset < remaining;) {
+            const size_t count = std::min<size_t>(kResumeChunk, remaining - offset);
+            if (!readFrameBytes(file, store, frame + offset, count)) return FrameDecode::Storage;
+            offset += count;
+            watchdog.feed();
+        }
+        return headerValid(frame) ? FrameDecode::Complete : FrameDecode::Invalid;
+    }
+    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> chunk(
+        static_cast<uint8_t*>(ps_malloc(kResumeChunk)), heap_caps_free);
+    if (!chunk) return FrameDecode::Memory;
+    std::unique_ptr<tinfl_decompressor, decltype(&heap_caps_free)> stream(
+        static_cast<tinfl_decompressor*>(ps_malloc(sizeof(tinfl_decompressor))), heap_caps_free);
+    if (!stream) return FrameDecode::Memory;
+    tinfl_init(stream.get());
+
+    size_t written = 0;
+    while (remaining) {
+        const size_t count = std::min<size_t>(kResumeChunk, remaining);
+        if (!readFrameBytes(file, store, chunk.get(), count)) return FrameDecode::Storage;
+        remaining -= count;
+        size_t consumed = count;
+        size_t produced = FRAME_BYTES - written;
+        // Require a real zlib trailer, even for the last input block.
+        constexpr auto flags = TINFL_FLAG_PARSE_ZLIB_HEADER |
+            TINFL_FLAG_USING_NON_WRAPPING_OUTPUT_BUF | TINFL_FLAG_HAS_MORE_INPUT;
+        const auto status = tinfl_decompress(stream.get(), chunk.get(), &consumed,
+                                             frame, frame + written, &produced, flags);
+        written += produced;
+        watchdog.feed();
+        if (status == TINFL_STATUS_DONE)
+            return !remaining && consumed == count && written == FRAME_BYTES && headerValid(frame)
+                ? FrameDecode::Complete : FrameDecode::Invalid;
+        if (status != TINFL_STATUS_NEEDS_MORE_INPUT || consumed != count) break;
+    }
+    return FrameDecode::Invalid;
+}
+
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
-                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                           const char* slotName, FsStore& store, Watchdog& watchdog,
                            uint32_t passStarted) {
     const uint32_t started = millis();
     const auto key = decodeDeviceKey(installation.deviceKey);
     HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted);
-    auto& store = partialStore();
     const auto target = std::string("frame-") + slotName;
     const auto result = [&](FetchOutcome outcome, const char* reason) {
-        const auto size = partialStore().size(target.c_str());
+        const auto size = store.size(target.c_str());
         return FrameDownload{outcome, reason, transport.bytesRead(), size_t(std::max(int64_t(0), size)),
                              uint32_t(millis() - started), transport.status()};
     };
     if (!transport.remainingMs()) return result(FetchOutcome::NoProgress, "budget");
-    if (!buffer) return result(FetchOutcome::Failed, "memory");
     if (!validWireSize(info.encoding, info.size)) {
         store.discard(target.c_str());
         return result(FetchOutcome::Failed, "size");
@@ -319,13 +383,17 @@ FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
         hash.update(reinterpret_cast<const uint8_t*>(url.data()), url.size());
         url = "sha256:" + hexBytes(hash.digest(), 32);
     }
+    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> chunk(
+        static_cast<uint8_t*>(ps_malloc(kResumeChunk)), heap_caps_free);
+    if (!chunk) return result(FetchOutcome::NoProgress, "memory");
     // The host publishes the same SHA-256 in signed and legacy manifests.
     const ResumeSource source{url.c_str(), info.id, info.sha256, uint32_t(info.size), true};
     const auto epoch = time(nullptr);
     const char* reason = nullptr;
     const auto outcome = resumeFetch(transport, store, target.c_str(), source,
         transport.remainingMs(), []() -> uint32_t { return millis(); },
-        epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logResume, &reason);
+        epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logResume, &reason,
+        [&] { watchdog.feed(); }, chunk.get(), kResumeChunk);
     if (transport.malformed()) {
         store.discard(target.c_str());
         return result(FetchOutcome::Failed, transport.reason());
@@ -338,36 +406,88 @@ FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
         return result(outcome, reason);
     }
 
-    const bool loaded = store.takeCommitted(target.c_str(), buffer, info.size);
-    watchdog.feed();
-    if (loaded) return result(FetchOutcome::Complete, "ok");
-    return result(&partialStore() != &store ? FetchOutcome::NoProgress : FetchOutcome::Failed,
-                  "storage");
+    return result(FetchOutcome::Complete, "ok");
 }
 
-// Keep a valid committed body until normal cache publication accepts it.
-static FsStore* recoverFrameStage(const char* target, const FrameInfo* info, Watchdog& watchdog) {
+namespace {
+
+// Only the refresh worker manages the leases and the names they protect.
+// The loop can retain a lease for either the slot or its art override.
+std::vector<std::shared_ptr<FrameFile>> frameStages;
+
+auto findFrameStage(FsStore& store, const char* target) {
+    return std::find_if(frameStages.begin(), frameStages.end(), [&](const auto& stage) {
+        return &stage->store == &store && stage->target == target;
+    });
+}
+
+void retireFrameStages() {
+    frameStages.erase(std::remove_if(frameStages.begin(), frameStages.end(), [](const auto& stage) {
+        if (stage.use_count() != 1) return false;
+        stage->store.removeCommitted(stage->target.c_str());
+        return true;
+    }), frameStages.end());
+}
+
+std::shared_ptr<FrameFile> frameStage(FsStore& store, const std::string& target, const char* sha256) {
+    const auto existing = findFrameStage(store, target.c_str());
+    if (existing != frameStages.end()) return *existing;
+    return std::make_shared<FrameFile>(store, target, sha256);
+}
+
+bool frameFileVerified(fs::File& file, FsStore* store, size_t size, const char* digest,
+                       size_t digits, Watchdog& watchdog) {
+    if (file.size() != size) return false;
+    Sha256 hash;
+    uint8_t block[kPartialHashBlockBytes];
+    for (size_t remaining = size; remaining;) {
+        const size_t count = std::min(remaining, sizeof block);
+        if (!readFrameBytes(file, store, block, count)) return false;
+        hash.update(block, count);
+        remaining -= count;
+        watchdog.feed();
+    }
+    return !hexBytes(hash.digest(), 32).compare(0, digits, digest);
+}
+
+// A legacy slot name is also where resumeFetch atomically commits. Move it
+// to the id-qualified name before handing it to the loop, so a subsequent
+// manifest can download into the same slot without overwriting a queued save.
+FsStore* recoverFrameStage(const std::string& target, const std::string& version,
+                           const FrameInfo* info, bool trustedClock, Watchdog& watchdog) {
     FsStore* recovered = nullptr;
     forEachPartialStore([&](FsStore& store) {
-        auto file = store.openCommitted(target);
-        if (!file) return;
-        bool valid = info && info->present && validWireSize(info->encoding, info->size) &&
-            file.size() == info->size && !strncmp(info->id, info->sha256, 16);
-        Sha256 hash;
-        uint8_t block[kPartialHashBlockBytes];
-        for (size_t remaining = file.size(); valid && remaining;) {
-            watchdog.feed();
-            const size_t count = std::min(remaining, sizeof block);
-            valid = store.readExact(file, block, count);
-            if (valid) hash.update(block, count);
-            remaining -= count;
+        if (recovered) return;
+        const bool expected = info && info->present && validWireSize(info->encoding, info->size)
+            && !strncmp(info->id, info->sha256, 16);
+        for (const auto* name : {&version, &target}) {
+            if (name->empty()) continue;
+            auto file = store.openCommitted(name->c_str());
+            if (!file) continue;
+            const bool verified = expected && frameFileVerified(file, &store, info->size, info->sha256,
+                                                                 64, watchdog);
+            file.close();
+            if (verified) {
+                if (name == &version || store.moveCommitted(target.c_str(), version.c_str())) {
+                    recovered = &store;
+                    return;
+                }
+            } else if (trustedClock && !queuedFrameStage(store, name->c_str())) {
+                store.removeCommitted(name->c_str());
+            }
         }
-        file.close();
-        valid = valid && hexBytes(hash.digest(), 32) == info->sha256;
-        if (!valid || recovered) store.removeCommitted(target);
-        else recovered = &store;
     });
     return recovered;
+}
+
+}  // namespace
+
+bool queuedFrameStage(FsStore& store, const char* target) {
+    return findFrameStage(store, target) != frameStages.end();
+}
+
+bool verifyFrameFile(fs::File& file, const char* id, Watchdog& watchdog) {
+    return frameFileVerified(file, nullptr, file.size(), id, 16, watchdog) && file.seek(0);
 }
 
 void runRefresh(const char* hostUrl, const char* deviceId,
@@ -383,6 +503,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     if (!fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval, cache.health)) return;
     result.manifestOk = true;
     if (cache.manifestVerified) cache.manifestVerified();
+    retireFrameStages();
 
     // One pass over every cache slot: download when the published id
     // changed, skip when it did not, stage a drop when the screen is
@@ -401,18 +522,20 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
     // Get the small, frequently updated pages onto the display before art.
     const uint32_t passStarted = millis();
+    bool otherPending = false;
     const bool trustedClock = time(nullptr) >= resume_detail::kValidEpoch;
     for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
         const FrameInfo* info = published[slot];
         const auto target = std::string("frame-") + SLOT_NAMES[slot];
-        auto* recovered = trustedClock ? recoverFrameStage(target.c_str(), info, watchdog) : nullptr;
+        const auto version = info && info->present ? target + "." + info->id : std::string{};
+        auto* recovered = recoverFrameStage(target, version, info, trustedClock, watchdog);
         if (!info || !info->present) {
             result.dropSlot[slot] = true;
             if (currentIds[slot][0]) cache.publish(slot, nullptr, {});
             continue;
         }
-        if (!visible[slot] && !recovered) {
+        if (!visible[slot] && !recovered && !cache.retryFileSave[slot]) {
             log("download slot=%s skipped=hidden\n", SLOT_NAMES[slot]);
             continue; // keep hidden cached frames and ids
         }
@@ -420,55 +543,68 @@ void runRefresh(const char* hostUrl, const char* deviceId,
 #ifdef VENTANAL_LCD_DIAG_PANEL
         force |= slot == 1; // sample weather transport each diagnostic refresh
 #endif
-        const bool unchanged = !force && !strcmp(currentIds[slot], info->id);
+        const bool unchanged = !force && !cache.retryFileSave[slot] && !strcmp(currentIds[slot], info->id);
         if (unchanged) {
             // Publication queues a deferred save. Keep the recovery copy
             // until the loop has committed the normal cache entry.
-            if (recovered && !strcmp(cache.persistedIds[slot], info->id))
-                recovered->removeCommitted(target.c_str());
+            if (recovered && !strcmp(cache.persistedIds[slot], info->id) &&
+                !queuedFrameStage(*recovered, version.c_str()))
+                recovered->removeCommitted(version.c_str());
             log("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
-        uint8_t* bytes = nullptr;
-        if ((recovered || millis() - passStarted < TRANSFER_BUDGET_MS) && cache.staging && cache.allocated[slot]) {
-            bytes = static_cast<uint8_t*>(ps_malloc(info->size));
-            if (!bytes && cache.reclaimWireMemory) {
-                cache.reclaimWireMemory(info->size);
-                bytes = static_cast<uint8_t*>(ps_malloc(info->size));
-            }
-        }
-        FrameBody body;
-        if (bytes) body = FrameBody{std::shared_ptr<uint8_t>(bytes, free), info->size};
+        FsStore& store = recovered ? *recovered : partialStore();
         auto download = [&] {
-            ScanScope activity(ScanActivity::Receive);
-            if (recovered) {
-                if (!bytes) return FrameDownload{FetchOutcome::NoProgress, "memory", 0, 0, 0, 0};
-                const bool loaded = recovered->readCommitted(target.c_str(), bytes, info->size) &&
-                    frameHashMatches(bytes, info->size, info->sha256, 64);
-                if (!loaded) recovered->removeCommitted(target.c_str());
-                return FrameDownload{loaded ? FetchOutcome::Complete : FetchOutcome::Failed,
-                                     loaded ? "recovered" : "storage", 0, 0, 0, 0};
+            if (!recovered && millis() - passStarted >= TRANSFER_BUDGET_MS)
+                return FrameDownload{FetchOutcome::NoProgress, "budget", 0, 0, 0, 0};
+            if (!cache.staging || !cache.allocated[slot]) {
+                const auto have = recovered ? int64_t(info->size) : store.size(target.c_str());
+                return FrameDownload{FetchOutcome::NoProgress, "memory", 0,
+                                     size_t(std::max(int64_t(0), have)), 0, 0};
             }
-            return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog, passStarted);
+            if (recovered) return FrameDownload{FetchOutcome::Complete, "recovered", 0, 0, 0, 0};
+            ScanScope activity(ScanActivity::Receive);
+            auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted);
+            if (fetched.outcome == FetchOutcome::Complete &&
+                !store.moveCommitted(target.c_str(), version.c_str())) {
+                fetched.outcome = FetchOutcome::NoProgress;
+                fetched.reason = "storage";
+            }
+            return fetched;
         }();
         if (download.outcome == FetchOutcome::Complete) {
             const uint32_t decodeStart = millis();
-            const bool decoded = [&] {
+            const auto decoded = [&] {
                 ScanScope activity(ScanActivity::Inflate);
-                if (info->encoding == FrameEncoding::Jpeg)
-                    return decodeHostJpeg(bytes, info->size, cache.staging, watchdog);
-                return decodeFrame(info->encoding, bytes, info->size, cache.staging);
+                auto file = store.openCommitted(version.c_str());
+                if (!file || file.size() != info->size) return FrameDecode::Storage;
+                return decodeFrameFile(info->encoding, file, &store, cache.staging, watchdog);
             }();
             log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],
-                unsigned(info->size), decoded, static_cast<unsigned long>(millis() - decodeStart));
-            if (!decoded || !cache.publish(slot, info, body)) {
-                if (!decoded && recovered) recovered->removeCommitted(target.c_str());
-                download.outcome = FetchOutcome::Failed;
-                download.reason = decoded ? "publish" : "invalid-frame";
+                unsigned(info->size), decoded == FrameDecode::Complete,
+                static_cast<unsigned long>(millis() - decodeStart));
+            if (decoded == FrameDecode::Complete) {
+                auto stage = frameStage(store, version, info->sha256);
+                stage->unavailable = false;
+                const FrameBody body{nullptr, info->size, stage};
+                if (cache.publish(slot, info, body)) {
+                    if (!queuedFrameStage(store, version.c_str())) frameStages.push_back(stage);
+                } else {
+                    download.outcome = FetchOutcome::NoProgress;
+                    download.reason = "memory"; // the loop could not allocate a pinned-spare replacement
+                }
+            } else {
+                download.outcome = decoded == FrameDecode::Invalid ? FetchOutcome::Failed : FetchOutcome::NoProgress;
+                download.reason = decoded == FrameDecode::Memory ? "memory"
+                    : decoded == FrameDecode::Storage ? "storage" : "invalid-frame";
+                if (decoded == FrameDecode::Invalid && !queuedFrameStage(store, version.c_str()))
+                    store.removeCommitted(version.c_str());
             }
+            if (download.outcome == FetchOutcome::NoProgress && decoded != FrameDecode::Storage)
+                download.have = info->size;
         }
         logFrameOutcome(SLOT_NAMES[slot], info->size, download);
         if (download.outcome == FetchOutcome::Complete) {
@@ -477,11 +613,13 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameOk[slot] = true;
         } else {
             result.framesPending = true;
+            otherPending |= !download.reason || strcmp(download.reason, "memory") != 0;
             if (download.outcome == FetchOutcome::Failed) {
                 result.frameFailed[slot] = true;
             }
         }
     }
+    result.memoryOnlyPending = result.framesPending && !otherPending;
 }
 
 }  // namespace lcd

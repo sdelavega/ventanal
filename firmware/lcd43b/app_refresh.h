@@ -200,8 +200,13 @@ void applyResidentFrame() {
         xSemaphoreGive(frameCopied);
         return;
     }
+    auto& id = state.cachedIds[frame.slot];
+    const char* nextId = frame.info ? frame.info->id : "";
+    const bool changed = strcmp(id, nextId) != 0;
+    // A retry of the same verified frame only needs to replace the save source.
+    const bool saveRetry = !changed && frame.body->file && refreshCache.retryFileSave[frame.slot];
     uint8_t* retired = nullptr;
-    if (frame.info) {
+    if (frame.info && !saveRetry) {
         const bool pinnedSpare = residentFrames[frame.slot] && residentFrames[frame.slot] == overrideFrame;
         auto* replacement = pinnedSpare ? static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES)) : nullptr;
         if (pinnedSpare && !replacement) {
@@ -215,9 +220,6 @@ void applyResidentFrame() {
             refreshCache.staging = replacement;
         } else retired = refreshCache.staging;
     }
-    auto& id = state.cachedIds[frame.slot];
-    const char* nextId = frame.info ? frame.info->id : "";
-    const bool changed = strcmp(id, nextId) != 0;
     if (changed) {
         const uint32_t now = ventanal::trustedEpoch(time(nullptr));
         if (frame.info) contentStaleness.clearOverdue();
@@ -228,13 +230,17 @@ void applyResidentFrame() {
                 : frame.info->renderedAt ? frame.info->renderedAt : now;
         }
     }
-    if (mounted && changed) {
+    const bool refreshFileSave = frame.body->file && strcmp(persistedFrames[frame.slot].id, nextId);
+    if (mounted && (changed || refreshFileSave)) {
         auto& save = deferredFrames[frame.slot];
         if (save.replace(nextId, *frame.body, millis(), frame.slot == 1 ? weatherFrameEpoch : 0)) {
             lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
                      unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
         }
     }
+    if (frame.body->file && deferredOverride.pending && deferredOverride.body.file &&
+        deferredOverride.body.file->unavailable && !strcmp(deferredOverride.id, nextId))
+        deferredOverride.replace(nextId, *frame.body, millis());
     strcpy(id, nextId);
     uint8_t* oldOverride = nullptr;
     if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
@@ -303,7 +309,7 @@ bool persistDeferred(bool memoryPressure) {
         const size_t bytes = chosen->body.size;
         bool ok;
         if (slot < 0) {
-            if (chosen->body.bytes) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
+            if (chosen->body.available()) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
             else {
                 const String source = lcd::residentPath(overrideSource, persistedFrames[overrideSource].alternate);
                 ok = lcd::copyCachedFrame("/override.vnr", source.c_str());
@@ -334,8 +340,8 @@ bool persistDeferred(bool memoryPressure) {
 }
 
 void reclaimCacheMemory(size_t bytes) {
-    // Queued frames own their compressed bodies until LittleFS commits them.
-    // A cold cache can fill PSRAM before the regular dark-screen save window.
+    // Standalone frames can queue compressed PSRAM bodies until LittleFS
+    // commits them. Host frames queue file leases instead.
     // ps_malloc requires byte-addressable PSRAM, even for RGB565 pixels.
     while (heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT) < bytes) {
         if (!persistDeferred(true)) break;
@@ -399,7 +405,9 @@ void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
     if (sweepFrames) {
         const auto publishedFrame = [manifest](const char* target) -> const lcd::FrameInfo* {
             for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
-                if (strcmp(target + 6, lcd::SLOT_NAMES[slot])) continue;
+                const size_t length = strlen(lcd::SLOT_NAMES[slot]);
+                if (strncmp(target + 6, lcd::SLOT_NAMES[slot], length) ||
+                    (target[6 + length] && target[6 + length] != '.')) continue;
                 if (slot >= 3 && slot - 3 >= manifest->spareCount) return nullptr;
                 const auto& frame = slot < 3 ? manifest->screens[slot] : manifest->spares[slot - 3];
                 return frame.present ? &frame : nullptr;
@@ -410,8 +418,11 @@ void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
             const auto* frame = publishedFrame(target);
             return frame && frame->size == meta.total && !strcmp(frame->id, meta.validator);
         };
-        sweep.frameCommittedWanted = [publishedFrame](const char* target) {
-            return publishedFrame(target) != nullptr;
+        sweep.frameCommittedWanted = [publishedFrame](FsStore& store, const char* target) {
+            if (lcd::queuedFrameStage(store, target)) return true;
+            const auto* frame = publishedFrame(target);
+            const auto* version = strchr(target, '.');
+            return frame && (!version || !strcmp(version + 1, frame->id));
         };
     }
     forEachPartialStore([&](FsStore& store) {
@@ -495,9 +506,12 @@ bool startRefresh(bool redraw, bool check = false, bool stageUpdate = false) {
         strlcpy(refreshOtaApproval, refreshOtaReport[0] ? updateBoot.journal.approval : "",
                 sizeof refreshOtaApproval);
         memcpy(refreshIds, state.cachedIds, sizeof refreshIds);
-        for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
+        for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
             memcpy(refreshCache.persistedIds[slot], persistedFrames[slot].id,
                    sizeof refreshCache.persistedIds[slot]);
+            const auto& save = deferredFrames[slot];
+            refreshCache.retryFileSave[slot] = save.body.file && save.body.file->unavailable;
+        }
 #ifdef VENTANAL_LCD_DIAG_PANEL
         refreshCache.forceDownloads = fetchCounter == 0;
 #ifdef VENTANAL_LCD_DIAG_F3
@@ -637,7 +651,8 @@ void applyFinishedRefresh() {
     const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
     const bool incomplete = refreshStaging.framesPending || frameFailed;
     const uint32_t epochNow = ventanal::trustedEpoch(time(nullptr));
-    contentStaleness.observe(epochNow, !refreshStaging.manifestOk || incomplete);
+    if (!refreshStaging.memoryOnlyPending)
+        contentStaleness.observe(epochNow, !refreshStaging.manifestOk || incomplete);
     const bool checkpoint = contentStaleness.checkpointDue(epochNow);
     bool redraw;
     {

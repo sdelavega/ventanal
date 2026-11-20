@@ -120,7 +120,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
     assert(!chunkBuffer || chunkBufferSize >= kResumeChunk);
     if (chunkBuffer && chunkBufferSize < kResumeChunk) {
         if (failureReason) *failureReason = "memory";
-        return FetchOutcome::Failed;
+        return FetchOutcome::NoProgress;
     }
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
@@ -193,6 +193,12 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
     // Reuse the same buffer for each response. Whole responses flush full
     // chunks during delivery. A range stays buffered until framing succeeds.
     std::unique_ptr<uint8_t[]> buffer;
+    const auto ensureBuffer = [&] {
+        if (chunkBuffer) return true;
+        buffer.reset(new (std::nothrow) uint8_t[kResumeChunk]);
+        chunkBuffer = buffer.get();
+        return chunkBuffer != nullptr;
+    };
     bool restarted = false;
 
     while (uint32_t(nowMs() - started) < budgetMs) {
@@ -235,6 +241,11 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 return false;
             }
             if (response.status != 200) return true;
+            // Keep the old checkpoint if this whole response cannot be buffered.
+            if (!ensureBuffer()) {
+                allocationFailed = true;
+                return false;
+            }
             reset();
             progressed = false;
             canResume = !wholeOnly && (*response.validator || *pinned || *digest);
@@ -260,13 +271,9 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 rejection = "size";
                 return false;
             }
-            if (count && !chunkBuffer) {
-                buffer.reset(new (std::nothrow) uint8_t[kResumeChunk]);
-                if (!buffer) {
-                    allocationFailed = true;
-                    return false;
-                }
-                chunkBuffer = buffer.get();
+            if (count && !ensureBuffer()) {
+                allocationFailed = true;
+                return false;
             }
             while (count) {
                 const size_t copied = std::min(count, size_t(kResumeChunk - buffered));
@@ -285,17 +292,16 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                                             !wholeOnly && source.sendIfRange
                                                 ? (separate ? meta.wireValidator : meta.validator) : "",
                                             headers, sink);
-        if (retryWhole) {
+        if (retryWhole && ensureBuffer()) {
             reset();
             progressed = false;
             wholeOnly = true;
             canResume = false;
             continue;
         }
-        if (allocationFailed) {
-            if (!canResume) store.discard(target);
+        if (allocationFailed || retryWhole) {
             if (failureReason) *failureReason = "memory";
-            return FetchOutcome::Failed;
+            return FetchOutcome::NoProgress;
         }
         if (writeFailed) return storagePause();
         if (rejection) return fail(rejection);

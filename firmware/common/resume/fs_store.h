@@ -4,6 +4,7 @@
 
 #include "partial_store.h"
 #include <FS.h>
+#include <atomic>
 #include <mutex>
 #include <set>
 
@@ -31,7 +32,9 @@ public:
     fs::File openCommitted(const char* target);
     // Promote a verified stage on this filesystem with a single rename.
     bool renameCommitted(const char* target, const char* destination);
+    bool moveCommitted(const char* from, const char* to);
     bool readExact(fs::File& file, uint8_t* bytes, size_t count);
+    bool seek(fs::File& file, size_t position);
     void retainOtaTarget(const char* target);
     bool removeCommitted(const char* target);
     // Return the newest committed day before today. Cleanup is done by the LCD sweep.
@@ -63,7 +66,7 @@ private:
     fs::FS& fs_;
     std::string root_;
     void (*ioError_)();
-    bool faulted_ = false;
+    std::atomic<bool> faulted_{false};
     // Used when flash cannot even rename the sidecar to record a strike.
     std::mutex checkpointMutex_;
     std::set<std::string> failedCheckpoints_;

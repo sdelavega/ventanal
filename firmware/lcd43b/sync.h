@@ -39,7 +39,7 @@ struct ResidentCache {
     uint8_t* staging = nullptr; // decoded scratch, reused after each hand-off
     bool allocated[SCREEN_SLOTS] = {};
     // The synchronous hand-off ends before staging may be reused. An empty
-    // info pointer means drop; otherwise body contains the verified wire bytes.
+    // info pointer means drop; otherwise body references verified wire bytes.
     bool (*publish)(int slot, const FrameInfo* info, const FrameBody& body) = nullptr;
     bool forceDownloads = false;
     ScanHealth health{};
@@ -51,6 +51,7 @@ struct ResidentCache {
     // spare on screen or pinned; a released slot reads as empty until filled.
     bool (*releaseFrame)(int slot) = nullptr;
     char persistedIds[SCREEN_SLOTS][17]{};
+    bool retryFileSave[SCREEN_SLOTS]{};
 };
 
 // Budgets (ms). The transfer budget is shared by all frame downloads in the pass;
@@ -88,13 +89,14 @@ struct RefreshResult {
     // Per cache slot: a verified frame was published (with its new id), or
     // the screen vanished from the manifest (drop the cached frame). A
     // failed download stages neither — the previous cache entry stays —
-    // but a slot whose required download failed (verification, decode
-    // or no staging buffer) sets frameFailed, so a manifest-only
+    // but a slot whose required download failed verification or decode
+    // sets frameFailed, so a manifest-only
     // success can never report as a fully current pass.
     bool frameOk[SCREEN_SLOTS] = {};
     char frameIds[SCREEN_SLOTS][17] = {};
     bool dropSlot[SCREEN_SLOTS] = {};
     bool frameFailed[SCREEN_SLOTS] = {};
+    bool memoryOnlyPending = false; // allocation pressure alone does not start the overdue clock
     bool framesPending = false;  // due content never published this pass
     // Standalone FCC check staged for the loop, which owns installation writes.
     uint32_t callCheckedAt = 0;
@@ -159,13 +161,13 @@ struct FrameDownload {
     int status;
 };
 
-// Receive and verify exactly the advertised wire bytes. The caller owns a
-// buffer at least info.size bytes long. Bodies without Content-Length
-// also require connection close.
+// Receive and verify exactly the advertised wire bytes into the partial store.
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
-                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                           const char* slotName, FsStore& store, Watchdog& watchdog,
                            uint32_t passStarted);
 
+// Keep queued sources visible to committed-file housekeeping.
+bool queuedFrameStage(FsStore& store, const char* target);
 bool writeCachedFrame(const char* path, const FrameBody& body);
 bool copyCachedFrame(const char* path, const char* source);
 String residentPath(int slot, bool alternate);

@@ -178,9 +178,9 @@ void handleGesture(Gesture gesture, int x, int y) {
                 overrideFrame = residentFrames[slot];
                 ownOverrideFrame = false;
                 const auto& save = deferredFrames[slot];
-                const bool inRam = save.pending && save.body.bytes;
-                overrideSource = inRam ? -1 : slot;
-                deferredOverride.replace(owner.overrideArt.id, inRam ? save.body : lcd::FrameBody{}, millis());
+                const bool queued = save.pending && save.body.available();
+                overrideSource = queued ? -1 : slot;
+                deferredOverride.replace(owner.overrideArt.id, queued ? save.body : lcd::FrameBody{}, millis());
             }
             if(strlen(skipped)==16 && strlen(lcd::selectedArtId(owner))==16
                && strcmp(skipped,lcd::selectedArtId(owner))) ++skipRevision;

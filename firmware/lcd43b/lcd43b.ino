@@ -55,6 +55,7 @@
 #include "sd_card.h"
 #include "../common/resume/storage.h"
 #include "frame.h"
+#include "frame_stream.h"
 #include "inflate.h"
 #include "gesture.h"
 #include "gt911.h"

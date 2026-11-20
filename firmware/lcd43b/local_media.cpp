@@ -40,7 +40,6 @@ struct JpegSession {
     Watchdog* watchdog;
     uint32_t started = 0, budgetMs = UINT32_MAX;
     fs::File* file = nullptr;
-    uint8_t* frame = nullptr;
 };
 
 UINT jpegInput(JDEC* jd, BYTE* buffer, UINT bytes) {
@@ -68,7 +67,6 @@ UINT jpegOutput(JDEC* jd, void* bitmap, JRECT* rect) {
     }
     const auto* rgb = static_cast<const uint8_t*>(bitmap);
     const int width = rect->right - rect->left + 1, height = rect->bottom - rect->top + 1;
-    if (s->frame) return writeJpegBlock(s->frame, rgb, rect->left, rect->top, width, height);
     s->resampler->block(rect->left, rect->top, width, height, rgb);
     return 1;
 }
@@ -98,23 +96,6 @@ bool deflateFrame(const uint8_t* frame, FrameBody& body, Watchdog& watchdog) {
         return false;
     }
     body = FrameBody{std::shared_ptr<uint8_t>(out.data, heap_caps_free), out.size};
-    return true;
-}
-
-bool decodeHostJpeg(const uint8_t* data, size_t size, uint8_t* frame, Watchdog& watchdog) {
-    if (!frame || !validJpegEnvelope(data, size)) return false;
-    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> pool(
-        static_cast<uint8_t*>(heap_caps_malloc(JpegPool, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), heap_caps_free);
-    if (!pool) return false;
-    JpegSession session{data, size, 0, nullptr, &watchdog, millis()};
-    session.frame = frame;
-    JDEC jd{};
-    if (jd_prepare(&jd, jpegInput, pool.get(), JpegPool, &session) != JDR_OK
-        || jd.width != WIDTH || jd.height != HEIGHT
-        || jd_decomp(&jd, jpegOutput, 0) != JDR_OK)
-        return false;
-    static const uint8_t header[HEADER_BYTES] = {'V', 'N', 'R', '1', 0x20, 0x03, 0xE0, 0x01};
-    memcpy(frame, header, HEADER_BYTES);
     return true;
 }
 

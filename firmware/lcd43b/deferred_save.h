@@ -2,9 +2,13 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 
+#include <atomic>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <string>
+
+class FsStore;
 
 namespace lcd {
 
@@ -48,9 +52,20 @@ private:
     bool retrying_ = false;
 };
 
+struct FrameFile {
+    FsStore& store;
+    const std::string target;
+    const std::string sha256;
+    std::atomic<bool> unavailable{false};
+    FrameFile(FsStore& store, const std::string& target, const char* sha256)
+        : store(store), target(target), sha256(sha256) {}
+};
+
 struct FrameBody {
     std::shared_ptr<uint8_t> bytes;
     size_t size = 0;
+    std::shared_ptr<FrameFile> file = {};
+    bool available() const { return bytes || file; }
 };
 
 struct DeferredSave {

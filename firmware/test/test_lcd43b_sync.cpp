@@ -13,6 +13,7 @@
 #include "../lcd43b/sync.h"
 #include "../lcd43b/host_transport.h"
 #include "../lcd43b/inflate.h"
+#include "../common/resume/storage.h"
 #include "../lcd43b/installation.h"
 #include "../common/resume/resume.h"
 #include "../ventanal/manifest_signature.h"
@@ -48,25 +49,31 @@ struct CountingWatchdog : lcd::Watchdog {
 
 lcd::FrameBody stagedBodies[lcd::SCREEN_SLOTS];
 bool stagedDrops[lcd::SCREEN_SLOTS]{};
-bool jpegPixelsChecked = false;
+std::vector<uint8_t>* decodedCapture = nullptr;
+int captureSlot = 0;
 int rejectStageSlot = -1;
-unsigned wireReclaims = 0;
 
 void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SLOTS][17],
              lcd::RefreshResult& result, CountingWatchdog& watchdog,
              const lcd::DeviceSettings& settings = {}, const char* skips = "",
              const char* ota = "", const char* approval = "",
-             void (*reclaim)(size_t) = nullptr, const char (*persisted)[17] = nullptr) {
+             const char (*persisted)[17] = nullptr, int retryFileSaveSlot = -1) {
     std::vector<uint8_t> staging(lcd::FRAME_BYTES);
     lcd::ResidentCache cache;
     cache.staging = staging.data();
-    cache.reclaimWireMemory = reclaim;
+    if (retryFileSaveSlot >= 0) cache.retryFileSave[retryFileSaveSlot] = true;
     if (persisted) memcpy(cache.persistedIds, persisted, sizeof cache.persistedIds);
     std::fill_n(cache.allocated, lcd::SCREEN_SLOTS, true);
+    static uint8_t* output;
+    output = staging.data();
     cache.publish = [](int slot, const lcd::FrameInfo* info, const lcd::FrameBody& body) {
         if (info && slot == rejectStageSlot) return false;
         if (!info) stagedDrops[slot] = true;
-        else stagedBodies[slot] = body;
+        else {
+            stagedBodies[slot] = body;
+            if (decodedCapture && slot == captureSlot)
+                decodedCapture->assign(output, output + lcd::FRAME_BYTES);
+        }
         return true;
     };
     lcd::runRefresh(host, device, ids, result, watchdog, settings, skips, cache, ota, approval);
@@ -135,10 +142,11 @@ Entry makeEntry(const std::string& name, const std::vector<uint8_t>& frame,
 
 bool receiveFrame(const Entry& entry, std::vector<uint8_t>& buffer, CountingWatchdog& watchdog,
                   const char* reason = nullptr) {
-    const auto download =
-        lcd::receiveFrame("http://host", entry.info, "art", buffer.data(), watchdog, millis());
+    auto& store = partialStore();
+    const auto download = lcd::receiveFrame("http://host", entry.info, "art", store, watchdog, millis());
     if (reason) assert(download.reason && !strcmp(download.reason, reason));
-    return download.outcome == FetchOutcome::Complete;
+    return download.outcome == FetchOutcome::Complete &&
+        store.takeCommitted("frame-art", buffer.data(), entry.info.size);
 }
 
 std::string manifestBody(const Entry& art, const Entry& weather) {
@@ -174,6 +182,9 @@ void resetFakes() {
     lastConnectionHeader.clear();
     persistentServer = false;
     failAllocation = false;
+    psramLargest = psramCapacity = SIZE_MAX;
+    psramPeak = 0;
+    assert(!psramInUse);
     failRename = false;
     std::fill_n(stagedBodies, lcd::SCREEN_SLOTS, lcd::FrameBody{});
     std::fill_n(stagedDrops, lcd::SCREEN_SLOTS, false);
@@ -229,7 +240,7 @@ void serveRanges(const Entry& art, const Entry& weather,
 void host_frame_unfinished_is_not_failed(const lcd::RefreshResult& result,
                                          const std::vector<uint8_t>& previous) {
     assert(!result.frameOk[0] && !result.frameFailed[0] && !result.frameIds[0][0]);
-    assert(!stagedBodies[0].bytes && files.at("/art.vnr") == previous);
+    assert(!stagedBodies[0].available() && files.at("/art.vnr") == previous);
     assert(!lcd::anyRequiredFrameFailed(result));
     const auto expected = "frame slot=art outcome=progress reason=budget got="
         + std::to_string(kResumeChunk) + " have=" + std::to_string(kResumeChunk);
@@ -262,6 +273,7 @@ void host_frame_resumes_across_passes() {
            != std::string::npos);
 
     cutFirstPass = false;
+    psramLargest = 344052;
     rangeStarts.clear();
     Serial.output.clear();
     strcpy(ids[3], spare.info.id);
@@ -270,8 +282,10 @@ void host_frame_resumes_across_passes() {
     assert(frameBytesRead == frame.size());
     assert(result.frameOk[0] && !result.frameFailed[0] && !strcmp(result.frameIds[0], art.info.id));
     assert(stagedBodies[0].size == frame.size());
-    assert(memcmp(stagedBodies[0].bytes.get(), frame.data(), frame.size()) == 0);
-    assert(files.size() == 1 && files.at("/art.vnr") == previous);
+    assert(!psramInUse && psramPeak == kResumeChunk);
+    printf("streamed raw (downloaded): peak PSRAM %zu B\n", psramPeak);
+    assert(files.at("/partials/" + stagedBodies[0].file->target) == frame);
+    assert(files.size() == 2 && files.at("/art.vnr") == previous);
     const auto total = std::to_string(frame.size());
     assert(Serial.output.find("resume target=frame-art from=" + std::to_string(kResumeChunk)
                               + " total=" + total + "\n") != std::string::npos);
@@ -317,7 +331,7 @@ void host_frame_hash_mismatch_fails() {
     lcd::installation = originalInstallation;
     assert(result.manifestOk && lastCounter > 1);
     assert(frameBytesRead == frame.size());
-    assert(!result.frameOk[0] && result.frameFailed[0] && !stagedBodies[0].bytes);
+    assert(!result.frameOk[0] && result.frameFailed[0] && !stagedBodies[0].available());
     assert(files.size() == 1 && files.at("/art.vnr") == previous);
     const auto total = std::to_string(frame.size());
     assert(Serial.output.find("frame slot=art outcome=failed reason=hash got=" + total
@@ -380,24 +394,6 @@ void short_206_still_rejected() { assert(!receiveFramed206(true)); }
 
 }  // namespace
 
-// The ESP32-S3 ROM is absent on the host. Supply the RGB888 MCU blocks it
-// would emit for the solid-red JPEG to exercise the real staging writer.
-bool lcd::decodeHostJpeg(const uint8_t* data, size_t size, uint8_t* frame, Watchdog& watchdog) {
-    if (!validJpegEnvelope(data, size)) return false;
-    uint8_t rgb[16 * 16 * 3]{};
-    for (size_t i = 0; i < sizeof rgb; i += 3) rgb[i] = 248;
-    for (unsigned y = 0; y < HEIGHT; y += 16) {
-        watchdog.feed();
-        for (unsigned x = 0; x < WIDTH; x += 16)
-            assert(writeJpegBlock(frame, rgb, x, y, 16, 16));
-    }
-    assert(!writeJpegBlock(frame, rgb, WIDTH - 1, HEIGHT - 1, 2, 1));
-    for (size_t i = HEADER_BYTES; i < FRAME_BYTES; i += 2)
-        assert(frame[i] == 0 && frame[i + 1] == 0xf8);
-    jpegPixelsChecked = true;
-    return true;
-}
-
 void recover_committed_frames_against_manifest() {
     resetFakes();
     const auto artFrame = solidFrame(0xf800);
@@ -418,13 +414,271 @@ void recover_committed_frames_against_manifest() {
     refresh("http://host", "lcd43b", ids, result, watchdog);
     assert(result.manifestOk && result.frameOk[0] && result.frameOk[1]);
     assert(std::find(requestedUrls.begin(), requestedUrls.end(), "http://host" + art.url) == requestedUrls.end());
-    assert(files.count("/partials/frame-art") && !files.count("/partials/frame-weather"));
+    const auto artStage = "/partials/" + stagedBodies[0].file->target;
+    assert(files.count(artStage) && !files.count("/partials/frame-weather"));
+    stagedBodies[0] = {}; // the save completed before the next manifest
     memcpy(ids, result.frameIds, sizeof ids);
-    refresh("http://host", "lcd43b", ids, result, watchdog, {}, "", "", "", nullptr, ids);
-    assert(result.frameOk[0] && !files.count("/partials/frame-art"));
+    refresh("http://host", "lcd43b", ids, result, watchdog, {}, "", "", "", ids);
+    assert(result.frameOk[0] && !files.count(artStage));
+}
+
+static std::vector<uint8_t> jpegOfSize(size_t size) {
+    std::ifstream input("fixtures/lcd43b-host-art.jpg", std::ios::binary);
+    std::vector<uint8_t> jpeg{std::istreambuf_iterator<char>(input), {}};
+    assert(input.is_open() && jpeg.size() <= size);
+    // Insert legal comment segments before the fixture's original markers.
+    std::vector<uint8_t> padded{0xff, 0xd8};
+    for (size_t remaining = size - jpeg.size(); remaining;) {
+        const size_t segment = std::min<size_t>(remaining, 32000);
+        assert(segment >= 4);
+        padded.insert(padded.end(), {0xff, 0xfe, uint8_t((segment - 2) >> 8), uint8_t(segment - 2)});
+        padded.resize(padded.size() + segment - 4, 0x55);
+        remaining -= segment;
+    }
+    padded.insert(padded.end(), jpeg.begin() + 2, jpeg.end());
+    return padded;
+}
+
+static void saveAndCheck(int slot, const Entry& entry, const std::vector<uint8_t>& wire) {
+    Preferences prefs;
+    assert(prefs.begin("ventanal", false));
+    lcd::CacheLocation location;
+    lcd::DeferredSave save;
+    assert(save.replace(entry.info.id, stagedBodies[slot], 0));
+    assert(lcd::persistCacheSlot(prefs, slot, location, save));
+    assert(!strcmp(location.id, entry.info.id));
+    assert(files.at(lcd::residentPath(slot, location.alternate).c_str()) == wire);
+    stagedBodies[slot] = {};
+}
+
+void spare_larger_than_free_psram_downloads() {
+    resetFakes();
+    const auto wire = jpegOfSize(514703);
+    const auto spare = makeEntry("spare", wire, lcd::FrameEncoding::Jpeg);
+    const auto art = makeEntry("art", solidFrame(0xf800));
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    responseBody = manifestBody(art, weather);
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + spare.body + "]");
+    urlResponses["http://host" + spare.url] = wire;
+    sizeFromResponse = true;
+    psramLargest = 344052;
+    psramCapacity = 380664;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[0], art.info.id);
+    strcpy(ids[1], weather.info.id);
+    lcd::RefreshResult result;
+    CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[3] && !result.frameFailed[3]);
+    assert(!files.count("/spare0-alt.vnr"));
+    saveAndCheck(3, spare, wire);
+    assert(!psramInUse && psramPeak == kResumeChunk);
+    printf("spare_larger_than_free_psram_downloads: peak PSRAM %zu B\n", psramPeak);
+}
+
+void two_large_frames_in_one_pass() {
+    resetFakes();
+    const auto artWire = jpegOfSize(309257);
+    const auto spareWire = jpegOfSize(320246);
+    const auto art = makeEntry("art", artWire, lcd::FrameEncoding::Jpeg);
+    const auto spare = makeEntry("spare", spareWire, lcd::FrameEncoding::Jpeg);
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    serveRanges(art, weather, artWire);
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + spare.body + "]");
+    urlResponses["http://host" + spare.url] = spareWire;
+    psramLargest = 344052;
+    psramCapacity = 380664;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    lcd::RefreshResult result;
+    CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[0] && result.frameOk[3] && !lcd::anyRequiredFrameFailed(result));
+    assert(!files.count("/art-alt.vnr") && !files.count("/spare0-alt.vnr"));
+    saveAndCheck(0, art, artWire);
+    saveAndCheck(3, spare, spareWire);
+    assert(!psramInUse && psramPeak == kResumeChunk);
+    printf("two_large_frames_in_one_pass: peak PSRAM %zu B, deferred %zu B\n", psramPeak, psramInUse);
+}
+
+void memory_shortage_is_no_progress() {
+    resetFakes();
+    const auto wire = jpegOfSize(514703);
+    const auto art = makeEntry("art", wire, lcd::FrameEncoding::Jpeg);
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    serveRanges(art, weather, wire);
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    lcd::RefreshResult result;
+    CountingWatchdog watchdog;
+    cutFirstPass = true;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    cutFirstPass = false;
+    const auto checkpoint = files.at("/partials/frame-art.meta");
+    const auto partial = files.at("/partials/frame-art.part");
+    failAllocation = true;
+    Serial.output.clear();
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.framesPending && result.memoryOnlyPending && !lcd::anyRequiredFrameFailed(result));
+    assert(Serial.output.find("frame slot=art outcome=no-progress reason=memory") != std::string::npos);
+    assert(files.at("/partials/frame-art.meta") == checkpoint);
+    assert(files.at("/partials/frame-art.part") == partial);
+
+    // Once verified, even failure to allocate the decoder pool keeps the
+    // completed file, which the next pass can decode without a network GET.
+    partialStore().discard("frame-art");
+    files["/partials/frame-art"] = wire;
+    frameBytesRead = 0;
+    Serial.output.clear();
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    const std::string version = std::string("/partials/frame-art.") + art.info.id;
+    assert(result.framesPending && result.memoryOnlyPending && !result.frameFailed[0]);
+    assert(Serial.output.find("frame slot=art outcome=no-progress reason=memory") != std::string::npos);
+    assert(!frameBytesRead && files.at(version) == wire);
+    failAllocation = false;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[0] && !frameBytesRead);
+    puts("memory_shortage_is_no_progress: download checkpoint and committed JPEG retained");
+}
+
+static void decodedPixelsMatch(const std::vector<uint8_t>& wire, lcd::FrameEncoding encoding,
+                               bool recovered) {
+    resetFakes();
+    const auto art = makeEntry("art", wire, encoding);
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    serveRanges(art, weather, wire);
+    if (recovered) {
+        files["/partials/frame-art"] = wire;
+        urlResponses.clear();
+    }
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    std::vector<uint8_t> reference(lcd::FRAME_BYTES);
+    CountingWatchdog watchdog;
+    if (encoding == lcd::FrameEncoding::Jpeg)
+        assert(lcd::decodeHostJpeg(wire.data(), wire.size(), reference.data(), watchdog));
+    else
+        assert(lcd::decodeFrame(encoding, wire.data(), wire.size(), reference.data()));
+    std::vector<uint8_t> decoded;
+    decodedCapture = &decoded;
+    psramCapacity = 380664;
+    lcd::RefreshResult result;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    decodedCapture = nullptr;
+    assert(result.frameOk[0] && decoded == reference);
+    assert((frameBytesRead == 0) == recovered);
+    assert(!psramInUse);
+    const size_t expected = encoding == lcd::FrameEncoding::Zlib ? kResumeChunk + sizeof(tinfl_decompressor)
+        : recovered ? 0 : kResumeChunk;
+    assert(psramPeak == expected);
+    printf("streamed %s (%s): peak PSRAM %zu B\n",
+           encoding == lcd::FrameEncoding::Jpeg ? "jpeg" : "zlib",
+           recovered ? "recovered" : "downloaded", psramPeak);
+}
+
+void streamed_jpeg_decode_matches_buffer_decode() {
+    const auto jpeg = jpegOfSize(514703);
+    for (bool recovered : {false, true}) decodedPixelsMatch(jpeg, lcd::FrameEncoding::Jpeg, recovered);
+}
+
+void streamed_zlib_decode_matches_buffer_decode() {
+    auto frame = solidFrame(0x07e0);
+    uint32_t seed = 1;
+    for (size_t i = lcd::HEADER_BYTES; i < 210000; ++i) {
+        seed = seed * 1664525 + 1013904223;
+        frame[i] = uint8_t(seed >> 24);
+    }
+    const auto zipped = compressFrame(frame);
+    assert(zipped.size() > kResumeChunk);
+    for (bool recovered : {false, true}) decodedPixelsMatch(zipped, lcd::FrameEncoding::Zlib, recovered);
+}
+
+void deferred_file_survives_replacement_and_cache_failure() {
+    resetFakes();
+    const auto oldWire = jpegOfSize(309257);
+    const auto newWire = jpegOfSize(320246);
+    const auto oldArt = makeEntry("art", oldWire, lcd::FrameEncoding::Jpeg);
+    const auto newArt = makeEntry("art", newWire, lcd::FrameEncoding::Jpeg);
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    CountingWatchdog watchdog;
+    lcd::RefreshResult result;
+    serveRanges(oldArt, weather, oldWire);
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[0]);
+    auto pinned = stagedBodies[0];
+    const auto oldStage = "/partials/" + pinned.file->target;
+    strcpy(ids[0], oldArt.info.id);
+    serveRanges(newArt, weather, newWire);
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[0] && files.at(oldStage) == oldWire);
+    const auto newStage = "/partials/" + stagedBodies[0].file->target;
+
+    Preferences prefs;
+    assert(prefs.begin("ventanal", false));
+    lcd::CacheLocation current{ "aaaaaaaaaaaaaaaa", false };
+    assert(lcd::saveCacheLocation(prefs, 0, current));
+    files["/art.vnr"] = {1};
+    lcd::DeferredSave save;
+    assert(save.replace(newArt.info.id, stagedBodies[0], 0));
+
+    Preferences::failStringWrite = true;
+    assert(!lcd::persistCacheSlot(prefs, 0, current, save));
+    assert(!current.alternate && files.at("/art.vnr")[0] == 1 && files.at(newStage) == newWire);
+    Preferences::failStringWrite = false;
+    assert(lcd::persistCacheSlot(prefs, 0, current, save));
+    assert(current.alternate && !files.count("/art.vnr") && files.at("/art-alt.vnr") == newWire);
+    assert(lcd::writeCachedFrame("/override.vnr", pinned));
+    assert(files.at("/override.vnr") == oldWire);
+
+    save = {};
+    stagedBodies[0] = {};
+    strcpy(ids[0], newArt.info.id);
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!files.count(newStage) && files.count(oldStage));
+    pinned = {};
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!files.count(oldStage));
+}
+
+void lost_sd_source_retries_unchanged_frame_on_flash() {
+    resetFakes();
+    static fs::FS sd;
+    setPartialSdFilesystem(sd);
+    selectPartialStore(true);
+    const auto wire = jpegOfSize(309257);
+    const auto art = makeEntry("art", wire, lcd::FrameEncoding::Jpeg);
+    const auto weather = makeEntry("weather", solidFrame(0x07e0));
+    serveRanges(art, weather, wire);
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    CountingWatchdog watchdog;
+    lcd::RefreshResult result;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.frameOk[0] && !partialsOnFlash());
+    const auto lost = stagedBodies[0];
+    assert(sd.files.at("/partials/" + lost.file->target) == wire);
+
+    sd.offline = true;
+    assert(!lcd::writeCachedFrame("/art.vnr", lost));
+    assert(lost.file->unavailable && partialsOnFlash() && !files.count("/art.vnr"));
+    strcpy(ids[0], art.info.id);
+    refresh("http://host", "lcd43b", ids, result, watchdog, {}, "", "", "", nullptr, 0);
+    assert(result.frameOk[0] && !result.frameFailed[0]);
+    assert(&stagedBodies[0].file->store == &flashPartialStore());
+    saveAndCheck(0, art, wire);
+    sd.offline = false;
 }
 
 int main() {
+    spare_larger_than_free_psram_downloads();
+    two_large_frames_in_one_pass();
+    memory_shortage_is_no_progress();
+    streamed_jpeg_decode_matches_buffer_decode();
+    streamed_zlib_decode_matches_buffer_decode();
+    deferred_file_survives_replacement_and_cache_failure();
+    lost_sd_source_retries_unchanged_frame_on_flash();
     recover_committed_frames_against_manifest();
     host_frame_resumes_across_passes();
     host_frame_hash_mismatch_fails();
@@ -530,16 +784,14 @@ int main() {
             responseBody = manifestBody(art, weather);
             urlResponses["http://host" + art.url] = jpeg;
             sizeFromResponse = true;
-            jpegPixelsChecked = false;
             lcd::RefreshResult result;
             refresh("http://host", "lcd43b", currentIds, result, watchdog);
             assert(result.manifestOk && result.frameOk[0] == valid && result.frameFailed[0] == !valid);
-            assert(jpegPixelsChecked == valid);
-            assert(bool(stagedBodies[0].bytes) == valid && !stagedDrops[0]);
+            assert(bool(stagedBodies[0].available()) == valid && !stagedDrops[0]);
             if (valid) {
                 assert(!strcmp(result.frameIds[0], art.info.id));
                 assert(stagedBodies[0].size == jpeg.size());
-                assert(!memcmp(stagedBodies[0].bytes.get(), jpeg.data(), jpeg.size()));
+                assert(files.at("/partials/" + stagedBodies[0].file->target) == jpeg);
                 strcpy(currentIds[0], art.info.id);
             }
         }
@@ -569,8 +821,8 @@ int main() {
         assert(result.dropSlot[2]);       // solar vanished from the manifest
         for (int slot = 3; slot < lcd::SCREEN_SLOTS; ++slot)
             assert(result.dropSlot[slot]);   // unpublished spare slots
-        assert(stagedBodies[0].bytes && stagedBodies[1].bytes);
-        assert(stagedDrops[2] && files.size() == 1 && files.count("/solar.vnr"));
+        assert(stagedBodies[0].available() && stagedBodies[1].available());
+        assert(stagedDrops[2] && files.size() == 3 && files.count("/solar.vnr"));
         assert(!strcmp(result.frameIds[0], art.info.id));
         assert(!strcmp(result.frameIds[1], weather.info.id));
         assert(!lcd::anyRequiredFrameFailed(result));   // nothing required failed
@@ -596,7 +848,9 @@ int main() {
         lcd::RefreshResult rejected;
         refresh("http://host", "lcd43b", currentIds, rejected, watchdog);
         assert(rejected.manifestOk && rejected.frameOk[0]);
-        assert(!rejected.frameOk[1] && rejected.frameFailed[1] && !rejected.frameIds[1][0]);
+        assert(!rejected.frameOk[1] && !rejected.frameFailed[1] && !rejected.frameIds[1][0]);
+        assert(rejected.memoryOnlyPending);
+        assert(files.count("/partials/" + stagedBodies[1].file->target));
     }
     {   // Hidden Art and spares are never requested; cached hidden files stay.
         resetFakes();
@@ -623,7 +877,8 @@ int main() {
         urlResponses["http://host"+spare.url]=frame;
         refresh("http://host","lcd43b",ids,result,watchdog,settings);
         assert(!result.frameOk[0] && result.frameOk[1] && !result.frameOk[3]);
-        assert(requestedUrls.size()==2);
+        // The previous pass left a verified weather stage while the cache write was deferred.
+        assert(requestedUrls.size() == 1 && result.frameOk[1]);
     }
     {   // A compressed body is verified and decoded before publication.
         // Cache persistence receives the original wire bytes unchanged.
@@ -644,20 +899,20 @@ int main() {
         lcd::RefreshResult result;
         refresh("http://host", "lcd43b", ids, result, watchdog);
         assert(result.frameOk[0] && result.frameFailed[1]);
-        assert(!stagedBodies[1].bytes && files.empty());
+        assert(!stagedBodies[1].available() && files.size() == 1);
         assert(Serial.output.find("frame slot=weather outcome=failed reason=invalid-frame ")
                != std::string::npos);
         const auto& body = stagedBodies[0];
         assert(body.size == zipped.size());
-        assert(memcmp(body.bytes.get(), zipped.data(), zipped.size()) == 0);
+        assert(files.at("/partials/" + body.file->target) == zipped);
 
         files["/art.vnr"] = raw;
         failRename = true;
         assert(!lcd::writeCachedFrame("/art.vnr", body));
-        assert(files.size() == 1 && files.at("/art.vnr") == raw);
+        assert(files.size() == 2 && files.at("/art.vnr") == raw);
         failRename = false;
         assert(lcd::writeCachedFrame("/art.vnr", body));
-        assert(files.size() == 1 && files.at("/art.vnr") == zipped);
+        assert(files.size() == 2 && files.at("/art.vnr") == zipped);
         assert(lcd::copyCachedFrame("/override.vnr", "/art.vnr"));
         assert(files.at("/override.vnr") == zipped);
     }
@@ -765,7 +1020,7 @@ int main() {
         assert(!result.dropSlot[0] && !result.dropSlot[1]);
         assert(!result.frameFailed[0] && !result.frameFailed[1]);   // awaiting more data
         assert(!lcd::anyRequiredFrameFailed(result));
-        assert(!stagedBodies[0].bytes && !stagedBodies[1].bytes);
+        assert(!stagedBodies[0].available() && !stagedBodies[1].available());
         const uint32_t elapsed = fakeClock - started;
         assert(elapsed < lcd::TRANSFER_BUDGET_MS);
         assert(watchdog.feeds > 1000);   // fed during both frames
@@ -824,43 +1079,8 @@ int main() {
         assert(lcd::anyRequiredFrameFailed(result));   // pass is a failure
         assert(Serial.output.find("frame slot=weather outcome=failed reason=size got=0 have=0")
                != std::string::npos);
-        assert(stagedBodies[0].bytes && !stagedBodies[1].bytes && files.empty());
+        assert(stagedBodies[0].available() && !stagedBodies[1].available() && files.size() == 1);
         assert(lastConnectionHeader == "close");  // every request asks closure
-    }
-    {   // Allocation failure: every slot the manifest required this pass
-        // stages a frame failure, so the pass reports failure (not the
-        // UP TO DATE that a manifest-only success used to show).
-        resetFakes();
-        const std::vector<uint8_t> artFrame = solidFrame(0xF800);
-        const std::vector<uint8_t> weatherFrame = solidFrame(0x07E0);
-        Entry art = makeEntry("art", artFrame);
-        Entry weather = makeEntry("weather", weatherFrame);
-        responseBody = manifestBody(art, weather);
-        urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
-            std::vector<uint8_t>(responseBody.begin(), responseBody.end());
-        urlResponses["http://host" + art.url] = artFrame;
-        urlResponses["http://host" + weather.url] = weatherFrame;
-        sizeFromResponse = true;
-        failAllocation = true;                  // no allocation for the wire bytes
-        char currentIds[lcd::SCREEN_SLOTS][17] = {};
-        lcd::RefreshResult result;
-        CountingWatchdog watchdog;
-        refresh("http://host", "lcd43b", currentIds, result, watchdog);
-        assert(result.manifestOk);
-        assert(result.frameFailed[0] && result.frameFailed[1]);   // required
-        assert(lcd::anyRequiredFrameFailed(result));
-        assert(!stagedBodies[0].bytes && !stagedBodies[1].bytes);
-
-        wireReclaims = 0;
-        refresh("http://host", "lcd43b", currentIds, result, watchdog, {}, "", "", "",
-                [](size_t bytes) {
-                    assert(bytes == lcd::FRAME_BYTES && failAllocation);
-                    ++wireReclaims;
-                    failAllocation = false;
-                });
-        assert(wireReclaims == 1);
-        assert(result.manifestOk && !lcd::anyRequiredFrameFailed(result));
-        assert(stagedBodies[0].bytes && stagedBodies[1].bytes);
     }
     {   // The shared queue wire format is sent on the device manifest GET.
         resetFakes();
