@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include <cassert>
 #include <cstdio>
+#include "../ventanal/cache.h"
 #include "../ventanal/net.h"
 #include "../ventanal/overlay.h"
 #include <Preferences.h>
@@ -12,6 +13,8 @@ static int connections=0, manifests=0, downloads=0, readouts=0, waiting=0, charg
 static bool online=true, frameOK=true, offlineDraw=false;
 static unsigned transientManifestFailures=0;
 static bool otaFails=false;
+static bool fetchedManifest=false, recoverWeather=false;
+static unsigned frameSweeps=0;
 static std::string waitingLabel;
 static ScreenInfo art{"aaaaaaaaaaaaaaaa","/frames/art",{1092,22,480,26,false}};
 static ScreenInfo weather{"bbbbbbbbbbbbbbbb","/frames/weather",{1236,30,334,136,true}};
@@ -21,12 +24,22 @@ bool wifiConnect(uint32_t) { ++connections; delay(wifiDelay); return online; }
 bool syncTime() { delay(timeDelay); return online; }
 bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
     ++manifests;
+    fetchedManifest=false;
     delay(manifestDelay);
     if(transient) *transient=transientManifestFailures!=0;
     if(transientManifestFailures) { --transientManifestFailures; return false; }
     if(!online) return false;
     a=art; w=weather;
+    fetchedManifest=true;
     return true;
+}
+uint8_t sweepFramePartials(const ManifestFrameSlots& frames) {
+    assert(fetchedManifest && !strcmp(frames[0]->id, art.id) && !strcmp(frames[1]->id, weather.id));
+    fetchedManifest=false;
+    ++frameSweeps;
+    if (!recoverWeather) return 0;
+    files["/weather.vnf"]={2};
+    return 1u << 1;
 }
 bool fetchFrame(const char*,const char* path) { ++downloads; downloadPaths.push_back(path); delay(frameDelay); if(frameOK) files[path]={1}; return frameOK; }
 bool canStageExtraFrame(const char*) { return LittleFS.totalBytes() >= LittleFS.usedBytes() + 960016 + 65536; }
@@ -308,6 +321,21 @@ int main() {
     wake(0);
     assert(downloads==downloadsBeforeOta);
     otaFails=false;
+
+    strcpy(weather.id,"eeeeeeeeeeeeeeee");
+    recoverWeather=true;
+    const auto sweepsBeforeRecovery=frameSweeps;
+    online=false;
+    wake(0);
+    assert(frameSweeps==sweepsBeforeRecovery && !files.count("/weather.vnf"));
+    online=true;
+    wake(0);
+    assert(frameSweeps==sweepsBeforeRecovery+1 && downloads==downloadsBeforeOta);
+    assert(files.at("/weather.vnf").front()==2);
+    State recoveredState{};
+    memcpy(&recoveredState,preferences.at("state13").data(),sizeof recoveredState);
+    assert(!strcmp(recoveredState.weather.id,weather.id));
+    recoverWeather=false;
 
     hostSettingsAvailable=false;
     simulateBoot(ESP_RST_POWERON);

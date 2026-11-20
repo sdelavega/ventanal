@@ -41,6 +41,8 @@ FsStore& partialStore() {
     return flash;
 }
 
+FsStore& flashPartialStore() { return flash; }
+
 void selectPartialStore(bool sdMounted) {
     const bool selected = sdMounted && sd.has_value();
     useSd.store(selected);

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../ventanal/cache.h"
+#include "../ventanal/net.h"
 #include "../ventanal/security.h"
 #include "../common/resume/storage.h"
 #include <LittleFS.h>
@@ -58,6 +59,9 @@ void epaper_abort_after_bytes_still_aborts() {
     assert(files.at(partialPath).size() == 3 * chunkSize);
 }
 #else
+const ScreenInfo weather{"0123456789abcdef", "/frame", {}};
+const ManifestFrameSlots manifestFrames{nullptr, &weather};
+
 void epaper_frame_resumes_after_sleep() {
     prepareRanges();
     auto good = frame;
@@ -76,7 +80,7 @@ void epaper_frame_resumes_after_sleep() {
     fakeClock = 0;
     lastHeaders.clear();
     prepareRanges();
-    sweepFramePartials();
+    sweepFramePartials(manifestFrames);
     stopBefore = 0;
     assert(fetchFrame(url.c_str(), cachePath));
     assert(!offsets.empty() && offsets.front() == 2 * chunkSize);
@@ -96,6 +100,39 @@ void epaper_frame_hash_checked() {
     expectedHashes.clear();
 }
 
+void orphaned_committed_frame_is_promoted_or_removed() {
+    static FakeFS sd;
+    assert(sd.mkdir("/partials"));
+    setPartialSdFilesystem(sd);
+    selectPartialStore(true);
+    prepareRanges();
+    constexpr char weatherStage[] = "/partials/frame-weather.vnf.tmp";
+    constexpr char artStage[] = "/partials/frame-art.vnf.tmp";
+    constexpr char otaStage[] = "/partials/ota-1.2.3";
+    auto stale = frame;
+    stale.back() = 0x24;
+    files[cachePath] = stale;
+    files[weatherStage] = frame;
+    sd.files[weatherStage] = stale;
+    sd.files[artStage] = frame; // Its digest belongs to weather, not art.
+    sd.files[otaStage] = {1, 2, 3};
+    files["/weather.vnf.tmp"] = {1};
+
+    assert(sweepFramePartials(manifestFrames) == (1u << 1));
+    assert(files.at(cachePath) == frame && !files.count(weatherStage));
+    assert(!sd.files.count(weatherStage) && !sd.files.count(artStage));
+    assert(!files.count("/art.vnf") && !files.count("/weather.vnf.tmp"));
+    assert(sd.files.at(otaStage) == std::vector<uint8_t>({1, 2, 3}));
+
+    files[cachePath] = stale;
+    sd.files[weatherStage] = frame;
+    assert(sweepFramePartials(manifestFrames) == (1u << 1));
+    assert(files.at(cachePath) == frame && !sd.files.count(weatherStage));
+    assert(!files.count("/weather.vnf.tmp"));
+    selectPartialStore(false);
+    fakeGetResponse = nullptr;
+}
+
 void epaper_sd_commit_and_fallback() {
     static FakeFS sd;
     setPartialSdFilesystem(sd, nullptr);
@@ -106,7 +143,7 @@ void epaper_sd_commit_and_fallback() {
     assert(sd.files.at(partialPath).size() == chunkSize && !files.count(partialPath));
 
     expectedHashes.clear();
-    sweepFramePartials();
+    sweepFramePartials(manifestFrames);
     assert(!sd.files.count(partialPath));
     prepareRanges();
     assert(!fetchFrame(url.c_str(), cachePath));
@@ -203,6 +240,7 @@ int main() {
     assert(d.pixels[0]==255); // Validate whole file before changing framebuffer.
     epaper_frame_resumes_after_sleep();
     epaper_frame_hash_checked();
+    orphaned_committed_frame_is_promoted_or_removed();
     epaper_sd_commit_and_fallback();
     std::cout << "cache tests passed\n";
 #endif

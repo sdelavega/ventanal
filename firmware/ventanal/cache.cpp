@@ -7,7 +7,6 @@
 #include "http.h"
 #include "../common/resume/fs_store.h"
 #include "../common/resume/storage.h"
-#include <cstdarg>
 #include <ctime>
 #include <esp_heap_caps.h>
 #include <memory>
@@ -33,13 +32,10 @@ std::string frameTarget(const char* path) {
 
 uint32_t frameClock() { return millis(); }
 
-void logResume(const char* format, ...) {
-    char line[128];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(line, sizeof line, format, args);
-    va_end(args);
-    Serial.println(line);
+auto allocateFrameChunk() {
+    return std::unique_ptr<uint8_t, decltype(&heap_caps_free)>(
+        static_cast<uint8_t*>(heap_caps_malloc(kResumeChunk, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
+        heap_caps_free);
 }
 // Preserve the exact previous power-save mode on every return path.
 struct DownloadPower {
@@ -47,24 +43,30 @@ struct DownloadPower {
     DownloadPower() { WiFi.setSleep(false); }
     ~DownloadPower() { WiFi.setSleep(previous); }
 };
-bool validate(File& f, const char* id = "", FsStore* store = nullptr) {
+bool validate(File& f, const char* id = "", FsStore* store = nullptr, const char* sha = "") {
     FrameHash digest;
+    const bool verify = *id || *sha;
     uint8_t block[512];
     const auto read = [&](size_t count) {
         return store ? store->readExact(f, block, count) : f.read(block, count) == count;
     };
     if (!f || !read(16) || !validFrameHeader(block, f.size())) return false;
-    if (*id) digest.add(block, 16);
+    if (verify) digest.add(block, 16);
     size_t remaining = frameSize - 16;
     while (remaining) {
         const size_t n = std::min(remaining, sizeof(block));
         if (!read(n)) return false;
         for (size_t i = 0; i < n; ++i)
             if ((block[i] >> 4) > 5 || (block[i] & 15) > 5) return false;
-        if (*id) digest.add(block, n);
+        if (verify) digest.add(block, n);
         remaining -= n;
     }
-    return (!*id || digest.finish().compare(0, 16, id) == 0) && f.seek(16);
+    if (verify) {
+        const auto actual = digest.finish();
+        if (*sha ? strcasecmp(actual.c_str(), sha) != 0 : actual.compare(0, 16, id) != 0)
+            return false;
+    }
+    return f.seek(16);
 }
 // SD stages verified bytes. Copy them into LittleFS so replacement remains
 // a single rename on the same filesystem as the display cache.
@@ -83,6 +85,42 @@ bool copyToCache(FsStore& store, File& staged, const char* path, uint8_t* block)
     if (!ok) LittleFS.remove(temporary.c_str());
     return ok;
 }
+
+bool promoteFrame(FsStore& store, bool flash, File& staged, const char* target,
+                  const char* path, uint8_t* block) {
+    if (flash) {
+        staged.close();
+        return store.renameCommitted(target, path);
+    }
+    const bool copied = copyToCache(store, staged, path, block);
+    staged.close();
+    if (copied) store.removeCommitted(target);
+    return copied;
+}
+
+bool recoverFrame(FsStore& store, bool flash, const char* path, const ScreenInfo* frame) {
+    const auto target = frameTarget(path);
+    auto staged = store.openCommitted(target.c_str());
+    if (!staged) return false;
+
+    const auto* expected = frame && frame->id[0]
+        ? expectedFrame((String(installation.host) + frame->url).c_str()) : nullptr;
+    if (!expected || !hex64(expected->sha.c_str()) ||
+        !validate(staged, "", &store, expected->sha.c_str())) {
+        staged.close();
+        store.removeCommitted(target.c_str());
+        if (!flash) LittleFS.remove((std::string(path) + ".tmp").c_str());
+        return false;
+    }
+    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> block(nullptr, heap_caps_free);
+    if (!flash) {
+        block = allocateFrameChunk();
+        if (!block) return false;
+    }
+    if (!promoteFrame(store, flash, staged, target.c_str(), path, block.get())) return false;
+    if (securityConfigured()) Serial.println("security frame-hash=verified");
+    return true;
+}
 }
 
 bool canStageExtraFrame(const char* path) {
@@ -96,16 +134,28 @@ bool canStageExtraFrame(const char* path) {
     return LittleFS.totalBytes() + have >= LittleFS.usedBytes() + frameSize + 65536;
 }
 
-void sweepFramePartials() {
+uint8_t sweepFramePartials(const ManifestFrameSlots& frames) {
     const time_t epoch = time(nullptr);
-    if (epoch < resume_detail::kValidEpoch) return;
-    sweepPartials(uint32_t(epoch), [](const PartialMeta& meta) {
-        if (strncmp(meta.validator, frameValidatorPrefix, sizeof(frameValidatorPrefix) - 1))
-            return true;
-        return std::any_of(expectedHashes.begin(), expectedHashes.end(), [&](const ExpectedHash& frame) {
-            return frameValidator(frame) == meta.validator;
+    if (epoch >= resume_detail::kValidEpoch) {
+        sweepPartials(uint32_t(epoch), [](const PartialMeta& meta) {
+            if (strncmp(meta.validator, frameValidatorPrefix, sizeof(frameValidatorPrefix) - 1))
+                return true;
+            return std::any_of(expectedHashes.begin(), expectedHashes.end(), [&](const ExpectedHash& frame) {
+                return frameValidator(frame) == meta.validator;
+            });
         });
-    });
+    }
+
+    uint8_t recovered = 0;
+    auto& flash = flashPartialStore();
+    for (size_t i = 0; i < frames.size(); ++i) {
+        // Flash can still have a committed stage from a wake without SD.
+        bool promoted = recoverFrame(flash, true, frameCachePaths[i], frames[i]);
+        if (!partialsOnFlash())
+            promoted = recoverFrame(partialStore(), false, frameCachePaths[i], frames[i]) || promoted;
+        if (promoted) recovered |= uint8_t(1u << i);
+    }
+    return recovered;
 }
 
 bool fetchFrame(const char* url, const char* path) {
@@ -134,9 +184,7 @@ bool fetchFrame(const char* url, const char* path) {
     if (securityConfigured() && !hex64(sha)) return result(FetchOutcome::Failed, "manifest");
 
     // Buffer a full checkpoint in internal RAM for flash and SD writes.
-    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> block(
-        static_cast<uint8_t*>(heap_caps_malloc(kResumeChunk, MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)),
-        heap_caps_free);
+    auto block = allocateFrameChunk();
     if (!block) return result(FetchOutcome::Failed, "memory");
 
     std::string sourceUrl = url;
@@ -154,8 +202,8 @@ bool fetchFrame(const char* url, const char* path) {
     DownloadPower power;
     const bool flash = partialsOnFlash();
     const auto outcome = resumeFetch(transport, store, target.c_str(), source, frameBudgetMs - elapsed,
-        frameClock, epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logResume, &reason,
-        {}, block.get());
+        frameClock, epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logTransferOutcome,
+        &reason, {}, block.get(), kResumeChunk);
     if (transport.aborted()) {
         Serial.printf("download debug-abort bytes=%u cache-preserved\n", unsigned(transport.bytesRead()));
         return result(outcome, "debug-abort");
@@ -173,12 +221,11 @@ bool fetchFrame(const char* url, const char* path) {
 
     auto staged = store.openCommitted(target.c_str());
     const bool valid = validate(staged, legacyId, &store);
-    bool committed = false;
-    if (valid && !flash) committed = copyToCache(store, staged, path, block.get());
-    staged.close();
-    if (valid && flash) committed = store.renameCommitted(target.c_str(), path);
-    if (!flash || !committed) store.removeCommitted(target.c_str());
+    const bool committed = valid && promoteFrame(store, flash, staged, target.c_str(), path, block.get());
+    if (!valid) staged.close();
+    if (!committed) store.removeCommitted(target.c_str());
     if (&partialStore() != &store && !committed) return result(FetchOutcome::NoProgress, "storage");
+    if (committed && securityConfigured()) Serial.println("security frame-hash=verified");
     return result(committed ? FetchOutcome::Complete : FetchOutcome::Failed,
                   committed ? "ok" : valid ? "storage" : "frame");
 }

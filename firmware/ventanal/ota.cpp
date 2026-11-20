@@ -9,7 +9,6 @@
 #include "../common/resume/ota_stage.h"
 #include "../common/resume/storage.h"
 #include <LittleFS.h>
-#include <cstdarg>
 #include <Update.h>
 #include <algorithm>
 #include <esp_ota_ops.h>
@@ -189,15 +188,6 @@ OtaFailure writeImage(Preferences& prefs, const esp_partition_t& target,
 
 uint32_t otaClock() { return millis(); }
 
-void logStage(const char* format, ...) {
-    char line[128];
-    va_list args;
-    va_start(args, format);
-    vsnprintf(line, sizeof line, format, args);
-    va_end(args);
-    Serial.println(line);
-}
-
 template<class StillAllowed>
 OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
                            const ReleaseInfo& release, const char* url, RangeTransport& transport,
@@ -216,7 +206,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
     if (!stillAllowed()) return deferInstall("schedule");
     const auto elapsed = millis() - started;
     if (elapsed >= transferMs) {
-        logOtaStage(OtaStage::NoProgress, "budget", 0, release.size, logStage);
+        logOtaStage(OtaStage::NoProgress, "budget", 0, release.size, logTransferOutcome);
         return deferInstall("budget");
     }
 
@@ -229,7 +219,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
     const auto free = [&] { return &partialStore() == &store ? partialFreeBytes() : uint64_t{0}; };
     const char* reason = nullptr;
     const auto outcome = stageUpdate(transport, release, transferMs - elapsed, store, url, true,
-                                     otaClock, uint32_t(time(nullptr)), free, evict, logStage,
+                                     otaClock, uint32_t(time(nullptr)), free, evict, logTransferOutcome,
                                      feed, &reason);
     if (!flash && reason && !strcmp(reason, "space")) partialStoreFull();
     if (&partialStore() != &store || outcome == OtaStage::Progress || outcome == OtaStage::NoProgress) {

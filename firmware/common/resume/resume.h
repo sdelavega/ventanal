@@ -4,6 +4,7 @@
 
 #include "partial_store.h"
 #include <algorithm>
+#include <cassert>
 #include <cinttypes>
 #include <functional>
 #include <memory>
@@ -108,12 +109,18 @@ inline const char* verificationFailure(PartialStore& store, const char* target,
 
 }  // namespace resume_detail
 
+// A non-null chunkBuffer must provide at least kResumeChunk writable bytes.
 inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, const char* target,
                                 const ResumeSource& source, uint32_t budgetMs, uint32_t (*nowMs)(),
                                 uint32_t epochNow, void (*log)(const char*, ...),
                                 const char** failureReason = nullptr, const HashFeed& feed = {},
-                                uint8_t* chunkBuffer = nullptr) {
+                                uint8_t* chunkBuffer = nullptr, size_t chunkBufferSize = 0) {
     using namespace resume_detail;
+    assert(!chunkBuffer || chunkBufferSize >= kResumeChunk);
+    if (chunkBuffer && chunkBufferSize < kResumeChunk) {
+        if (failureReason) *failureReason = "memory";
+        return FetchOutcome::Failed;
+    }
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
     const bool separate = source.separateWireValidator;

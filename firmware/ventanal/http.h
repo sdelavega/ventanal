@@ -5,8 +5,18 @@
 #include "security.h"
 #include "../common/resume/resume.h"
 #include <HTTPClient.h>
+#include <cstdarg>
 
 inline constexpr char USER_AGENT[] = "Ventanal/" VENTANAL_FIRMWARE_VERSION;
+
+inline void logTransferOutcome(const char* format, ...) {
+    char line[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    Serial.println(line);
+}
 
 inline void configureHttp(HTTPClient& http) {
     http.setConnectTimeout(5000);

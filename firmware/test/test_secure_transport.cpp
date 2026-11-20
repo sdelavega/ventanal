@@ -81,7 +81,9 @@ int main() {
         return 200;  // A complete body replaces the checkpoint from offset zero.
     };
     const auto requested = requestedUrls.size();
+    const auto logStart = Serial.output.size();
     assert(fetchFrame(artUrl,"/art.vnf"));
+    assert(Serial.output.find("security frame-hash=verified", logStart) != std::string::npos);
     assert(requestedUrls.size() == requested + 2);
     fakeGetResponse = nullptr;
     sizeFromResponse = false;

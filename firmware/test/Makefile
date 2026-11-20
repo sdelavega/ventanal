@@ -123,7 +123,7 @@ test-epaper-cache: build/test_cache build/test_cache_abort
 
 EPAPER_CACHE_STORAGE := ../common/resume/fs_store.cpp ../common/resume/storage.cpp
 build/test_cache build/test_cache_abort build/test_secure_transport: $(EPAPER_CACHE_STORAGE)
-build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h $(wildcard ../common/resume/*.h)
+build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h ../ventanal/net.h $(wildcard ../common/resume/*.h)
 
 build/test_cache: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build

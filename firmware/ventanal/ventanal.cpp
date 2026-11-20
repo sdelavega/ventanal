@@ -872,10 +872,22 @@ void setup() {
             }
         }
         offline=!manifestOk;
+        const ManifestFrameSlots incomingFrames{
+            &art, &weather, &manifestExtras.solar,
+            &manifestExtras.extraScreens[0], &manifestExtras.extraScreens[1],
+            manifestExtras.count > 0 ? &manifestExtras.spares[0] : nullptr,
+            manifestExtras.count > 1 ? &manifestExtras.spares[1] : nullptr,
+            manifestExtras.count > 2 ? &manifestExtras.spares[2] : nullptr
+        };
+        const std::array<ScreenInfo*, frameCachePaths.size()> cachedFrames{
+            &state.art, &state.weather, &state.solar, &state.extraScreens[0], &state.extraScreens[1],
+            &state.owner.spares[0], &state.owner.spares[1], &state.owner.spares[2]
+        };
+        const auto acceptFrame = [&](unsigned slot) {
+            *cachedFrames[slot] = *incomingFrames[slot];
+            if (slot >= 3 && slot < 5) strcpy(state.extraNames[slot-3], manifestExtras.names[slot-3]);
+        };
         if(manifestOk) {
-#ifndef VENTANAL_HOST_TEST
-            sweepFramePartials();
-#endif
             if(persisted && manifestBoardQuery[0]) acknowledgeOtaReport(prefs,otaBoot);
             if(persisted && !storeBattery(prefs,manifestBatteryFullMv)) Serial.println("error=battery-calibration-save");
             if(!persisted) batteryFullMv=manifestBatteryFullMv;
@@ -884,6 +896,11 @@ void setup() {
                 if(mounted) LittleFS.end();
                 sleepCritical(prefs,state,pct,chargeAttempted);
                 return;
+            }
+            if(mounted) {
+                const auto recovered = sweepFramePartials(incomingFrames);
+                for (unsigned slot = 0; slot < frameCachePaths.size(); ++slot)
+                    if (recovered & (1u << slot)) acceptFrame(slot);
             }
             if(state.owner.queue.count) Serial.printf("skip reports acknowledged count=%u\n",unsigned(state.owner.queue.count));
             state.owner.queue.acknowledge(true);
@@ -904,25 +921,12 @@ void setup() {
             // watchdog arming. Frame downloads and display don't feed it.
             uint8_t next=0;
             if(persisted) prefs.getBytes("dl-next",&next,sizeof next);
-            if(next>=8) next=0;
-            for(unsigned step=0;step<8;++step) {
-                const unsigned slot=(next+step)%8;
-                ScreenInfo* cached=nullptr;
-                const ScreenInfo* incoming=nullptr;
-                char path[24];
-                if(slot==0) { cached=&state.art; incoming=&art; strcpy(path,"/art.vnf"); }
-                else if(slot==1) { cached=&state.weather; incoming=&weather; strcpy(path,"/weather.vnf"); }
-                else if(slot==2) { cached=&state.solar; incoming=&manifestExtras.solar; strcpy(path,"/solar.vnf"); }
-                else if(slot<5) {
-                    const unsigned i=slot-3;
-                    cached=&state.extraScreens[i]; incoming=&manifestExtras.extraScreens[i];
-                    snprintf(path,sizeof path,"/extra%u.vnf",i);
-                } else {
-                    const unsigned i=slot-5;
-                    cached=&state.owner.spares[i]; incoming=&manifestExtras.spares[i];
-                    snprintf(path,sizeof path,"/spare%u.vnf",i);
-                    if(i>=manifestExtras.count) incoming=nullptr;
-                }
+            if(next>=frameCachePaths.size()) next=0;
+            for(unsigned step=0;step<frameCachePaths.size();++step) {
+                const unsigned slot=(next+step)%frameCachePaths.size();
+                auto* cached=cachedFrames[slot];
+                const auto* incoming=incomingFrames[slot];
+                const char* path=frameCachePaths[slot];
                 if(!incoming || !incoming->id[0]) {
                     LittleFS.remove(path); LittleFS.remove((String(path)+".tmp").c_str()); *cached={};
                     if(slot==2) {
@@ -951,15 +955,14 @@ void setup() {
                 }
                 // Persist progress before a transfer: a timeout/failure cannot
                 // monopolize subsequent wakes. The first deferred slot wins.
-                uint8_t following=(slot+1)%8;
+                uint8_t following=(slot+1)%frameCachePaths.size();
                 if(persisted) prefs.putBytes("dl-next",&following,sizeof following);
                 if(extra && !canStageExtraFrame(path)) {
                     Serial.println("extra download deferred=filesystem-budget"); continue;
                 }
                 const String url=String(installation.host)+incoming->url;
                 if(fetchFrame(url.c_str(),path)) {
-                    *cached=*incoming;
-                    if(extra) strcpy(state.extraNames[slot-3],manifestExtras.names[slot-3]);
+                    acceptFrame(slot);
                     save(prefs,state); // Publish the ID only after the file is committed.
                 }
             }
