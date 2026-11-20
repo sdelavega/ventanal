@@ -253,9 +253,9 @@ build/miniz_tinfl.o: $(MINIZ_DIR)/miniz_tinfl.c $(wildcard $(MINIZ_DIR)/*.h) Mak
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c99 -fsanitize=address -c $< -o $@
 
-build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) build/miniz_tinfl.o Makefile
+build/test_lcd43b_sync: test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) $(wildcard ../common/resume/*.h) ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_sync.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
 build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
@@ -304,7 +304,7 @@ build/test_budget build/test_extras build/test_longpress build/test_solar build/
 
 SECURITY_HEADERS = ../ventanal/security_protocol.h ../ventanal/manifest_signature.h
 build/test_security build/test_secure_transport build/test_lcd43b_sync: $(SECURITY_HEADERS)
-build/test_lcd43b_sync: ../lcd43b/build_config.h ../lcd43b/host_request.h ../lcd43b/installation.h ../lcd43b/transport.h
+build/test_lcd43b_sync: ../lcd43b/build_config.h ../lcd43b/host_request.h ../lcd43b/host_transport.h ../lcd43b/installation.h ../lcd43b/transport.h
 build/test_security build/test_lcd43b_manifest build/test_lcd43b_sync build/test_lcd43b_persist: ../common/ota_state.h
 
 build/test_portal_form: test_portal_form.cpp ../common/setup_portal/form.h Makefile

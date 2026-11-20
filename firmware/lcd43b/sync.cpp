@@ -13,7 +13,8 @@
 #include "wifi_roam.h"
 #include <vector>
 
-#include "host_request.h"
+#include "../common/resume/storage.h"
+#include "host_transport.h"
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
@@ -254,112 +255,47 @@ bool connectForUpdates(Watchdog& watchdog) {
     return wifiConnect(watchdog) && (time(nullptr) >= 1704067200 || syncTime(watchdog));
 }
 
-static bool receiveAttempt(const char* hostUrl, const FrameInfo& info,
-                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
-                           uint32_t started, bool& retryable) {
-    bool ok = false;
-    bool excess = false;
-    HostRequest request;
-    auto& http = request.http;
-    if (!request.begin(hostUrl, String(info.url), decodeDeviceKey(installation.deviceKey)))
-        return false;
-    const uint32_t attemptStarted = millis();
-    watchdog.feed();
-    const int status = http.GET();
-    watchdog.feed();
-#ifdef VENTANAL_LCD_DIAG_PANEL
-    constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
-    log("panel heap free_internal=%u largest_internal=%u\n",
-        unsigned(heap_caps_get_free_size(internal)),
-        unsigned(heap_caps_get_largest_free_block(internal)));
-#endif
-    if (status == 200 && http.getSize() == int(info.size)) {
-        size_t got = 0;
-        uint32_t lastProgress = millis();
-        bool idle = false;
-        WiFiClient* stream = http.getStreamPtr();
-        while (stream && got < info.size && millis() - started < TRANSFER_BUDGET_MS) {
-            watchdog.feed();
-            const int available = stream->available();
-            if (available > 0) {
-                // Every read is bounded by the bytes still missing, so the
-                // PSRAM staging buffer can never overflow no matter what
-                // the server sends (pinned by test_lcd43b_sync).
-                const size_t remaining = info.size - got;
-                const size_t n = std::min({size_t(available), CHUNK_BYTES,
-                                          remaining});
-                const int read = stream->read(buffer + got, n);
-                if (read < 0) break;
-                if (read > 0) {
-                    got += size_t(read);
-                    lastProgress = millis();
-                    continue;
-                }
-            }
-            if (!http.connected()) break;
-            if (millis() - lastProgress >= BODY_IDLE_MS) {
-                idle = true;
-                break;
-            }
-            delay(2);
-        }
-        // Connection-close framing with a bounded completion check: the
-        // frame is only accepted after the server hangs up with exactly
-        // the advertised bytes. Trailing bytes reject the download
-        // whenever they arrive — a delayed packet after a hash-matching
-        // frame is malformed, not verified — and a connection that
-        // neither delivers nor closes within the grace window is
-        // incomplete: fail closed, keep the previous cache entry.
-        bool closed = false;
-        if (got == info.size) {
-            const uint32_t closeStarted = millis();
-            while (true) {
-                watchdog.feed();
-                if (stream->available() > 0) {
-                    excess = true;
-                    break;
-                }
-                if (!http.connected()) {
-                    closed = true;
-                    break;
-                }
-                if (millis() - closeStarted >= FRAME_CLOSE_GRACE_MS) break;
-                delay(2);
-            }
-        }
-        ok = closed && !excess
-          && strncmp(info.id, info.sha256, 16) == 0
-          && frameHashMatches(buffer, info.size, info.sha256, 64);
-        retryable = got < info.size;
-        const char* outcome = ok ? "verified" : excess ? "excess"
-            : idle ? "body-idle"
-            : retryable ? (millis() - started >= TRANSFER_BUDGET_MS
-                                       ? "body-timeout" : "short-body")
-            : closed ? "invalid-frame" : "close-timeout";
-        log("download slot=%s id=%.16s bytes=%u verified=%d excess=%d"
-            " ms=%lu outcome=%s\n",
-            slotName, info.id, unsigned(got), ok, excess,
-            static_cast<unsigned long>(millis() - attemptStarted), outcome);
-    } else {
-        log("download slot=%s status=%d size=%d\n", slotName, status,
-            http.getSize());
-    }
-    return ok;
-}
+FetchOutcome receiveFrame(const char* hostUrl, const FrameInfo& info,
+                          const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                          uint32_t passStarted) {
+    const auto key = decodeDeviceKey(installation.deviceKey);
+    HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted);
+    if (!transport.remainingMs()) return FetchOutcome::NoProgress;
 
-bool receiveFrame(const char* hostUrl, const FrameInfo& info,
-                         const char* slotName, uint8_t* buffer, Watchdog& watchdog) {
-    if (!buffer || !validWireSize(info.encoding, info.size)) return false;
-    const uint32_t started = millis();
-    bool retryable = false;
-    if (receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable))
-        return true;
-    // A partial or stalled body is a transport failure. Retry once with
-    // a fresh connection, retaining the original frame's overall budget.
-    if (!retryable || millis() - started >= TRANSFER_BUDGET_MS - 2 * HTTP_TIMEOUT_MS)
-        return false;
-    log("download slot=%s retry=body\n", slotName);
-    return receiveAttempt(hostUrl, info, slotName, buffer, watchdog, started, retryable);
+    auto& store = partialStore();
+    const auto target = std::string("frame-") + slotName;
+    if (!buffer || !validWireSize(info.encoding, info.size) ||
+        strncmp(info.id, info.sha256, 16) != 0) {
+        store.discard(target.c_str());
+        return FetchOutcome::Failed;
+    }
+    auto url = hostAssetUrl(hostUrl, info.url);
+    if (url.size() >= sizeof(PartialMeta::url)) {
+        // The sidecar has a fixed URL field. Preserve the full source identity
+        // for longer URLs while HostRequest still uses the original URL.
+        Sha256 hash;
+        hash.update(reinterpret_cast<const uint8_t*>(url.data()), url.size());
+        url = "sha256:" + hexBytes(hash.digest(), 32);
+    }
+    // The host publishes the same SHA-256 in signed and legacy manifests.
+    const ResumeSource source{url.c_str(), info.id, info.sha256, uint32_t(info.size), true};
+    const auto epoch = time(nullptr);
+    const auto outcome = resumeFetch(transport, store, target.c_str(), source,
+        transport.remainingMs(), []() -> uint32_t { return millis(); },
+        epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, nullptr);
+    if (transport.malformed()) {
+        store.discard(target.c_str());
+        return FetchOutcome::Failed;
+    }
+    if (outcome != FetchOutcome::Complete)
+        return &partialStore() != &store ? FetchOutcome::NoProgress : outcome;
+
+    const bool loaded = store.takeCommitted(target.c_str(), buffer, info.size);
+    watchdog.feed();
+    log("download slot=%s id=%.16s bytes=%u verified=%d\n",
+        slotName, info.id, unsigned(info.size), loaded);
+    if (loaded) return FetchOutcome::Complete;
+    return &partialStore() != &store ? FetchOutcome::NoProgress : FetchOutcome::Failed;
 }
 
 void runRefresh(const char* hostUrl, const char* deviceId,
@@ -392,6 +328,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     for(int i=0;i<count;++i) visible[slots[i]]=true;
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
     // Get the small, frequently updated pages onto the display before art.
+    const uint32_t passStarted = millis();
     for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
         const FrameInfo* info = published[slot];
@@ -416,6 +353,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
+        if (millis() - passStarted >= TRANSFER_BUDGET_MS) continue;
         uint8_t* bytes = nullptr;
         if (cache.staging && cache.allocated[slot]) {
             bytes = static_cast<uint8_t*>(ps_malloc(info->size));
@@ -431,10 +369,12 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             continue;
         }
         FrameBody body{std::shared_ptr<uint8_t>(bytes, free), info->size};
-        const bool received = [&] {
+        const auto outcome = [&] {
             ScanScope activity(ScanActivity::Receive);
-            return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog);
+            return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog, passStarted);
         }();
+        if (outcome == FetchOutcome::Progress || outcome == FetchOutcome::NoProgress) continue;
+        const bool received = outcome == FetchOutcome::Complete;
         const uint32_t decodeStart = millis();
         const bool decoded = received && [&] {
             ScanScope activity(ScanActivity::Inflate);

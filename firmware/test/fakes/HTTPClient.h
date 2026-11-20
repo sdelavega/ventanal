@@ -20,6 +20,9 @@ inline unsigned readDelay=0, streamTimeout=15000;
 inline size_t largestRead = 0;
 inline size_t readBytesCalls = 0;
 inline size_t frameReadCalls = 0;
+inline size_t frameBytesRead = 0;
+inline int (*fakeGetResponse)() = nullptr;
+inline std::map<std::string, std::string> fakeResponseHeaders;
 // lcd43b sync test additions (defaults keep the e-paper tests unchanged):
 inline std::map<std::string,std::vector<uint8_t>> urlResponses; // per-URL body
 inline bool sizeFromResponse = false;  // getSize() reports the body size
@@ -48,7 +51,7 @@ public:
         return std::min(size_t(1460), remaining);
     }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
-    int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; return n; }
+    int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; frameBytesRead+=n; return n; }
     bool connected() { if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {
@@ -65,6 +68,11 @@ public:
     void setTimeout(unsigned) {}
     void setConnectTimeout(unsigned) {}
     void setUserAgent(const char* value) { lastUserAgent=value; }
+    void collectHeaders(const char*[], size_t) {}
+    String header(const char* key) {
+        const auto found = fakeResponseHeaders.find(key);
+        return found == fakeResponseHeaders.end() ? String() : String(found->second.c_str());
+    }
     int GET() {
         requestedUrls.push_back(lastUrl);
         auto perUrl = urlResponses.find(lastUrl);
@@ -75,7 +83,8 @@ public:
         // hangs up (the round-4 framing bug).
         lastConnectionHeader = reuse ? "keep-alive" : "close";
         lastHeaders["Connection"] = lastConnectionHeader;
-        return status;
+        fakeResponseHeaders.clear();
+        return fakeGetResponse ? fakeGetResponse() : status;
     }
     int getSize() { return sizeFromResponse ? int(response.size()) : advertisedSize; }
     WiFiClient* getStreamPtr() { return client; }

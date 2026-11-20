@@ -21,6 +21,8 @@ public:
     void discard(const char* target) override;
     bool sha256(const char* target, uint8_t out[32]) override;
 
+    // Read a verified staging file into the caller's buffer and retire it.
+    bool takeCommitted(const char* target, uint8_t* bytes, size_t size);
     void sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&));
 
 private:

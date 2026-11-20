@@ -12,6 +12,9 @@
 
 #include "../lcd43b/sync.h"
 #include "../lcd43b/inflate.h"
+#include "../lcd43b/installation.h"
+#include "../common/resume/resume.h"
+#include "../ventanal/manifest_signature.h"
 // The host build always compiles sync.cpp against the public example
 // configuration (VENTANAL_HOST_TEST), so the test asserts the same macro.
 #include "../lcd43b/config.example.h"
@@ -123,6 +126,11 @@ Entry makeEntry(const std::string& name, const std::vector<uint8_t>& frame,
     return entry;
 }
 
+bool receiveFrame(const Entry& entry, std::vector<uint8_t>& buffer, CountingWatchdog& watchdog) {
+    return lcd::receiveFrame("http://host", entry.info, "art", buffer.data(), watchdog, millis())
+        == FetchOutcome::Complete;
+}
+
 std::string manifestBody(const Entry& art, const Entry& weather) {
     return "{\"version\":1,\"screens\":{\"art\":" + art.body
          + ",\"weather\":" + weather.body
@@ -144,6 +152,9 @@ void resetFakes() {
     advertisedSize = 0;
     largestRead = 0;
     frameReadCalls = 0;
+    frameBytesRead = 0;
+    fakeGetResponse = nullptr;
+    lastHeaders.clear();
     fakeClock = 0;
     fakeSyncStatus = SNTP_SYNC_STATUS_COMPLETED;
     delayedFrom = 0;
@@ -160,9 +171,131 @@ void resetFakes() {
     fakeTz.clear();
 }
 
+bool cutFirstPass = false;
+std::vector<uint32_t> rangeStarts;
+uint64_t lastCounter = 0;
+
+void serveRanges(const Entry& art, const Entry& weather,
+                 const std::vector<uint8_t>& artBytes, const char* origin = "http://host") {
+    responseBody = manifestBody(art, weather);
+    urlResponses[origin + art.url] = artBytes;
+    sizeFromResponse = true;
+    rangeStarts.clear();
+    lastCounter = 0;
+    fakeGetResponse = [] {
+        if (lastUrl.compare(0, 8, "https://") == 0) {
+            const auto path = lastUrl.substr(lastUrl.find('/', 8));
+            const auto key = decodeDeviceKey(lcd::installation.deviceKey);
+            const auto counter = std::stoull(lastHeaders.at("X-Ventanal-Counter"));
+            assert(counter > lastCounter);
+            assert(lastHeaders.at("Authorization") == "Ventanal " +
+                   requestProof(key, "GET", path.c_str(), counter));
+            assert(lastHeaders.at("X-Ventanal-Device") == "test-device");
+            lastCounter = counter;
+        }
+        if (lastUrl.find("/frames/") == std::string::npos) return 200;
+        const auto range = lastHeaders.find("Range");
+        if (range == lastHeaders.end()) return 200;
+        unsigned start = 0, end = 0;
+        assert(sscanf(range->second.c_str(), "bytes=%u-%u", &start, &end) == 2);
+        const auto etag = "\"" + lastUrl.substr(lastUrl.size() - 20, 16) + "\"";
+        if (start) assert(lastHeaders.at("If-Range") == etag);
+        rangeStarts.push_back(start);
+        if (cutFirstPass && start == kResumeChunk) {
+            fakeClock += lcd::TRANSFER_BUDGET_MS;
+            return HTTPC_ERROR_READ_TIMEOUT;
+        }
+        assert(start <= end && end < response.size() && end - start < kResumeChunk);
+        const auto total = response.size();
+        fakeResponseHeaders["ETag"] = etag;
+        fakeResponseHeaders["Content-Range"] = "bytes " + std::to_string(start) + "-"
+            + std::to_string(end) + "/" + std::to_string(total);
+        const auto first = response.begin() + start;
+        response = std::vector<uint8_t>(first, response.begin() + end + 1);
+        return 206;
+    };
+}
+
+void host_frame_unfinished_is_not_failed(const lcd::RefreshResult& result,
+                                         const std::vector<uint8_t>& previous) {
+    assert(!result.frameOk[0] && !result.frameFailed[0] && !result.frameIds[0][0]);
+    assert(!stagedBodies[0].bytes && files.at("/art.vnr") == previous);
+    assert(!lcd::anyRequiredFrameFailed(result));
+}
+
+void host_frame_resumes_across_passes() {
+    resetFakes();
+    const auto frame = solidFrame(0xF800);
+    const auto previous = solidFrame(0x07E0);
+    const Entry art = makeEntry("art", frame);
+    const Entry weather = makeEntry("weather", previous);
+    const Entry spare = makeEntry("spare", previous);
+    serveRanges(art, weather, frame);
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + spare.body + "]");
+    files["/art.vnr"] = previous;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[0], "aaaaaaaaaaaaaaaa");
+    strcpy(ids[1], weather.info.id);
+    CountingWatchdog watchdog;
+    lcd::RefreshResult result;
+    cutFirstPass = true;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(frameBytesRead == kResumeChunk);
+    assert(files.at("/partials/frame-art.part").size() == kResumeChunk);
+    host_frame_unfinished_is_not_failed(result, previous);
+    assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + spare.url) == 0);
+    assert(!result.frameOk[3] && !result.frameFailed[3]);
+
+    cutFirstPass = false;
+    rangeStarts.clear();
+    strcpy(ids[3], spare.info.id);
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!rangeStarts.empty() && rangeStarts.front() == kResumeChunk);
+    assert(frameBytesRead == frame.size());
+    assert(result.frameOk[0] && !result.frameFailed[0] && !strcmp(result.frameIds[0], art.info.id));
+    assert(stagedBodies[0].size == frame.size());
+    assert(memcmp(stagedBodies[0].bytes.get(), frame.data(), frame.size()) == 0);
+    assert(files.size() == 1 && files.at("/art.vnr") == previous);
+}
+
+void host_frame_hash_mismatch_fails() {
+    resetFakes();
+    const auto frame = solidFrame(0xF800);
+    const auto previous = solidFrame(0x07E0);
+    const Entry art = makeEntry("art", frame);
+    const Entry weather = makeEntry("weather", previous);
+    auto corrupt = frame;
+    corrupt.back() ^= 1;
+    const auto originalInstallation = lcd::installation;
+    strcpy(lcd::installation.deviceKey, std::string(64, 'a').c_str());
+    strcpy(lcd::installation.pairing, "test-device");
+    strcpy(lcd::installation.certificate, "fake certificate for the fake HTTP client");
+    serveRanges(art, weather, corrupt, "https://host");
+    JsonDocument manifest;
+    assert(!deserializeJson(manifest, responseBody));
+    const auto key = decodeDeviceKey(lcd::installation.deviceKey);
+    manifest["sig"] = hmacHex(key, canonicalJson(manifest.as<JsonVariantConst>()));
+    responseBody.clear();
+    serializeJson(manifest, responseBody);
+    files["/art.vnr"] = previous;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[0], "aaaaaaaaaaaaaaaa");
+    strcpy(ids[1], weather.info.id);
+    CountingWatchdog watchdog;
+    lcd::RefreshResult result;
+    refresh("https://host", "lcd43b", ids, result, watchdog);
+    lcd::installation = originalInstallation;
+    assert(result.manifestOk && lastCounter > 1);
+    assert(frameBytesRead == frame.size());
+    assert(!result.frameOk[0] && result.frameFailed[0] && !stagedBodies[0].bytes);
+    assert(files.size() == 1 && files.at("/art.vnr") == previous);
+}
+
 }  // namespace
 
 int main() {
+    host_frame_resumes_across_passes();
+    host_frame_hash_mismatch_fails();
     {   // Oversized response: the header advertises the frame size but the
         // body keeps sending. Reads never pass the frame end, the extra
         // bytes reject the download, and the buffer is untouched beyond it.
@@ -174,10 +307,9 @@ int main() {
         advertisedSize = int(lcd::FRAME_BYTES);        // the header lies
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES + 4096, 0);   // guard band
-        assert(!lcd::receiveFrame("http://host", art.info, "art",
-                                   buffer.data(), watchdog));
+        assert(!receiveFrame(art, buffer, watchdog));
         assert(strstr(Serial.output.c_str(), "excess=1"));
-        assert(largestRead <= lcd::CHUNK_BYTES);   // chunk cap held
+        assert(largestRead <= kResumeChunk);   // chunk cap held
         for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
             assert(buffer[i] == 0);                // guard band never written
     }
@@ -198,8 +330,7 @@ int main() {
         delayedUntilMs = 300;
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES + 4096, 0);   // guard band
-        assert(!lcd::receiveFrame("http://host", art.info, "art",
-                                   buffer.data(), watchdog));
+        assert(!receiveFrame(art, buffer, watchdog));
         assert(strstr(Serial.output.c_str(), "excess=1"));
         assert(files["/art.vnr"] == previous);   // previous cache preserved
         for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
@@ -218,8 +349,7 @@ int main() {
         holdConnection = true;                 // no hang-up, no extra bytes
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(!lcd::receiveFrame("http://host", art.info, "art",
-                                   buffer.data(), watchdog));
+        assert(!receiveFrame(art, buffer, watchdog));
         assert(!strstr(Serial.output.c_str(), "excess=1"));
         assert(files["/art.vnr"] == previous);  // previous cache preserved
     }
@@ -231,11 +361,10 @@ int main() {
         advertisedSize = int(lcd::FRAME_BYTES);
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(!lcd::receiveFrame("http://host", art.info, "art",
-                                   buffer.data(), watchdog));
+        assert(!receiveFrame(art, buffer, watchdog));
         assert(!files.count("/art.vnr"));
     }
-    {   // A valid frame downloads and verifies with no filesystem writes.
+    {   // A valid frame downloads, verifies, and leaves no staging files.
         resetFakes();
         const std::vector<uint8_t> frame = solidFrame(0x001F);
         Entry art = makeEntry("art", frame);
@@ -243,8 +372,7 @@ int main() {
         advertisedSize = int(lcd::FRAME_BYTES);
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(lcd::receiveFrame("http://host", art.info, "art",
-                                  buffer.data(), watchdog));
+        assert(receiveFrame(art, buffer, watchdog));
         assert(buffer == frame);
         assert(files.empty());
         assert(!strstr(Serial.output.c_str(), "excess=1"));
@@ -466,15 +594,13 @@ int main() {
         assert(result.manifestOk);        // the manifest itself arrived
         assert(!result.frameOk[0] && !result.frameOk[1]);
         assert(!result.dropSlot[0] && !result.dropSlot[1]);
-        assert(result.frameFailed[0] && result.frameFailed[1]);   // required
-        assert(lcd::anyRequiredFrameFailed(result));   // the pass failed
+        assert(!result.frameFailed[0] && !result.frameFailed[1]);   // awaiting more data
+        assert(!lcd::anyRequiredFrameFailed(result));
         assert(!stagedBodies[0].bytes && !stagedBodies[1].bytes);
         const uint32_t elapsed = fakeClock - started;
-        assert(elapsed < 2 * lcd::TRANSFER_BUDGET_MS + 80000);   // bounded
-        assert(watchdog.feeds > 5000);   // fed during both attempts on each frame
-        assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + weather.url) == 2);
-        assert(strstr(Serial.output.c_str(), "outcome=body-idle"));
-        assert(strstr(Serial.output.c_str(), "download slot=weather retry=body"));
+        assert(elapsed < lcd::TRANSFER_BUDGET_MS);
+        assert(watchdog.feeds > 1000);   // fed during both frames
+        assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + weather.url) == 1);
     }
     {   // Connection-close framing must actually ask for closure: the
         // outgoing request carries Connection: close (keep-alive disabled),
@@ -490,8 +616,7 @@ int main() {
         persistentServer = true;      // stays open only under keep-alive
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(lcd::receiveFrame("http://host", art.info, "art",
-                                  buffer.data(), watchdog));
+        assert(receiveFrame(art, buffer, watchdog));
         assert(lastConnectionHeader == "close");   // asked the server to close
         assert(!reuse);                            // keep-alive disabled
         assert(buffer == frame && files.empty());
@@ -509,7 +634,7 @@ int main() {
         urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
             std::vector<uint8_t>(responseBody.begin(), responseBody.end());
         urlResponses["http://host" + art.url] = artFrame;
-        // Weather's server answer truncates: no full body ever arrives.
+        // Weather's response advertises a different size from the manifest.
         urlResponses["http://host" + weather.url] =
             std::vector<uint8_t>(1024, 0);
         sizeFromResponse = true;

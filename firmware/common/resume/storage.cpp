@@ -21,7 +21,7 @@ void setPartialSdFilesystem(fs::FS& fs) {
     sd.emplace(fs, "/partials", fallBackToFlash);
 }
 
-PartialStore& partialStore() {
+FsStore& partialStore() {
     if (useSd.load()) return *sd;
     return flash;
 }

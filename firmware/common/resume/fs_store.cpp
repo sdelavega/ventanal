@@ -164,6 +164,22 @@ bool FsStore::sha256(const char* target, uint8_t out[32]) {
     return true;
 }
 
+bool FsStore::takeCommitted(const char* target, uint8_t* bytes, size_t size) {
+    const auto base = path(target);
+    if (base.empty()) return false;
+    auto file = openRead(base);
+    bool ok = file && file.size() == size;
+    while (ok && size) {
+        const size_t count = std::min(size, size_t(kResumeChunk));
+        ok = file.read(bytes, count) == count;
+        bytes += count;
+        size -= count;
+    }
+    file.close();
+    const bool removed = remove(base);
+    return (ok && removed) || fail();
+}
+
 void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)) {
     if (faulted_ || epochNow < resume_detail::kValidEpoch) return;
 #ifdef ARDUINO_ARCH_ESP32

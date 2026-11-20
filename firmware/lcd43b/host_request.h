@@ -13,6 +13,13 @@
 #endif
 
 namespace lcd {
+
+inline std::string hostAssetUrl(const char* origin, const char* path) {
+    size_t length = strlen(origin);
+    while (length && origin[length - 1] == '/') --length;
+    return std::string(origin, length) + path;
+}
+
 #ifndef VENTANAL_HOST_TEST
 class PinnedLeafClient : public WiFiClientSecure {
 public:
@@ -52,10 +59,7 @@ struct HostRequest {
     HTTPClient http;
 
     bool begin(const char* origin, const String& path, const std::string& key) {
-        size_t originLength = strlen(origin);
-        while (originLength && origin[originLength - 1] == '/') --originLength;
-        const auto base = std::string(origin, originLength);
-        const String url = String(base.c_str()) + path;
+        const String url(hostAssetUrl(origin, path.c_str()).c_str());
         const bool secured = strncmp(origin, "https://", 8) == 0;
         if (secured) {
             if (!installation.certificate[0] || key.size() != 32) return false;
@@ -80,6 +84,14 @@ struct HostRequest {
         http.setConnectTimeout(5000);
         http.setUserAgent(USER_AGENT);
         return true;
+    }
+
+    void setRange(uint32_t start, uint32_t end, const char* ifRange) {
+        const char* headers[] = {"Content-Range", "ETag"};
+        http.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
+        const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
+        http.addHeader("Range", range.c_str());
+        if (*ifRange) http.addHeader("If-Range", ("\"" + std::string(ifRange) + "\"").c_str());
     }
 
     ~HostRequest() { http.end(); }

@@ -5,10 +5,10 @@
 
 // The lcd43b refresh engine, host-tested (test_lcd43b_sync). A refresh
 // pass runs on a short-lived FreeRTOS worker task so loop() keeps polling
-// touch and servicing the backlight while Wi-Fi waits, NTP waits and up to
-// six 60 s frame transfers run (Important fix: refresh used to block the
-// loop for the whole pass). The worker receives and decodes frames into
-// scratch; the main loop owns the live slots and all cache writes.
+// touch and servicing the backlight while Wi-Fi waits, NTP waits and a
+// shared 60 s frame transfer budget elapses. The worker stages resumable
+// downloads and decodes into scratch. The main loop owns the live slots
+// and writes the display cache.
 
 #include <LittleFS.h>
 #include <Preferences.h>
@@ -25,6 +25,8 @@
 #include "persist.h"
 #include "scanout_diag.h"
 #include "screens.h"
+
+enum class FetchOutcome;
 
 namespace lcd {
 
@@ -50,7 +52,7 @@ struct ResidentCache {
     bool (*releaseFrame)(int slot) = nullptr;
 };
 
-// Budgets (ms). The transfer budget bounds each stalled frame download;
+// Budgets (ms). The transfer budget is shared by all frame downloads in the pass;
 // the watchdog timeout must exceed the longest blocking call (one HTTP
 // GET with its connect + header timeouts).
 constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
@@ -62,7 +64,6 @@ constexpr uint32_t BODY_IDLE_MS = 6000;
 // a fully received frame waits for the server to hang up before the body
 // is treated as incomplete (fail closed).
 constexpr uint32_t FRAME_CLOSE_GRACE_MS = 1000;
-constexpr size_t CHUNK_BYTES = 32768;
 constexpr uint32_t WATCHDOG_TIMEOUT_MS = 30000;
 
 // Watchdog hooks the refresh worker feeds while it runs; the sketch wires
@@ -86,7 +87,7 @@ struct RefreshResult {
     // Per cache slot: a verified frame was published (with its new id), or
     // the screen vanished from the manifest (drop the cached frame). A
     // failed download stages neither — the previous cache entry stays —
-    // but a slot whose required download failed (timeout, verification
+    // but a slot whose required download failed (verification, decode
     // or no staging buffer) sets frameFailed, so a manifest-only
     // success can never report as a fully current pass (the sketch shows
     // DOWNLOAD FAILED instead of UP TO DATE over stale artwork).
@@ -151,8 +152,9 @@ bool connectForUpdates(Watchdog& watchdog);
 // Receive and verify exactly the advertised wire bytes. The caller owns a
 // buffer at least info.size bytes long. Check connection close so even a
 // delayed packet beyond the advertised size rejects the response.
-bool receiveFrame(const char* hostUrl, const FrameInfo& info,
-                  const char* slotName, uint8_t* buffer, Watchdog& watchdog);
+FetchOutcome receiveFrame(const char* hostUrl, const FrameInfo& info,
+                          const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                          uint32_t passStarted);
 
 bool writeCachedFrame(const char* path, const FrameBody& body);
 bool copyCachedFrame(const char* path, const char* source);
