@@ -5,6 +5,7 @@
 #include <cassert>
 #include <cstdarg>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <utility>
 #include <vector>
@@ -37,7 +38,8 @@ struct Exchange {
     int status = 206;
     const char* validator = "one";
     uint32_t responseStart = UINT32_MAX;
-    bool interruptAfterPacket = false;
+    uint32_t cutAfter = UINT32_MAX;
+    bool unknownTotal = false;
 };
 
 class ScriptedTransport : public RangeTransport {
@@ -45,6 +47,7 @@ public:
     std::vector<uint8_t> body;
     std::vector<Exchange> script;
     size_t requests = 0;
+    std::function<void(uint32_t)> afterPacket;
 
     explicit ScriptedTransport(std::vector<Exchange> steps, uint32_t bytes = kBodySize)
         : body(bytes), script(std::move(steps)) {
@@ -53,8 +56,8 @@ public:
         }
     }
 
-    RangeResponse get(const ResumeSource& source, uint32_t start, uint32_t end,
-                      const char* ifRange, ChunkSink& sink) override {
+    bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
+             const ResponseHeaders& headers, const ChunkSink& sink) override {
         assert(std::string(source.url) == kUrl);
         assert(requests < script.size());
         const Exchange& step = script[requests++];
@@ -64,26 +67,24 @@ public:
 
         RangeResponse response{};
         response.status = step.status;
-        if (step.status == -1) return response;
-        response.total = static_cast<uint32_t>(body.size());
+        if (step.status == -1) return false;
+        const uint32_t bodySize = static_cast<uint32_t>(body.size());
+        response.total = step.unknownTotal ? 0 : bodySize;
         std::snprintf(response.validator, sizeof(response.validator), "%s", step.validator);
-        if (step.status == 416) return response;
+        if (step.status == 416) return headers(response);
         response.start = step.status == 200 ? 0 : start;
         if (step.responseStart != UINT32_MAX) response.start = step.responseStart;
-        response.end = step.status == 200 ? response.total - 1 : std::min(end, response.total - 1);
-        for (uint32_t at = response.start; at <= response.end;) {
-            const uint32_t count = std::min(997u, response.end - at + 1);
-            if (!sink(body.data() + at, count)) {
-                response.status = -1;
-                break;
-            }
-            if (step.interruptAfterPacket) {
-                response.status = -1;
-                break;
-            }
+        response.end = step.status == 200 ? bodySize - 1 : std::min(end, bodySize - 1);
+        if (!headers(response)) return false;
+        const uint32_t length = response.end - response.start + 1;
+        const uint32_t stop = response.start + std::min(step.cutAfter, length);
+        for (uint32_t at = response.start; at < stop;) {
+            const uint32_t count = std::min(997u, stop - at);
+            if (!sink(body.data() + at, count)) return false;
             at += count;
+            if (afterPacket) afterPacket(at - response.start);
         }
-        return response;
+        return step.cutAfter >= length;
     }
 };
 
@@ -204,6 +205,67 @@ void ignored_range_is_whole_download() {
     f.checkCommit(transport);
 }
 
+void whole_body_streams_in_chunks() {
+    constexpr uint32_t total = 5 * kResumeChunk + 100;
+    Fixture f;
+    f.source = {kUrl, "", "", 0, true};
+    ScriptedTransport transport({{kResumeChunk, 2 * kResumeChunk - 1, "one", 200, "two"}}, total);
+    f.seed(kResumeChunk, kResumeChunk, transport.body);
+    transport.body.front() ^= 0xff;
+    uint32_t peakPending = 0;
+    transport.afterPacket = [&](uint32_t delivered) {
+        const int64_t size = f.store.size(kTarget);
+        const uint32_t persisted = size < 0 ? 0 : static_cast<uint32_t>(size);
+        assert(persisted == delivered / kResumeChunk * kResumeChunk);
+        peakPending = std::max(peakPending, delivered - persisted);
+        PartialMeta meta{};
+        assert(f.store.readMeta(kTarget, meta) == (persisted != 0));
+        if (persisted) {
+            assert(meta.have == persisted && meta.total == total);
+            assert(std::string(meta.validator) == "two");
+        }
+    };
+    assert(f.fetch(transport) == FetchOutcome::Complete);
+    f.checkCommit(transport);
+    assert(peakPending <= kResumeChunk);
+    assert((f.store.writes == std::vector<size_t>{kResumeChunk, kResumeChunk, kResumeChunk,
+                                                 kResumeChunk, kResumeChunk, 100}));
+}
+
+void interrupted_whole_body_resumes() {
+    constexpr uint32_t cut = 2 * kResumeChunk;
+    for (bool unknownTotal : {false, true}) {
+        Fixture f;
+        f.source = {kUrl, "", "", 0, true};
+        ScriptedTransport first({{0, 32767, "", 200, "learned", UINT32_MAX, cut, unknownTotal}});
+        assert(f.fetch(first) == FetchOutcome::Progress);
+        PartialMeta meta{};
+        assert(f.store.readMeta(kTarget, meta) && meta.have == cut);
+        assert(meta.total == (unknownTotal ? 0 : kBodySize));
+        assert(std::string(meta.validator) == "learned");
+        assert(f.store.size(kTarget) == cut);
+        ScriptedTransport second({{cut, 98303, "learned", 206, "learned"},
+                                  {98304, 102399, "learned", 206, "learned"}});
+        assert(f.fetch(second) == FetchOutcome::Complete);
+        f.checkCommit(second);
+    }
+}
+
+void interrupted_whole_body_without_identity_restarts() {
+    Fixture f;
+    f.source = {kUrl, "", "", 0, true};
+    ScriptedTransport first({{0, 32767, "", 200, "", UINT32_MAX, 2 * kResumeChunk + 100}});
+    assert(f.fetch(first) == FetchOutcome::Progress);
+    PartialMeta meta{};
+    assert(f.store.readMeta(kTarget, meta) && meta.have == 2 * kResumeChunk && !*meta.validator);
+    assert(f.store.size(kTarget) == meta.have);
+
+    ScriptedTransport second({{0, 32767, "", 200, "", UINT32_MAX, UINT32_MAX, true}});
+    second.body.front() ^= 0xff;
+    assert(f.fetch(second) == FetchOutcome::Complete);
+    f.checkCommit(second);
+}
+
 void torn_partial_resumes_at_sidecar() {
     Fixture f;
     ScriptedTransport transport({{65536, 98303, ""}, {98304, 102399, ""}});
@@ -247,7 +309,7 @@ void no_response_is_no_progress() {
     assert(f.store.readMeta(kTarget, meta) && meta.have == 32768);
     assert(f.store.size(kTarget) == 32768 && f.store.writes.empty());
 
-    ScriptedTransport interrupted({{32768, 65535, "", 206, "one", UINT32_MAX, true}});
+    ScriptedTransport interrupted({{32768, 65535, "", 206, "one", UINT32_MAX, 997}});
     assert(f.fetch(interrupted) == FetchOutcome::NoProgress);
     assert(f.store.readMeta(kTarget, meta) && meta.have == 32768);
     assert(f.store.size(kTarget) == 32768 && f.store.writes.empty());
@@ -273,9 +335,12 @@ int main() {
     validator_change_restarts();
     if_range_full_body_restarts_from_zero();
     ignored_range_is_whole_download();
+    whole_body_streams_in_chunks();
+    interrupted_whole_body_resumes();
+    interrupted_whole_body_without_identity_restarts();
     torn_partial_resumes_at_sidecar();
     sha_mismatch_discards();
     no_response_is_no_progress();
     complete_partial_416_verifies();
-    std::puts("test_resume: 9 tests passed");
+    std::puts("test_resume: 12 tests passed");
 }

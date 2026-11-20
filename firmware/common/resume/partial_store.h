@@ -15,7 +15,7 @@
 struct PartialMeta {
     char url[256];
     char validator[72];
-    uint32_t total;
+    uint32_t total;  // Zero until a response establishes the full length.
     uint32_t have;
     uint32_t touchedAt;
 };
@@ -79,7 +79,7 @@ inline bool decodePartialMeta(const uint8_t* bytes, size_t size, PartialMeta& me
 
     const uint32_t total = readLe32(bytes + kTotalOffset);
     const uint32_t have = readLe32(bytes + kTotalOffset + 4);
-    if (have > total) return false;
+    if (total && have > total) return false;
     std::memcpy(meta.url, bytes + kUrlOffset, sizeof(meta.url));
     std::memcpy(meta.validator, bytes + kValidatorOffset, sizeof(meta.validator));
     meta.total = total;
@@ -95,6 +95,7 @@ public:
     // Successful append must persist bytes before writeMeta publishes the new offset.
     virtual bool append(const char* target, const uint8_t*, size_t) = 0;
     virtual bool truncate(const char* target, uint32_t size) = 0;
+    // Report the size of <target>.part, never the committed target.
     virtual int64_t size(const char* target) = 0;
     // Atomically replace target with <target>.part and retire the sidecar.
     virtual bool commit(const char* target) = 0;
