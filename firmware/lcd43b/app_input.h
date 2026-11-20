@@ -173,7 +173,7 @@ void handleGesture(Gesture gesture, int x, int y) {
         refreshLabel.begin(millis());
         logRefreshLabel();
         if (!startRefresh(true)) {
-            if (refreshBusy)
+            if (refreshBusy && !refreshCheckingUpdates)
                 refreshRequested = true;   // adopt the in-flight pass
             else
                 refreshLabel.clear();       // nothing will finish it

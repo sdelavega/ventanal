@@ -164,6 +164,7 @@ void setup() {
         // Restore persisted state so an offline boot still honours quiet hours
         // and the screen list matches the cache before the first fetch.
         lcd::loadCacheLocations(prefs, persistedFrames);
+        contentStaleness.restore(prefs);
         lcd::loadOwner(prefs,owner);
         if(!owner.mainId[0]) owner.mainChanged(persistedFrames[0].id);
         lcd::loadSelection(prefs, screenIndex, spareCursor);
@@ -330,11 +331,9 @@ void loop() {
     tickClock();
     if(installQueued == lcd::UpdateSource::None && settingsPage.expired(millis())) closeSettings("idle");
     backlightRefresh();
-    // The label hold (~2 s) expires here: redraw the cached frame clean.
-    if (refreshLabel.tick(now)) {
-        logRefreshLabel();
-        show(screenIndex);
-    }
+    // Repaint when held feedback expires or the outage crosses 24 hours.
+    refreshLabel.tick(now);
+    if (logRefreshLabel()) show(screenIndex);
 #ifdef VENTANAL_LCD_DIAG_PANEL
     panelVsyncReport(now);
     panel.reportBounce(now);

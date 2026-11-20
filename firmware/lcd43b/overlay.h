@@ -10,6 +10,7 @@
 #include <cstring>
 #include <initializer_list>
 
+#include "../common/staleness.h"
 #include "frame.h"
 #include "scanout.h"
 #include "aafont.h"
@@ -43,15 +44,21 @@ constexpr int TOPBAR_H = 26;
 constexpr ReadoutRect CLOCK_GAP{548,0,204,26};
 constexpr ReadoutRect ART_CORNER{550,0,250,80};
 inline bool isLcarsSlot(int slot) { return slot==1 || slot==2; }
-inline ReadoutRect readoutRect(int slot) { return isLcarsSlot(slot)?CLOCK_GAP:ART_CORNER; }
+constexpr ReadoutRect WEATHER_CLOCK_GAP{CLOCK_GAP.x, CLOCK_GAP.y, CLOCK_GAP.w, 42};
+inline ReadoutRect readoutRect(int slot, int weatherAge = -1) {
+    if (!isLcarsSlot(slot)) return ART_CORNER;
+    return slot == 1 && weatherAge >= 1 ? WEATHER_CLOCK_GAP : CLOCK_GAP;
+}
 inline uint16_t batteryColour(BatteryLevel lvl) {
     return lvl==BatteryLevel::Ok ? rgb565(95,174,79)
          : rgb565(221,68,68);
 }
 inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcars,
-                          const char* time, const char* date, int percent, BatteryLevel lvl) {
-    const int w=lcars?204:250, h=lcars?26:80;
-    if(lcars) memset(region,0,size_t(w)*h*2);
+                          const char* time, const char* date, int percent, BatteryLevel lvl,
+                          int weatherAge = -1) {
+    const auto rect = readoutRect(lcars ? 1 : 0, weatherAge);
+    const int w = rect.w, h = rect.h;
+    if(lcars) memset(region,0,size_t(w)*CLOCK_GAP.h*2);
     else if (region != artRegion) memcpy(region,artRegion,size_t(w)*h*2);
     if(!*time) return; // no shade, date or fake 1970 clock while invalid
     const bool battery=percent>=0 && lvl!=BatteryLevel::None;
@@ -60,7 +67,13 @@ inline void renderReadout(uint16_t* region, const uint16_t* artRegion, bool lcar
     if(lcars) {
         const int dateX=6+textWidth(ClockTime,time)+10;
         drawText(region,w,h,ClockTime,time,6,20,rgb565(255,170,0));
-        drawText(region,w,h,ClockDate,date,dateX,18,rgb565(153,150,186));
+        const auto dateColour = rgb565(153,150,186);
+        drawText(region,w,h,ClockDate,date,dateX,18,dateColour);
+        if (weatherAge >= 1) {
+            char age[32];
+            snprintf(age, sizeof age, "WEATHER %d H AGO", weatherAge);
+            drawText(region, w, h, ClockDate, age, dateX, 39, dateColour);
+        }
         if(battery) drawText(region,w,h,ClockDate,pct,w-6-textWidth(ClockDate,pct),18,batteryColour(lvl));
     } else {
         // Elliptical radial feather: 62% black at top-right, fully clear
@@ -111,14 +124,7 @@ inline void drawOfflineMark(uint16_t* pixels, int width, int height) {
 // nothing when the server had nothing new). Same overlay font/style as
 // the OFFLINE mark; removed by redrawing the cached frame.
 
-enum class RefreshLabel : uint8_t {
-    None,        // no label
-    Refreshing,  // gesture accepted: fetching now
-    UpToDate,    // fetch finished, nothing changed (held ~2 s)
-    Offline,     // fetch failed (held ~2 s, red like the OFFLINE mark)
-    Failed,      // manifest ok, but a required frame failed (held ~2 s, red):
-                 // UP TO DATE would lie over stale cached artwork
-};
+using ventanal::RefreshLabel;
 
 constexpr uint32_t REFRESH_LABEL_HOLD_MS = 2000;   // ~2 s
 
@@ -157,35 +163,39 @@ inline void drawRefreshLabel(uint16_t* pixels, int width, int height,
 class RefreshLabelState {
 public:
     void begin(uint32_t nowMs) {
+        manual_ = true;
         label_ = RefreshLabel::Refreshing;
         sinceMs_ = nowMs;
     }
-    // offline: the fetch itself failed -> OFFLINE styling. frameFailed: the
-    // manifest arrived but a frame it required did not -> DOWNLOAD FAILED
-    // (the pass is a failure for feedback, whatever else it staged). changed:
-    // new content simply redraws, no label. Otherwise: UP TO DATE for the
-    // hold.
-    void finish(uint32_t nowMs, bool offline, bool changed,
-                bool frameFailed) {
-        label_ = offline ? RefreshLabel::Offline
-                : frameFailed ? RefreshLabel::Failed
-                : changed ? RefreshLabel::None
-                          : RefreshLabel::UpToDate;
+    bool manual() const { return manual_; }
+
+    void finish(uint32_t nowMs, bool offline, bool changed, bool incomplete) {
+        label_ = !manual_ ? RefreshLabel::None
+                : offline ? RefreshLabel::Offline
+                : changed || incomplete ? RefreshLabel::None
+                                        : RefreshLabel::UpToDate;
+        manual_ = false;
         sinceMs_ = nowMs;
     }
-    void clear() { label_ = RefreshLabel::None; }
-    // True when the hold expired this tick (the caller redraws clean).
+    void clear() {
+        manual_ = false;
+        label_ = RefreshLabel::None;
+    }
+    // True when held completion feedback expires.
     bool tick(uint32_t nowMs) {
-        if (label_ != RefreshLabel::UpToDate && label_ != RefreshLabel::Offline
-            && label_ != RefreshLabel::Failed)
+        if (label_ != RefreshLabel::UpToDate && label_ != RefreshLabel::Offline)
             return false;
         if (nowMs - sinceMs_ < REFRESH_LABEL_HOLD_MS) return false;
-        label_ = RefreshLabel::None;
+        clear();
         return true;
     }
-    RefreshLabel label() const { return label_; }
+    RefreshLabel label(uint32_t epochNow, const ventanal::ContentStaleness& content) const {
+        const auto policy = content.label(manual_, epochNow);
+        return manual_ || policy == RefreshLabel::Failed ? policy : label_;
+    }
 
 private:
+    bool manual_ = false;
     RefreshLabel label_ = RefreshLabel::None;
     uint32_t sinceMs_ = 0;
 };

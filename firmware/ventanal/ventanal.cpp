@@ -119,6 +119,8 @@ void clearWatchdogCount(Preferences& prefs) {
 }
 RTC_DATA_ATTR float batteryHistory[4] = {};
 RTC_DATA_ATTR uint8_t batteryCount = 0;
+RTC_DATA_ATTR ventanal::ContentStaleness contentStaleness{};
+RTC_DATA_ATTR bool downloadFailureDrawn = false;
 #if VENTANAL_WAKETEST == 2 || VENTANAL_SPARESTEST
 RTC_DATA_ATTR uint8_t testWakeCount = 0;
 #endif
@@ -245,6 +247,7 @@ struct PendingPanel {
     uint8_t attempts;
     uint8_t kind; // 0=cached frame, 1=waiting, 2=charge-me
     bool offline;
+    bool downloadFailure;
     int pct;
     time_t drawnAt;
     unsigned char stateBytes[sizeof(State)];
@@ -278,9 +281,10 @@ bool panelSeenHigh;
 bool panelMonitoring;
 bool panelRecoveryPending;
 void rememberPanel(const State& state, int pct, bool offline, time_t drawnAt,
-                   uint8_t kind=0, uint8_t sample=0) {
+                   uint8_t kind=0, uint8_t sample=0, bool downloadFailure=false) {
     pendingPanel.magic=0; pendingPanel.attempts=0;
     pendingPanel.kind=kind; pendingPanel.offline=offline;
+    pendingPanel.downloadFailure=downloadFailure;
     pendingPanel.pct=pct; pendingPanel.drawnAt=drawnAt; pendingPanel.sample=sample;
     memcpy(pendingPanel.stateBytes,&state,sizeof state);
     pendingPanel.stateChecksum=panelChecksum();
@@ -537,6 +541,7 @@ void setup() {
     const auto reset=esp_reset_reason();
     Preferences prefs;
     const bool persisted=prefs.begin("ventanal",false);
+    if(persisted && !contentStaleness.lastNewEpoch) contentStaleness.restore(prefs);
     auto otaBoot=readOtaBoot(prefs,persisted);
     otaPendingBoot=otaBoot.pending;
     const bool configured=initializeSettings(!otaPendingBoot);
@@ -715,9 +720,11 @@ void setup() {
             drawReadout(display,selected.readout,pendingPanel.pct,pendingPanel.offline,
                         isLow(pendingPanel.pct),pendingPanel.drawnAt,installation.clock24h);
         }
+        if(pendingPanel.downloadFailure) drawDownloadFailure(display);
         refreshPanel();
         clearWatchdogCount(prefs);
         if(chargeAttempted) storeChargeMarker(prefs,0);
+        downloadFailureDrawn=pendingPanel.downloadFailure;
         Serial.println("panel pon-retry complete");
         state.drawn.any=ready;
         if(ready) {
@@ -884,6 +891,8 @@ void setup() {
             &state.owner.spares[0], &state.owner.spares[1], &state.owner.spares[2]
         };
         const auto acceptFrame = [&](unsigned slot) {
+            if(strcmp(cachedFrames[slot]->id, incomingFrames[slot]->id) != 0)
+                contentStaleness.observe(ventanal::trustedEpoch(time(nullptr)), true);
             *cachedFrames[slot] = *incomingFrames[slot];
             if (slot >= 3 && slot < 5) strcpy(state.extraNames[slot-3], manifestExtras.names[slot-3]);
         };
@@ -976,6 +985,18 @@ void setup() {
             for(unsigned i=0;i<state.orderCount;++i) { State item=state; item.active=state.order[i]; Serial.printf("%s%s",i?",":"",screenName(item)); }
             Serial.println("");
         }
+        contentStaleness.due = !manifestOk;
+        if (manifestOk) {
+            for (unsigned slot=0; slot<frameCachePaths.size(); ++slot) {
+                const auto* incoming=incomingFrames[slot];
+                if (incoming && incoming->id[0] &&
+                    (!mounted || strcmp(incoming->id,cachedFrames[slot]->id) != 0 ||
+                     !LittleFS.exists(frameCachePaths[slot]))) {
+                    contentStaleness.due = true;
+                    break;
+                }
+            }
+        }
         Serial.printf("download ms=%lu\n",static_cast<unsigned long>(millis()-start));
     } else {
         // RTC seeds local time without starting Wi-Fi or SNTP.
@@ -1009,14 +1030,18 @@ void setup() {
     const ScreenInfo& selected=selectedScreen(state);
     const char* path=selectedPath(state);
     const bool cached=mounted && LittleFS.exists(path);
-    const bool redraw=longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));
+    const uint32_t epochNow=ventanal::trustedEpoch(time(nullptr));
+    contentStaleness.observe(epochNow);
+    if(persisted && contentStaleness.checkpointDue(epochNow)) contentStaleness.checkpoint(prefs,epochNow);
+    const bool downloadFailure=contentStaleness.label(false,epochNow)==ventanal::RefreshLabel::Failed;
+    const bool redraw=downloadFailure!=downloadFailureDrawn || longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));
     start=millis();
     if(!cached || redraw || otaPendingBoot) {
         const bool ready=cached && blitFrame(path,display);
         Serial.printf("blit ms=%lu valid=%d\n",static_cast<unsigned long>(millis()-start),ready);
         if(ready) {
             const time_t drawnAt=time(nullptr);
-            rememberPanel(state,pct,offline,drawnAt);
+            rememberPanel(state,pct,offline,drawnAt,0,0,downloadFailure);
             const uint32_t overlayStart=millis();
             drawReadout(display,selected.readout,pct,offline,isLow(pct),drawnAt,installation.clock24h);
             Serial.printf("readout ms=%lu\n",static_cast<unsigned long>(millis()-overlayStart));
@@ -1025,11 +1050,13 @@ void setup() {
             Serial.printf("draw=%s updated=%s offline=%d rect=%d,%d,%d,%d\n",screenName(state),local,offline,
                           selected.readout.x,selected.readout.y,selected.readout.w,selected.readout.h);
         } else {
-            rememberPanel(state,pct,offline,time(nullptr),1);
+            rememberPanel(state,pct,offline,time(nullptr),1,0,downloadFailure);
             drawWaiting(display,installation.host);
             Serial.println("draw=waiting-for-host");
         }
+        if(downloadFailure) drawDownloadFailure(display);
         start=millis(); refreshPanel();
+        downloadFailureDrawn=downloadFailure;
         if(otaPendingBoot && confirmOtaBoot(prefs,otaBoot,manifestOk,ready)) otaPendingBoot=false;
         if(!otaPendingBoot) {
             clearWatchdogCount(prefs);

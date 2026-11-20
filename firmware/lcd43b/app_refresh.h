@@ -168,9 +168,19 @@ void applyResidentFrame() {
     auto& id = state.cachedIds[frame.slot];
     const char* nextId = frame.info ? frame.info->id : "";
     const bool changed = strcmp(id, nextId) != 0;
+    if (changed) {
+        const uint32_t now = ventanal::trustedEpoch(time(nullptr));
+        if (frame.info) contentStaleness.observe(now, true);
+        if (frame.slot == 1) {
+            // Standalone stamps the render. Host manifests carry no publish time,
+            // so use the time the verified weather frame reached the live cache.
+            weatherFrameEpoch = !frame.info ? 0
+                : frame.info->renderedAt ? frame.info->renderedAt : now;
+        }
+    }
     if (mounted && changed) {
         auto& save = deferredFrames[frame.slot];
-        if (save.replace(nextId, *frame.body, millis())) {
+        if (save.replace(nextId, *frame.body, millis(), frame.slot == 1 ? weatherFrameEpoch : 0)) {
             lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
                      unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
         }
@@ -426,12 +436,19 @@ void applyFinishedRefresh() {
         hostOffer = {};
     const bool staleRollback = lcd::rolledBackOffer(updateBoot, hostOffer);
     if (staleRollback) hostOffer = {};
+    const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
+    const bool incomplete = refreshStaging.framesPending || frameFailed;
+    contentStaleness.due = !refreshStaging.manifestOk || incomplete;
+    const uint32_t epochNow = ventanal::trustedEpoch(time(nullptr));
+    contentStaleness.observe(epochNow);
+    const bool checkpoint = contentStaleness.checkpointDue(epochNow);
     bool redraw;
     {
         const bool ackUpdate = refreshStaging.manifestOk && refreshOtaReport[0] && !staleRollback;
         ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate ||
                                                 writesCallState || refreshStaging.artStateChanged ||
-                                                githubChecked || githubCheckFailed));
+                                                githubChecked || githubCheckFailed || checkpoint));
+        if (checkpoint) contentStaleness.checkpoint(prefs, epochNow);
         if (refreshStaging.artStateChanged && !lcd::saveArtState(refreshStaging.artState))
             lcd::log("standalone error=art-save\n");
         if (githubChecked) {
@@ -463,23 +480,15 @@ void applyFinishedRefresh() {
             if (writesOwner) lcd::saveOwner(prefs, owner);
         }
     }
-    xSemaphoreGive(refreshCopied);
-    refreshBusy = false;
-    // A manifest that arrived but lost a frame it required is a failure for
-    // feedback: DOWNLOAD FAILED (red), never UP TO DATE over stale artwork.
-    const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
-    if (refreshRequested)
-        refreshLabel.finish(millis(), !refreshStaging.manifestOk, changed,
-                            frameFailed);
-    else if (redraw)
-        refreshLabel.clear();   // a scheduled redraw replaces the held label
-    logRefreshLabel();
+    refreshLabel.finish(millis(), !refreshStaging.manifestOk, changed, incomplete);
+    const bool labelChanged = logRefreshLabel();
     lcd::log("refresh fetch=%lu ok=%d offline=%d failed=%d\n", fetchCounter++,
              refreshStaging.manifestOk, state.offline, frameFailed);
+    xSemaphoreGive(refreshCopied);
+    refreshBusy = false;
     if (screenIndex != previousIndex)   // normalised to a shrunk list
         lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
-    if (redraw || ((callStateChanged || githubChecked) && settingsPage.active)) show(screenIndex);
-    else if (refreshLabel.label() != lcd::RefreshLabel::None)
-        show(screenIndex);   // redraw the cached frame with the label
+    if (redraw || labelChanged || ((callStateChanged || githubChecked) && settingsPage.active))
+        show(screenIndex);
     backlightRefresh();
 }

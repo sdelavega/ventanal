@@ -8,7 +8,7 @@
 // provide the declarations later parts use. Do not include it anywhere else.
 #pragma once
 // Settings owns the panel while open. Every other redraw routes here, and
-// minute updates use CLOCK_GAP even when the underlying selection is artwork.
+// minute updates replace the readout patch for the current scene.
 void closeSettings(const char* reason);
 constexpr bool patchFitsPanel(lcd::ScanRect r) {
     return r.x >= 0 && r.y >= 0 && r.w > 0 && r.h > 0 &&
@@ -46,6 +46,10 @@ int drawLocalScene(Paint paint, lcd::ReadoutRect damage = {}) {
     return next;
 }
 
+lcd::RefreshLabel currentRefreshLabel() {
+    return refreshLabel.label(ventanal::trustedEpoch(time(nullptr)), contentStaleness);
+}
+
 // Publish the resident image and small, already rendered patches together.
 bool presentScreen(const uint16_t* source, bool localSettings = false,
                    bool* clockValid = nullptr, int local = -1) {
@@ -64,12 +68,13 @@ bool presentScreen(const uint16_t* source, bool localSettings = false,
                 lcd::drawOfflineMark(status->offline, r.w, r.h);
                 scene.patches[0] = {r, status->offline};
             }
-            if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
+            const auto label = currentRefreshLabel();
+            if (const char* text = lcd::refreshLabelText(label)) {
                 constexpr lcd::ScanRect r{0, lcd::HEIGHT - 46, StatusWidth, RefreshHeight};
                 static_assert(patchFitsPanel(r));
                 copyPatch(status->refresh, source, r);
-                const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
-                              || refreshLabel.label() == lcd::RefreshLabel::Failed;
+                const bool red = label == lcd::RefreshLabel::Offline
+                              || label == lcd::RefreshLabel::Failed;
                 lcd::drawRefreshBadge(status->refresh, r.w, r.h, text,
                                       red ? lcd::RGB565_RED : lcd::RGB565_WHITE, 32);
                 scene.patches[1] = {r, status->refresh};
@@ -79,9 +84,12 @@ bool presentScreen(const uint16_t* source, bool localSettings = false,
     if (clockSlot >= 0 && clockPixels[sceneIndex]) {
         auto* pixels = clockPixels[sceneIndex];
         static_assert(patchFitsPanel(lcd::CLOCK_GAP) && patchFitsPanel(lcd::ART_CORNER));
-        const auto r = lcd::readoutRect(clockSlot);
-        if (!localSettings && !lcd::isLcarsSlot(clockSlot)) copyPatch(pixels, source, r);
-        const bool valid = renderClock(pixels);
+        static_assert(patchFitsPanel(lcd::WEATHER_CLOCK_GAP));
+        const time_t now = time(nullptr);
+        const int age = weatherReadoutAge(now);
+        const auto r = lcd::readoutRect(clockSlot, age);
+        if (!localSettings && (!lcd::isLcarsSlot(clockSlot) || age >= 1)) copyPatch(pixels, source, r);
+        const bool valid = renderClock(pixels, now, age);
         if (clockValid) *clockValid = valid;
         if (local >= 0) lcd::dimScanPixels(pixels, r.w * r.h, settings.brightness / 25);
         scene.patches[2] = {r, pixels};
@@ -149,9 +157,10 @@ bool show(int index) {
             lcd::drawWaiting(band.pixels, lcd::WIDTH, band.rows,
                              installationReady ? lcd::installation.host : "Provision paired HTTPS over USB",
                              installationReady, band.first);
-            if (const char* text = lcd::refreshLabelText(refreshLabel.label())) {
-                const bool red = refreshLabel.label() == lcd::RefreshLabel::Offline
-                              || refreshLabel.label() == lcd::RefreshLabel::Failed;
+            const auto label = currentRefreshLabel();
+            if (const char* text = lcd::refreshLabelText(label)) {
+                const bool red = label == lcd::RefreshLabel::Offline
+                              || label == lcd::RefreshLabel::Failed;
                 lcd::drawRefreshBadge(band.pixels, lcd::WIDTH, band.rows, text,
                     red ? lcd::RGB565_RED : lcd::RGB565_WHITE, lcd::HEIGHT - 14 - band.first);
             }
@@ -170,13 +179,15 @@ bool show(int index) {
 
 void tickClock() {
     if (!powerSession.screenOn || powerSession.chargeShowing || clockSlot < 0 ||
-        (!settingsPage.active && !state.drawn) || time(nullptr) / 60 == drawnMinute) return;
+        (!settingsPage.active && !state.drawn)) return;
+    const time_t now = time(nullptr);
+    if (now / 60 == drawnMinute && weatherReadoutAge(now) == drawnWeatherAge) return;
     const auto* frame = settingsPage.active ? nullptr : screenFrame(clockSlot);
     const auto* source = framePixels(frame);
     if (!source && displayedLocal < 0) return;
     bool valid = false;
     const bool ok = presentScreen(source, settingsPage.active, &valid, displayedLocal);
-    const auto r = lcd::readoutRect(clockSlot);
+    const auto r = lcd::readoutRect(clockSlot, drawnWeatherAge);
     lcd::log("clock minute valid=%d slot=%s region=%d,%d,%d,%d blit=%d brightness=%u battery=none\n",
              valid, settingsPage.active ? "settings" : lcd::SLOT_NAMES[clockSlot], r.x, r.y, r.w, r.h,
              ok, settings.brightness);
@@ -204,11 +215,13 @@ bool setBacklight(bool on) {
 lcd::RefreshLabel lastLoggedLabel = lcd::RefreshLabel::None;
 
 // Log every label transition so captures prove the feedback cycle.
-void logRefreshLabel() {
-    if (refreshLabel.label() == lastLoggedLabel) return;
-    lastLoggedLabel = refreshLabel.label();
-    const char* text = lcd::refreshLabelText(refreshLabel.label());
+bool logRefreshLabel() {
+    const auto label = currentRefreshLabel();
+    if (label == lastLoggedLabel) return false;
+    lastLoggedLabel = label;
+    const char* text = lcd::refreshLabelText(label);
     lcd::log("label=%s\n", text ? text : "none");
+    return true;
 }
 
 // The quiet window comes from the live manifest (persisted at boot, then

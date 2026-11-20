@@ -89,12 +89,12 @@ struct RefreshResult {
     // failed download stages neither — the previous cache entry stays —
     // but a slot whose required download failed (verification, decode
     // or no staging buffer) sets frameFailed, so a manifest-only
-    // success can never report as a fully current pass (the sketch shows
-    // DOWNLOAD FAILED instead of UP TO DATE over stale artwork).
+    // success can never report as a fully current pass.
     bool frameOk[SCREEN_SLOTS] = {};
     char frameIds[SCREEN_SLOTS][17] = {};
     bool dropSlot[SCREEN_SLOTS] = {};
     bool frameFailed[SCREEN_SLOTS] = {};
+    bool framesPending = false;  // due content never published this pass
     // Standalone FCC check staged for the loop, which owns installation writes.
     uint32_t callCheckedAt = 0;
     uint8_t callState = 0;

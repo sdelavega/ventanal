@@ -9,6 +9,7 @@
 // a zlib body for the cache. Cache, owner state, skips, overlays and power
 // code are unchanged.
 
+#include "../common/staleness.h"
 #include "local_provider.h"
 
 #include "../common/fcc.h"
@@ -300,6 +301,7 @@ void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshRe
     const std::string previous = currentStore.retainPreviousCommitted("sdo-", day);
     if (!solarCadence.needsFrame(hasFrame, day, bool(jpeg))) {
         keepSlot(2, info, currentIds, result);
+        result.framesPending = true;
         result.frameFailed[2] = fetchFailed;
         if (fetchFailed) result.frameOk[2] = false;
         return;
@@ -574,6 +576,7 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
     } else {
         state.failedAt = uint32_t(time(nullptr));
     }
+    result.framesPending |= artBatch.placed < ArtWant;
     result.artState = state;
     result.artStateChanged = true;
     log("standalone art day=%lu placed=%d candidates=%d\n",
@@ -651,6 +654,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
                     local::renderWeather(stagingFrame(cache), *weather, lastAlerts, lastAlertCount, screen, now);
                 }
                 log("standalone render slot=weather ms=%lu\n", static_cast<unsigned long>(millis() - started));
+                m.screens[1].renderedAt = ventanal::trustedEpoch(time(nullptr));
                 publishStaged(1, m.screens[1], currentIds, result, watchdog, cache);
             }
         }
@@ -662,11 +666,13 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
 
     // Keep cached art in the slots a partial pass did not fill.
     if (cache.staging) refreshArt(now, currentIds, result, watchdog, cache);
+    else result.framesPending = true;
     if (!result.frameOk[0]) keepSlot(0, m.screens[0], currentIds, result);
     for (int i = 0; i < StandaloneSpares; ++i) {
         if (!result.frameOk[3 + i]) keepSlot(3 + i, m.spares[i], currentIds, result);
         if (m.spares[i].present) m.spareCount = uint8_t(i + 1);
     }
+    result.framesPending |= anyRequiredFrameFailed(result);
     for (int i = m.spareCount; i < SPARE_SLOTS; ++i) {
         result.dropSlot[3 + i] = true;
         if (currentIds[3 + i][0]) cache.publish(3 + i, nullptr, {});

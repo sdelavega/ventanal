@@ -50,6 +50,8 @@ static ReadoutRect lastReadout{};
 static time_t readoutTime=0;
 static int readoutPct=0;
 void drawReadout(Inkplate&,const ReadoutRect& rect,int pct,bool offline,bool,time_t at,bool) { lastReadout=rect; ++readouts;offlineDraw=offline;readoutTime=at;readoutPct=pct; }
+static unsigned downloadFailuresDrawn=0;
+void drawDownloadFailure(Inkplate&) { ++downloadFailuresDrawn; }
 void drawWaiting(Inkplate&,const char* label) { ++waiting; waitingLabel=label; }
 void drawChargeMe(Inkplate&) { ++charges; }
 static OtaBoot simulatedOtaBoot;
@@ -336,6 +338,22 @@ int main() {
     memcpy(&recoveredState,preferences.at("state13").data(),sizeof recoveredState);
     assert(!strcmp(recoveredState.weather.id,weather.id));
     recoverWeather=false;
+
+    // A due frame can remain unfinished on a weak link without changing
+    // the panel until the 24-hour deadline. A fresh frame removes the badge.
+    strcpy(weather.id,"ffffffffffffffff");
+    frameOK=false;
+    const auto priorBadges=downloadFailuresDrawn;
+    const uint32_t now=ventanal::trustedEpoch(time(nullptr));
+    contentStaleness.lastNewEpoch=now-ventanal::kContentTimeout+60;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(contentStaleness.due && downloadFailuresDrawn==priorBadges);
+    contentStaleness.lastNewEpoch=now-ventanal::kContentTimeout;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(downloadFailureDrawn && downloadFailuresDrawn==priorBadges+1);
+    frameOK=true;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(!downloadFailureDrawn && downloadFailuresDrawn==priorBadges+1);
 
     hostSettingsAvailable=false;
     simulateBoot(ESP_RST_POWERON);

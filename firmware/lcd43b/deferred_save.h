@@ -56,6 +56,7 @@ struct FrameBody {
 struct DeferredSave {
     FrameBody body; // empty for a drop or an override sourced from disk
     char id[17]{};
+    uint32_t frameEpoch = 0;
     uint32_t queuedAt = 0;
     uint32_t failedAt = 0;
     bool pending = false;
@@ -69,7 +70,7 @@ struct DeferredSave {
         return body.bytes && ready(now);
     }
 
-    bool replace(const char* nextId, const FrameBody& nextBody, uint32_t now) {
+    bool replace(const char* nextId, const FrameBody& nextBody, uint32_t now, uint32_t nextFrameEpoch = 0) {
         size_t length = 0;
         while (length < sizeof id && nextId[length]) ++length;
         if (length == sizeof id) return false;
@@ -77,6 +78,7 @@ struct DeferredSave {
         if (!pending) queuedAt = now;  // updates cannot postpone the deadline
         memmove(id, nextId, length + 1);
         body = nextBody;
+        frameEpoch = nextFrameEpoch;
         pending = true;
         retrying = false;
         failedAt = 0;

@@ -114,6 +114,13 @@ void drawReadout(Inkplate& d,const ReadoutRect& r,int pct,bool offline,bool low,
         text(d,r,f,line,left,baseline,available,INKPLATE_WHITE);
     }
 }
+void drawDownloadFailure(Inkplate& d) {
+    const ReadoutRect panel{0,0,1600,1200,false};
+    constexpr char label[] = "DOWNLOAD FAILED";
+    const auto& font = Inter_Medium15cap7b;
+    box(d,panel,20,1144,width(font,label)+24,36,INKPLATE_WHITE,true);
+    text(d,panel,font,label,32,1170,width(font,label),INKPLATE_RED);
+}
 void drawWaiting(Inkplate& d,const char* url) {
     d.fillScreen(INKPLATE_WHITE);
     const ReadoutRect panel{0,0,1600,1200,false};

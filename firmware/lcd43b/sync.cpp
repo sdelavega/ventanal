@@ -209,6 +209,7 @@ bool persistCacheSlot(Preferences& prefs, int slot, CacheLocation& current,
     if (save.id[0]) {
         memcpy(next.id, save.id, sizeof next.id);
         next.alternate = !current.alternate;
+        next.frameEpoch = save.frameEpoch;
         const String path = residentPath(slot, next.alternate);
         if (!save.body.bytes || !writeCachedFrame(path.c_str(), save.body)) return false;
     }
@@ -431,11 +432,11 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
-        } else if (download.outcome == FetchOutcome::Failed) {
-            // This slot's download was required (id changed or cache
-            // missing) and it failed: track it separately from manifest
-            // success so the pass can never report as fully current.
-            result.frameFailed[slot] = true;
+        } else {
+            result.framesPending = true;
+            if (download.outcome == FetchOutcome::Failed) {
+                result.frameFailed[slot] = true;
+            }
         }
     }
 }

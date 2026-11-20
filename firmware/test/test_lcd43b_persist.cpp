@@ -143,15 +143,21 @@ int main() {
         assert(prefs.begin("ventanal", false));
         prefs.putString("id0", "aaaaaaaaaaaaaaaa"); // legacy raw frame
         lcd::CacheLocation spare{"0123456789abcdef", true};
+        lcd::CacheLocation weather{"fedcba9876543210", true, 1704067200};
+        assert(lcd::saveCacheLocation(prefs, 1, weather));
         assert(lcd::saveCacheLocation(prefs, 5, spare));
         lcd::CacheLocation loaded[lcd::SCREEN_SLOTS];
         lcd::loadCacheLocations(prefs, loaded);
         assert(!strcmp(loaded[0].id, "aaaaaaaaaaaaaaaa") && !loaded[0].alternate);
-        assert(!loaded[1].id[0]);
+        assert(!strcmp(loaded[1].id, weather.id) && loaded[1].alternate);
+        assert(loaded[1].frameEpoch == weather.frameEpoch && !loaded[0].frameEpoch);
+        weather.alternate = false;
+        assert(lcd::saveCacheLocation(prefs, 1, weather));
         assert(!strcmp(loaded[5].id, spare.id) && loaded[5].alternate);
         assert(lcd::saveCacheLocation(prefs, 5, {}));
         lcd::loadCacheLocations(prefs, loaded);
         assert(!loaded[5].id[0]);
+        assert(!loaded[1].alternate && loaded[1].frameEpoch == weather.frameEpoch);
         lcd::saveSelection(prefs, 4, 2);
         int screenIndex = 0, spareCursor = 0;
         assert(lcd::loadSelection(prefs, screenIndex, spareCursor));

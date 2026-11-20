@@ -16,6 +16,7 @@
 // results; applyRefresh commits), so NVS is single-writer.
 
 #include "scanout_diag.h"
+#include <cstdlib>
 #include <Preferences.h>
 
 #include <cstdint>
@@ -138,21 +139,28 @@ inline void loadPublishShape(Preferences& prefs, DeviceManifest& m) {
 
 // The NVS pointer includes the cache bank. A save writes the inactive file
 // first, so losing power before the NVS update still leaves the old frame
-// available. Legacy 16-character ids point at the primary file.
+// available. Legacy 16-character ids point at the primary file. Weather's
+// optional epoch is appended to the same pointer so it follows the cached ID
+// and bank without an additional NVS write.
 struct CacheLocation {
     char id[17]{};
     bool alternate = false;
+    uint32_t frameEpoch = 0;
 };
 
 inline bool saveCacheLocation(Preferences& prefs, int slot, const CacheLocation& entry) {
     ScanScope activity(ScanActivity::Nvs);
     // A nonempty tombstone lets putString distinguish a committed drop from
     // an error. Loading it yields an empty location, as for legacy empty ids.
-    char key[8], value[18] = "-";
+    char key[8], value[26] = "-";
     snprintf(key, sizeof key, "id%d", slot);
     if (entry.id[0]) {
         memcpy(value, entry.id, 16);
-        if (entry.alternate) value[16] = '1';
+        if (entry.frameEpoch) {
+            value[16] = entry.alternate ? '1' : '0';
+            snprintf(value + 17, sizeof value - 17, "%08lx",
+                     static_cast<unsigned long>(entry.frameEpoch));
+        } else if (entry.alternate) value[16] = '1';
     }
     if (prefs.getString(key, "") == value) return true;
     return prefs.putString(key, value) == strlen(value)
@@ -166,10 +174,14 @@ inline void loadCacheLocations(Preferences& prefs, CacheLocation entries[SCREEN_
         snprintf(key, sizeof key, "id%d", slot);
         const String value = prefs.getString(key, "");
         const size_t size = value.length();
-        if ((size != 16 && !(size == 17 && value.c_str()[16] == '1'))
-            || !lowerHex(value.c_str(), 16)) continue;
-        memcpy(entries[slot].id, value.c_str(), 16);
-        entries[slot].alternate = size == 17;
+        const char* stored = value.c_str();
+        const bool dated = size == 25 && (stored[16] == '0' || stored[16] == '1')
+            && lowerHex(stored + 17, 8);
+        if ((size != 16 && !(size == 17 && stored[16] == '1') && !dated)
+            || !lowerHex(stored, 16)) continue;
+        memcpy(entries[slot].id, stored, 16);
+        entries[slot].alternate = size > 16 && stored[16] == '1';
+        if (dated) entries[slot].frameEpoch = uint32_t(strtoul(stored + 17, nullptr, 16));
     }
 }
 

@@ -85,6 +85,8 @@ char refreshSkips[280]{};
 // gesture, UP TO DATE ~2 s when nothing changed, OFFLINE styling when the
 // fetch failed; expiry redraws the cached frame clean.
 lcd::RefreshLabelState refreshLabel;
+ventanal::ContentStaleness contentStaleness{};
+uint32_t weatherFrameEpoch = 0;
 
 lcd::PowerSession powerSession;
 // There is no voltage or VBUS signal on this board. No invented reading.

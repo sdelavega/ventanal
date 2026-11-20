@@ -30,6 +30,7 @@ struct FrameInfo {
     size_t size = FRAME_BYTES;
     FrameEncoding encoding = FrameEncoding::Raw;
     bool present = false;
+    uint32_t renderedAt = 0;  // local weather only
 };
 
 struct DeviceManifest {

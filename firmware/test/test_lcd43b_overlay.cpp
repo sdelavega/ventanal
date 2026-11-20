@@ -84,45 +84,50 @@ int main() {
     {   // Refresh feedback label state machine (host-pinned): a refresh
         // gesture shows REFRESHING immediately; completion shows UP TO DATE
         // for ~2 s when nothing changed; a failed fetch shows OFFLINE
-        // styling; a manifest that arrived but lost a required frame shows
-        // DOWNLOAD FAILED (the pass is a failure — UP TO DATE would lie
-        // over stale artwork); new content clears the label (the redraw
-        // speaks); and the hold expires so the cached frame redraws clean.
+        // styling; an unfinished frame clears REFRESHING quietly. A
+        // 24-hour outage keeps the failure badge until content arrives.
         lcd::RefreshLabelState label;
-        assert(label.label() == lcd::RefreshLabel::None);
-        assert(lcd::refreshLabelText(label.label()) == nullptr);
+        ventanal::ContentStaleness content{};
+        constexpr uint32_t now = ventanal::kValidEpoch;
+        content.observe(now);
+        auto current = [&] { return label.label(now, content); };
+        assert(current() == lcd::RefreshLabel::None);
+        assert(lcd::refreshLabelText(current()) == nullptr);
         label.begin(1000);                    // gesture: immediate feedback
-        assert(label.label() == lcd::RefreshLabel::Refreshing);
+        assert(current() == lcd::RefreshLabel::Refreshing);
         assert(!label.tick(2500));           // no hold timeout while refreshing
         label.finish(3000, false, false, false);   // fetch ok, nothing new
-        assert(label.label() == lcd::RefreshLabel::UpToDate);
+        assert(current() == lcd::RefreshLabel::UpToDate);
         assert(!label.tick(4500));           // hold not expired yet
         assert(label.tick(5100));            // ~2 s hold expired
-        assert(label.label() == lcd::RefreshLabel::None);
+        assert(current() == lcd::RefreshLabel::None);
         label.begin(7000);
         label.finish(8000, true, false, false);    // fetch failed
-        assert(label.label() == lcd::RefreshLabel::Offline);
+        assert(current() == lcd::RefreshLabel::Offline);
         assert(label.tick(10100));
         label.begin(11000);
         label.finish(11500, false, true, false);   // new content: redraw only
-        assert(label.label() == lcd::RefreshLabel::None);
+        assert(current() == lcd::RefreshLabel::None);
         assert(!label.tick(20000));
         label.begin(21000);
         label.finish(21500, false, false, true);    // required frame lost
-        assert(label.label() == lcd::RefreshLabel::Failed);
-        assert(!strcmp(lcd::refreshLabelText(label.label()),
-                       "DOWNLOAD FAILED"));
-        assert(!label.tick(23000));           // hold not expired yet
-        assert(label.tick(23600));            // ~2 s hold expired, redrawn clean
-        assert(label.label() == lcd::RefreshLabel::None);
-        // Offline outranks a frame failure (the fetch itself never ran).
+        assert(current() == lcd::RefreshLabel::None);
+        assert(!label.tick(23600));
+        content.due = true;
+        const auto overdue = [&] { return label.label(now + ventanal::kContentTimeout, content); };
+        assert(overdue() == lcd::RefreshLabel::Failed);
+        assert(!strcmp(lcd::refreshLabelText(overdue()), "DOWNLOAD FAILED"));
+        assert(!label.tick(24000));
+        assert(overdue() == lcd::RefreshLabel::Failed);
+        content.observe(now + ventanal::kContentTimeout, true);
+        assert(overdue() == lcd::RefreshLabel::None);
         label.begin(24000);
         label.finish(24500, true, false, true);
-        assert(label.label() == lcd::RefreshLabel::Offline);
+        assert(current() == lcd::RefreshLabel::Offline);
         label.clear();
         label.begin(25000);
         label.clear();                        // a scheduled redraw replaces it
-        assert(label.label() == lcd::RefreshLabel::None);
+        assert(current() == lcd::RefreshLabel::None);
     }
     {   // The label renders in the bottom-left overlay corner, in the same
         // font/style as the OFFLINE mark, and clips safely at panel edges.
@@ -200,6 +205,38 @@ int main() {
             assert(dateX+lcd::textWidth(ClockDate,"WED 30 NOV")+7
                    <204-6-lcd::textWidth(ClockDate,"100%"));
         }
+    }
+    {
+        const auto rect = lcd::readoutRect(1, 1);
+        uint16_t fresh[250 * 80]{}, stale[250 * 80]{}, expected[250 * 80]{};
+        lcd::renderReadout(fresh, nullptr, true, "12:59 PM", "WED 30 NOV", 100,
+                           lcd::BatteryLevel::Ok);
+        lcd::renderReadout(stale, nullptr, true, "12:59 PM", "WED 30 NOV", 100,
+                           lcd::BatteryLevel::Ok, 1);
+        const int dateX = 6 + lcd::textWidth(ClockTime, "12:59 PM") + 10;
+        lcd::drawText(expected, rect.w, rect.h, ClockDate, "WEATHER 1 H AGO",
+                      dateX, 39, lcd::rgb565(153,150,186));
+        int agePixels = 0;
+        for (int i = 0; i < rect.w * rect.h; ++i) {
+            if (expected[i]) {
+                assert(i / rect.w >= lcd::CLOCK_GAP.h);
+                assert(fresh[i] == 0);
+                assert(stale[i] == expected[i]);
+                ++agePixels;
+            } else {
+                assert(stale[i] == fresh[i]);
+            }
+        }
+        assert(agePixels > 0);
+        lcd::renderReadout(stale, nullptr, true, "12:59 PM", "WED 30 NOV", 100,
+                           lcd::BatteryLevel::Ok);
+        const auto freshRect = lcd::readoutRect(1);
+        assert(freshRect.h < rect.h);
+        std::fill(screen, screen + PIXELS, 0);
+        lcd::pasteReadout(screen, stale, freshRect);
+        for (int y = 0; y < rect.h; ++y)
+            assert(!memcmp(screen + y * lcd::WIDTH + rect.x, fresh + y * rect.w,
+                           rect.w * sizeof(uint16_t)));
     }
     assert(!lcd::isLcarsSlot(0) && lcd::isLcarsSlot(1) && lcd::isLcarsSlot(2) && !lcd::isLcarsSlot(3));
     puts("lcd43b overlay: RGB565, OFFLINE mark, waiting screen, clipping,"

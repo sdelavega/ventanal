@@ -57,6 +57,7 @@ void loadResidentCache() {
         const String path = lcd::residentPath(slot, saved.alternate);
         if (loadResidentFrame(path.c_str(), residentFrames[slot], saved.id)) {
             strcpy(state.cachedIds[slot], saved.id);
+            if (slot == 1) weatherFrameEpoch = saved.frameEpoch;
             ++loaded;
         }
     }
