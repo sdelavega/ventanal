@@ -865,7 +865,7 @@ void setup() {
         // Report the frame currently on the panel, before any downloads/draw.
         setBoardReport(pct,screenName(state),
                        state.drawn.any?selectedDrawn(state):"",batteryMv,otaBoot.record,
-                       otaBoot.attempts.approval);
+                       otaBoot.attemptState.attempts.approval);
         state.owner.queue.query(manifestSkipQuery,sizeof manifestSkipQuery);
         bool transient=false;
         manifestOk=online && fetchManifest(art,weather,&transient);

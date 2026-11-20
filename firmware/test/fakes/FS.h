@@ -14,6 +14,7 @@ inline bool failWrite = false;
 inline size_t writeLimit = SIZE_MAX;
 inline size_t writeCalls = 0;
 inline size_t largestWrite = 0;
+inline size_t readCalls = 0;
 
 namespace fs {
 using Files = std::map<std::string, std::vector<uint8_t>>;
@@ -52,6 +53,7 @@ public:
 
     size_t size() const { return files_->at(filename_).size(); }
     size_t read(uint8_t* bytes, size_t count) {
+        ++readCalls;
         count = std::min(count, size() - pos_);
         if (count) std::memcpy(bytes, files_->at(filename_).data() + pos_, count);
         pos_ += count;

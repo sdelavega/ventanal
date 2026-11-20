@@ -69,8 +69,7 @@ inline OtaFailure verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInf
 
 // Callers pass metadata authenticated by their existing release-signature
 // check. The same file handle is verified, rewound and handed to the writer.
-// A writer's short read aborts the install. Let the next staging pass check
-// the store again so a transient read error doesn't force a store switch.
+// A writer's short read aborts the install without forcing a store switch.
 template<class Write>
 OtaFailure installStaged(FsStore& store, const ReleaseInfo& release, const HashFeed& feed,
                          Write write) {
@@ -108,10 +107,9 @@ OtaStage stageUpdate(RangeTransport& transport, const ReleaseInfo& release, uint
     store.retainOtaTarget(target);
     auto file = store.openCommitted(target);
     if (file) {
-        const auto failure = verifyOtaFile(store, file, release, feed);
+        const bool sizeMatches = file.size() == release.size;
         file.close();
-        if (failure == OtaFailure::None) return report(OtaStage::Complete, "ok", release.size);
-        if (failure == OtaFailure::Download) return report(OtaStage::Failed, "storage");
+        if (sizeMatches) return report(OtaStage::Complete, "ok", release.size);
         store.removeCommitted(target);
     }
 

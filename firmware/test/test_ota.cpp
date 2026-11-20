@@ -96,6 +96,7 @@ void ota_install_requires_verified_partial() {
     assert(installStaged(f.store, f.release, {}, forbidden) == OtaFailure::Digest);
     f.complete();
     f.fs.files.at("/partials/ota-12.345.6789")[0] ^= 1;
+    assert(f.stage() == OtaStage::Complete && f.calls == 3);
     assert(installStaged(f.store, f.release, {}, forbidden) == OtaFailure::Digest);
     assert(!f.store.openCommitted("ota-12.345.6789"));
 }
@@ -125,6 +126,53 @@ void ota_install_failure_keeps_verified_stage() {
         return OtaFailure::Digest;
     }) == OtaFailure::Digest);
     assert(!f.store.openCommitted(target.c_str()));
+}
+
+void kept_stage_skips_rehash_before_install() {
+    OtaFixture f;
+    f.complete();
+    const auto reads = readCalls;
+    assert(f.stage() == OtaStage::Complete && f.calls == 3);
+    assert(readCalls == reads);
+    assert(installStaged(f.store, f.release, {}, [&](fs::File&) {
+        assert(readCalls - reads == (f.body.size() + kPartialHashBlockBytes - 1) / kPartialHashBlockBytes);
+        return OtaFailure::None;
+    }) == OtaFailure::None);
+}
+
+void repeated_deferral_consumes_attempt() {
+    OtaAttemptState state{};
+    const char* approval = "0123456789abcdef";
+    for (int i = 0; i < 3; ++i) {
+        assert(updateOtaAttemptState(state, "2.0.0", approval, true) == OtaFailure::None);
+        assert(state.attempts.count == 0);
+    }
+    for (int i = 1; i <= otaAttemptLimit; ++i) {
+        const auto failure = updateOtaAttemptState(state, "2.0.0", approval, true);
+        assert(failure == OtaFailure::Deferred && state.attempts.count == i);
+        OtaRecord record{};
+        setOtaFailure(record, failure, state.attempts.count == otaAttemptLimit);
+        assert(validOtaRecord(record));
+        char report[otaReportCapacity];
+        formatOtaReport(report, record);
+        assert(!strcmp(report, i == otaAttemptLimit ? "failed:attempts:deferred" : "failed:deferred"));
+    }
+    assert(updateOtaAttemptState(state, "2.0.0", approval, true) == OtaFailure::Attempts);
+}
+
+void deferral_counter_resets_on_new_offer() {
+    OtaAttemptState state{};
+    const char* approval = "0123456789abcdef";
+    for (int i = 0; i < 3; ++i)
+        assert(updateOtaAttemptState(state, "2.0.0", approval, true) == OtaFailure::None);
+    assert(updateOtaAttemptState(state, "2.0.0", approval, true) == OtaFailure::Deferred);
+    const char* newApproval = "1123456789abcdef";
+    assert(updateOtaAttemptState(state, "2.0.0", newApproval, true) == OtaFailure::None);
+    assert(state.deferrals == 1 && state.attempts.count == 0);
+    assert(updateOtaAttemptState(state, "2.1.0", newApproval, true) == OtaFailure::None);
+    assert(state.deferrals == 1 && state.attempts.count == 0);
+    assert(updateOtaAttemptState(state, "2.1.0", newApproval, false) == OtaFailure::None);
+    assert(state.deferrals == 0 && state.attempts.count == 1);
 }
 
 void ota_install_deferred_when_window_short() {
@@ -237,6 +285,9 @@ int main() {
     ota_new_offer_discards_old_partial();
     ota_install_requires_verified_partial();
     ota_install_failure_keeps_verified_stage();
+    kept_stage_skips_rehash_before_install();
+    repeated_deferral_consumes_attempt();
+    deferral_counter_resets_on_new_offer();
     ota_install_deferred_when_window_short();
     ota_stage_hash_feeds_watchdog();
     puts("OTA policy: battery and quiet hours, install recovery, healthy boot, result fields and standalone weekly check passed");

@@ -19,9 +19,40 @@ inline bool otaCanInstall(int battery, int minute, int quietStart, int quietEnd)
         && !inQuiet(minute, quietStart, quietEnd);
 }
 
+inline constexpr uint8_t otaFreeDeferrals = 3;
+
+struct OtaAttemptState {
+    OtaAttempts attempts{};
+    uint8_t deferrals{};
+};
+
+inline bool scopeOtaAttemptState(OtaAttemptState& state, const char* version, const char* approval) {
+    if (!strcmp(state.attempts.version, version) && !strcmp(state.attempts.approval, approval))
+        return false;
+    scopeOtaAttempts(state.attempts, version, approval);
+    snprintf(state.attempts.version, sizeof state.attempts.version, "%s", version);
+    state.deferrals = 0;
+    return true;
+}
+
+// Once the free deferrals are used, charge each further deferral to the budget.
+inline OtaFailure updateOtaAttemptState(OtaAttemptState& state, const char* version,
+                                        const char* approval, bool deferred) {
+    scopeOtaAttemptState(state, version, approval);
+    if (state.attempts.count >= otaAttemptLimit) return OtaFailure::Attempts;
+    if (deferred && state.deferrals < otaFreeDeferrals) {
+        ++state.deferrals;
+        return OtaFailure::None;
+    }
+    reserveOtaAttempt(state.attempts, version, approval);
+    if (deferred) return OtaFailure::Deferred;
+    state.deferrals = 0;
+    return OtaFailure::None;
+}
+
 struct OtaBoot {
     OtaRecord record{};
-    OtaAttempts attempts{};
+    OtaAttemptState attemptState{};
     bool pending = false;
     bool matching = false;
     bool rolledBack = false;

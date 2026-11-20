@@ -29,7 +29,7 @@ struct FirmwareOffer {
 
 enum class OtaResult : uint8_t { None, Installing, Ok, RolledBack, Failed };
 enum class OtaFailure : uint8_t {
-    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted, Attempts
+    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted, Attempts, Deferred
 };
 struct OtaRecord {
     OtaResult result{};
@@ -39,7 +39,7 @@ struct OtaRecord {
 };
 
 inline bool validOtaRecord(const OtaRecord& record) {
-    if (record.result > OtaResult::Failed || record.failure > OtaFailure::Attempts
+    if (record.result > OtaResult::Failed || record.failure > OtaFailure::Deferred
         || !memchr(record.version, '\0', sizeof record.version)) return false;
     if (record.result == OtaResult::Installing || record.result == OtaResult::Ok
         || record.result == OtaResult::RolledBack)
@@ -85,7 +85,7 @@ inline void formatOtaReport(char (&out)[otaReportCapacity], const OtaRecord& rec
         case OtaResult::Failed: {
             constexpr const char* reasons[] = {
                 "unknown", "release", "path", "slot", "download", "write", "digest",
-                "schedule", "interrupted", "attempts"
+                "schedule", "interrupted", "attempts", "deferred"
             };
             const auto reason = static_cast<unsigned>(record.failure);
             const auto last = record.slot;
@@ -108,12 +108,16 @@ struct OtaAttempts {
     uint8_t count{};
 };
 
-inline bool reserveOtaAttempt(OtaAttempts& attempts, const char* version, const char* approval) {
+inline void scopeOtaAttempts(OtaAttempts& attempts, const char* version, const char* approval) {
     if (strcmp(attempts.approval, approval) || (!approval[0] && strcmp(attempts.version, version))) {
         attempts = {};
         snprintf(attempts.version, sizeof attempts.version, "%s", version);
         snprintf(attempts.approval, sizeof attempts.approval, "%s", approval);
     }
+}
+
+inline bool reserveOtaAttempt(OtaAttempts& attempts, const char* version, const char* approval) {
+    scopeOtaAttempts(attempts, version, approval);
     if (attempts.count >= otaAttemptLimit) return false;
     ++attempts.count;
     return true;
