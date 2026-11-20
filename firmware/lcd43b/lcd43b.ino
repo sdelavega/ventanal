@@ -36,6 +36,7 @@
 #include <hal/usb_serial_jtag_ll.h>
 #endif
 #include <driver/gpio.h>
+#include <algorithm>
 #include <cstdio>
 #include <ctime>
 #include <sys/time.h>
@@ -188,6 +189,8 @@ void setup() {
         // the persisted LOCAL quiet window in the configured zone, not UTC.
         lcd::configureTimezone();
         githubLastCheck = lcd::loadGithubCheck(prefs, githubOffer);
+        if (lcd::standalone(lcd::installation))
+            githubLastAutoFailure = lcd::loadGithubAutoFailure(prefs);
     }
 
 #ifdef VENTANAL_LCD_DIAG_RESTORE_ART

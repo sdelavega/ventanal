@@ -27,17 +27,18 @@ A manual refresh immediately shows **REFRESHING...**. If nothing changed,
 When content changes successfully, the new content replaces the refresh label.
 Touch remains responsive during network activity.
 
-While the display is on, the board checks the manifest every 10 minutes. It
-verifies the SHA-256 of each changed frame's zlib payload and decodes it into
-PSRAM for immediate display. It saves the original payload and its cache ID
+While the display is on, the board refreshes every 10 minutes. In host mode
+it checks the manifest, verifies the SHA-256 of each changed frame's zlib
+payload and decodes it into PSRAM for immediate display. It saves the original
+payload and its cache ID
 while the backlight is off. If the screen stays lit for six hours, it blanks
 briefly to save. Saves wait for Settings to close.
 
 On restart or power loss, the board loads the most recently saved frame in
 each slot. Recently downloaded pictures may revert to an earlier frame until
 the next refresh. The board can also load raw frames saved by older firmware.
-The available screens follow the server's publication, including solar
-availability and spares. A failed host refresh adds an OFFLINE mark.
+In host mode, the available screens follow the server's publication, including
+solar availability and spares. A failed host refresh adds an OFFLINE mark.
 
 ## Settings
 
@@ -80,6 +81,30 @@ Light sleep drops the native USB Serial/JTAG link, which may remain unavailable
 after touch wake until USB is unplugged and replugged. This only matters for
 flashing and serial logs; touch wake and normal display operation still work.
 Use **Never** when keeping a serial logging session available is important.
+
+## Standalone mode
+
+A configured host URL selects host mode. With the host address empty, the LCD
+fetches data and renders its own frames. To configure it, open **Settings →
+Setup Wi-Fi**, join the board's hotspot on your phone and open the page shown
+on the LCD. Set your Wi-Fi, US ZIP code, units and clock format. The amateur
+call sign and host are optional. See the [standalone setup and data sources](../../README.md#standalone-mode).
+
+| Data | Standalone cadence |
+| --- | --- |
+| Open-Meteo weather and NWS alerts | Every refresh pass |
+| NOAA SWPC solar conditions | Every 3 hours when solar is enabled |
+| NASA SDO solar image | Daily when solar is enabled |
+| Cleveland and Met artwork | Once per local day |
+| FCC licence status | Weekly for a configured call sign. License View is retired, so the local result is **unverified**. |
+| GitHub firmware releases | At most weekly, after a successful refresh with Wi-Fi and a valid clock |
+
+Standalone releases frame slot 5 (`spare2`) for art decoding work space in
+PSRAM. The artwork and two spares occupy the other art slots.
+
+For bench diagnostics, `VENTANAL_LCD_DIAG_STANDALONE_SAMPLE` uses the stored
+Wi-Fi with a RAM-only installation override for public ZIP `90210` and call
+sign `N0CALL` if none is configured.
 
 ## Server configuration
 
@@ -173,8 +198,10 @@ cadence. Keep configured binaries and build output private.
 ### Firmware updates
 
 Use **Settings → Firmware updates** to install an approved host offer or to
-check GitHub directly. See the [update guide](../../docs/updates.md) for the
-owner signing and approval workflow.
+check GitHub directly in either mode. In standalone mode, an automatic GitHub
+offer changes that Settings button to **Update _version_ available**. Open it
+and tap **Install** in the GitHub row to approve the update. See the
+[update guide](../../docs/updates.md) for the owner signing and approval workflow.
 
 For local direct-update testing, a `diag` build can set
 `VENTANAL_LCD_OTA_BASE_URL` to a quoted HTTP test origin with no trailing
@@ -251,8 +278,10 @@ make -C firmware/test test
 Firmware tests cover touch/gesture handling, frame verification and bounded
 downloads, persistence, clock, Settings, power/sleep policy, panel blits and
 pixel-level overlays. They also check font and Settings geometry generation for
-stale output. Server tests cover rendering and publication, including the LCD
-profile and licence gate. These complement the owner's hardware acceptance.
+stale output. The `test_local_*` binaries cover standalone data and rendering
+logic, and `check_standalone_screens` checks the rendered screens. Server tests
+cover rendering and publication, including the LCD profile and licence gate.
+These complement the owner's hardware acceptance.
 
 ### LCD bench builds and serial diagnostics
 

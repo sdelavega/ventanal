@@ -48,6 +48,8 @@ lcd::UpdateOffer hostOffer, githubOffer, queuedOffer;
 lcd::UpdateSource installQueued = lcd::UpdateSource::None;
 lcd::GithubCheck githubStaging;
 int64_t githubLastCheck = 0;
+int64_t githubLastAutoFailure = 0;
+int64_t standaloneGithubAttempt = 0;
 std::atomic<bool> updateManifestVerified{false};
 char refreshOtaReport[otaReportCapacity]{};
 char refreshOtaApproval[otaApprovalCapacity]{};

@@ -284,10 +284,20 @@ void reclaimCacheMemory(size_t bytes) {
 
 void refreshWorker(void*) {
     refreshWatchdog.subscribe();
+    standaloneGithubAttempt = 0;
     if (refreshCheckingUpdates) {
         githubStatus = lcd::checkGithub(githubLastCheck, githubStaging, refreshWatchdog);
     } else if (lcd::standalone(lcd::installation)) {
         lcd::runLocalRefresh(refreshIds, refreshStaging, refreshWatchdog, refreshCache);
+        if (refreshStaging.wifiOk && refreshStaging.manifestOk &&
+            !lcd::anyRequiredFrameFailed(refreshStaging) && WiFi.status() == WL_CONNECTED) {
+            const int64_t now = time(nullptr);
+            const int64_t last = std::max(githubLastCheck, githubLastAutoFailure);
+            if (lcd::githubCheckDue(true, last, now)) {
+                standaloneGithubAttempt = now;
+                githubStatus = lcd::checkGithub(last, githubStaging, refreshWatchdog);
+            }
+        }
     } else {
         lcd::runRefresh(lcd::installation.host, lcd::installation.profile, refreshIds,
                         refreshStaging, refreshWatchdog, refreshSettings, refreshSkips,
@@ -343,14 +353,19 @@ bool startRefresh(bool redraw, bool check = false) {
     return true;
 }
 
+// The caller handles scan-out before writing to flash.
+void applyGithubCheck() {
+    githubLastCheck = githubStaging.checked;
+    lcd::validateOffer(githubStaging.offer, lcd::UpdateSource::GitHub, githubOffer);
+    if (!lcd::saveGithubCheck(prefs, githubStaging)) lcd::log("ota error=nvs-check\n");
+}
+
 // Apply a finished worker pass (single writer: loop()).
 void applyFinishedRefresh() {
     if (refreshCheckingUpdates) {
         if (githubStaging.checked) {
             ScanoutSavePause pause(!LitNvsWrites);
-            githubLastCheck = githubStaging.checked;
-            lcd::validateOffer(githubStaging.offer, lcd::UpdateSource::GitHub, githubOffer);
-            if (!lcd::saveGithubCheck(prefs, githubStaging)) lcd::log("ota error=nvs-check\n");
+            applyGithubCheck();
         }
         switch (githubStatus) {
         case lcd::CheckResult::NotDue: updateNotice = "Checked within the last week"; break;
@@ -393,6 +408,8 @@ void applyFinishedRefresh() {
     const bool writesOwner = before != owner.queue.count;
     const bool writesMetadata = refreshStaging.manifestOk &&
         lcd::manifestSaveNeeded(prefs, refreshStaging.manifest);
+    const bool githubChecked = standaloneGithubAttempt && githubStaging.checked;
+    const bool githubCheckFailed = standaloneGithubAttempt && githubStatus == lcd::CheckResult::Failed;
     const bool callStateChanged = refreshStaging.callCheckedAt &&
         refreshStaging.callState != lcd::installation.callState;
 #ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
@@ -409,7 +426,17 @@ void applyFinishedRefresh() {
     bool redraw;
     {
         const bool ackUpdate = refreshStaging.manifestOk && refreshOtaReport[0] && !staleRollback;
-        ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate || writesCallState));
+        ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate ||
+                                                writesCallState || githubChecked || githubCheckFailed));
+        if (githubChecked) {
+            applyGithubCheck();
+            if (!checkQueued) updateNotice = "";
+        } else if (githubCheckFailed) {
+            // Keep the cached offer and leave manual retries available.
+            githubLastAutoFailure = standaloneGithubAttempt;
+            if (!lcd::saveGithubAutoFailure(prefs, githubLastAutoFailure)) lcd::log("ota error=nvs-auto-check\n");
+            lcd::log("ota github auto-check failed\n");
+        }
         if (refreshStaging.callCheckedAt) {
             const uint8_t previousCallState = lcd::installation.callState;
             const uint32_t previousCallCheckedAt = lcd::installation.callCheckedAt;
@@ -445,7 +472,7 @@ void applyFinishedRefresh() {
              refreshStaging.manifestOk, state.offline, frameFailed);
     if (screenIndex != previousIndex)   // normalised to a shrunk list
         lcd::log("screen=%s\n", lcd::SLOT_NAMES[screenSlot(screenIndex)]);
-    if (redraw || (callStateChanged && settingsPage.active)) show(screenIndex);
+    if (redraw || ((callStateChanged || githubChecked) && settingsPage.active)) show(screenIndex);
     else if (refreshLabel.label() != lcd::RefreshLabel::None)
         show(screenIndex);   // redraw the cached frame with the label
     backlightRefresh();

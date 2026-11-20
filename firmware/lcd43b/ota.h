@@ -38,6 +38,10 @@ struct GithubCheck {
 
 enum class CheckResult { Never, NotDue, UpToDate, Available, Failed };
 
+inline bool githubCheckDue(bool standalone, int64_t lastCheck, int64_t now) {
+    return standalone && otaGithubCheckDue(true, now, lastCheck);
+}
+
 bool validateOffer(const FirmwareOffer& input, UpdateSource source, UpdateOffer& out);
 bool sameOffer(const UpdateOffer& a, const UpdateOffer& b);
 bool rolledBackOffer(const UpdateBoot& boot, const UpdateOffer& offer);
@@ -54,4 +58,6 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
 CheckResult checkGithub(int64_t last, GithubCheck& result, Watchdog& watchdog);
 int64_t loadGithubCheck(Preferences& prefs, UpdateOffer& offer);
 bool saveGithubCheck(Preferences& prefs, const GithubCheck& result);
+int64_t loadGithubAutoFailure(Preferences& prefs);
+bool saveGithubAutoFailure(Preferences& prefs, int64_t attemptedAt);
 }  // namespace lcd

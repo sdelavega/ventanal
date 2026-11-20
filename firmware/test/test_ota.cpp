@@ -1,7 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../ventanal/ota.h"
+#include "../lcd43b/ota.h"
 #include <cassert>
+
+static void standalone_checks_github_weekly() {
+    constexpr int64_t day = 24 * 60 * 60;
+    constexpr int64_t validSince = 1704067200;
+    constexpr int64_t last = validSince + day;
+    assert(!lcd::githubCheckDue(true, last, last + 6 * day));
+    assert(lcd::githubCheckDue(true, last, last + 7 * day));
+    assert(!lcd::githubCheckDue(true, 0, validSince - 1));
+    assert(lcd::githubCheckDue(true, 0, validSince));
+    assert(!lcd::githubCheckDue(false, 0, last + 7 * day));
+    assert(!lcd::githubCheckDue(true, last, last - day));
+}
 
 int main() {
     // Overnight quiet hours include the start and exclude the end.
@@ -84,5 +97,6 @@ int main() {
     assert(!otaGithubCheckDue(true, now, now - week + 1));
     assert(!otaGithubCheckDue(true, now, now + 1));
 
-    puts("OTA policy: battery and quiet hours, install recovery, healthy boot and result fields passed");
+    standalone_checks_github_weekly();
+    puts("OTA policy: battery and quiet hours, install recovery, healthy boot, result fields and standalone weekly check passed");
 }

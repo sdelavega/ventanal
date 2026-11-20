@@ -35,6 +35,7 @@ constexpr char journalKey[] = "ota-journal";
 constexpr char hostAttemptsKey[] = "ota-host-tries";
 constexpr char githubAttemptsKey[] = "ota-gh-tries";
 constexpr char checkKey[] = "ota-gh-check";
+constexpr char autoFailureKey[] = "ota-gh-fail";
 constexpr uint32_t transferMs = 60000;
 constexpr uint32_t idleMs = 6000;
 constexpr uint64_t healthyBootUs = 150ULL * 1000 * 1000;
@@ -563,5 +564,13 @@ bool saveGithubCheck(Preferences& prefs, const GithubCheck& result) {
     // Reset only the direct-install budget. Host attempts are tied to approvals.
     if (prefs.isKey(githubAttemptsKey) && !prefs.remove(githubAttemptsKey)) return false;
     return prefs.putBytes(checkKey, &result, sizeof result) == sizeof result;
+}
+
+int64_t loadGithubAutoFailure(Preferences& prefs) {
+    return prefs.getLong64(autoFailureKey, 0);
+}
+
+bool saveGithubAutoFailure(Preferences& prefs, int64_t attemptedAt) {
+    return prefs.putLong64(autoFailureKey, attemptedAt) == sizeof attemptedAt;
 }
 }  // namespace lcd

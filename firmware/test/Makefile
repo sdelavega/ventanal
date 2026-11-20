@@ -98,7 +98,7 @@ build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/securi
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_settings.cpp $(LDFLAGS) -o $@
 
-build/test_ota: test_ota.cpp ../common/ota_state.h ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
+build/test_ota: test_ota.cpp ../common/ota_state.h ../lcd43b/ota.h ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_ota.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 

@@ -7,12 +7,12 @@ downloads them, displays the selected screen, and sleeps. Cached screens work
 without Wi-Fi. Ventanal 1.0.0 is free software under GPL-3.0-or-later.
 
 ![Seasonal museum art with soft-shade credit](docs/images/art.png)
-![Weather example for St. Augustine, FL 32084](docs/images/weather.png)
+![Weather example for St. Augustine, Florida](docs/images/weather.png)
 ![Solar conditions with CALL SIGN placeholder](docs/images/solar.png)
 
 These previews come from the deterministic test goldens. Weather uses St. Augustine,
-FL 32084 (29.91 N, 81.36 W, `America/New_York`). Solar uses a public test location
-and the “CALL SIGN” placeholder. Colours simulate the panel.
+Florida. Solar uses a public test location and the “CALL SIGN” placeholder.
+Colours simulate the panel.
 
 ## Requirements and architecture
 
@@ -131,6 +131,46 @@ update approval, rollback and release signing.
 
 Secure Boot and flash encryption are never enabled; see [security hardening](docs/security-hardening.md) for why and for the disabled scaffolding.
 
+## Standalone mode
+
+The Waveshare LCD can run without a Ventanal host. The board fetches its own
+data and renders a daily artwork with two spare works, local weather, and an
+optional solar conditions screen for licensed US amateur radio operators.
+
+1. On the board, open **Settings → Setup Wi-Fi**. An unprovisioned board opens
+   Wi-Fi setup on startup.
+2. On your phone, join the board's hotspot using the details or QR code on the
+   LCD, then open the setup page at the address shown on the board.
+3. Choose your Wi-Fi network, enter its password and your US ZIP code, and
+   select units and a 12- or 24-hour clock. Enter your call sign to enable
+   solar. Leave the optional host address empty for standalone mode, or select
+   **Leave the host and run on its own** when switching from a paired host.
+   Tap **Save and connect**.
+
+- The free Open-Meteo API is for non-commercial use. Its weather data requires
+  attribution. US alerts come from the National Weather Service API at
+  `api.weather.gov`, which requires a User-Agent. [Open-Meteo terms](https://open-meteo.com/en/terms)
+  · [NWS API documentation](https://www.weather.gov/documentation/services-web-api)
+- Solar conditions and imagery come from public NOAA Space Weather Prediction
+  Center and NASA Solar Dynamics Observatory feeds. [NOAA SWPC](https://www.swpc.noaa.gov/)
+  · [NASA SDO](https://sdo.gsfc.nasa.gov/)
+- Art comes from the Cleveland Museum of Art and The Met's open-access
+  collections (CC0). The Art Institute of Chicago is skipped for now because
+  its IIIF images use progressive JPEG, which the board cannot decode.
+  [Cleveland Open Access](https://www.clevelandart.org/open-access)
+  · [The Met Open Access](https://www.metmuseum.org/hubs/open-access)
+
+The FCC License View API has been retired. The board trusts the call sign you
+enter and shows it as **unverified**. The geocoder receives your ZIP code, and
+the weather APIs receive the resulting coordinates. Your call sign stays on
+the board. The board sends no personal data or telemetry to the project.
+
+The board checks GitHub for firmware updates at most once a week during a
+normal refresh. A compatible signed release changes the **Firmware updates**
+button in Settings to **Update _version_ available**. Open it and choose
+**Install** to approve the update on the board. You can also select **Check for
+updates** on that page. See the [LCD firmware guide](firmware/lcd43b/README.md#standalone-mode).
+
 ## Using Ventanal
 
 - **Single WAKE press:** cycle cached art, weather, optional solar and enabled
@@ -145,11 +185,10 @@ On the LCD, tap right/left to rotate art → weather → published solar (or bac
 Double tap swaps the art through cached spares and back to the main painting,
 then opens Art. Skips survive reboots and report on the next online refresh.
 Art off hides artwork and makes double tap a no-op. Hold for 1.5 seconds to refresh.
-The LCD sample uses St. Augustine, FL 32084 and the `America/New_York` timezone.
 
-Art changes on configured seasonal slots. Weather includes current conditions,
-seven-day forecast, alerts and radar. Solar appears only after the local ham
-licence check succeeds. Quiet hours suppress scheduled wakes; button actions
+In host mode, art changes on configured seasonal slots. Weather includes current
+conditions, seven-day forecast, alerts and radar. The host publishes solar after
+its local ham licence check succeeds. Quiet hours suppress scheduled wakes; button actions
 remain available. Low battery lengthens the wake interval, and critical voltage
 shows a charge warning and leaves only button wake enabled. The readout records
 the last draw, not every network check.
@@ -349,9 +388,8 @@ The panel can stall during PON; bounded fast retry/recovery and the wake watchdo
 limit a failed wake, but do not eliminate the hardware fault. The board toolchain
 also emits a known LittleFS partition-subtype warning; use the documented custom
 table/uploader. Paris Musées awaits live schema verification. Non-US ham licences
-are not supported. Offline screens remain cached until a successful refresh;
-there is no OTA firmware update. Battery life and palette accuracy depend on the
-installation and calibration.
+are not supported. Offline screens remain cached until a successful refresh.
+Battery life and palette accuracy depend on the installation and calibration.
 
 For future work see the [roadmap](docs/ROADMAP.md); for optional features see
 [Extras](docs/extras.md).
