@@ -255,19 +255,60 @@ bool connectForUpdates(Watchdog& watchdog) {
     return wifiConnect(watchdog) && (time(nullptr) >= 1704067200 || syncTime(watchdog));
 }
 
-FetchOutcome receiveFrame(const char* hostUrl, const FrameInfo& info,
-                          const char* slotName, uint8_t* buffer, Watchdog& watchdog,
-                          uint32_t passStarted) {
+namespace {
+
+void logResume(const char* format, ...) {
+    char line[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    log("%s\n", line);
+}
+
+void logFrameOutcome(const char* slot, size_t total, const FrameDownload& download) {
+    const char* outcome = "failed";
+    switch (download.outcome) {
+        case FetchOutcome::Complete: outcome = "complete"; break;
+        case FetchOutcome::Progress: outcome = "progress"; break;
+        case FetchOutcome::NoProgress: outcome = "no-progress"; break;
+        case FetchOutcome::Failed: break;
+    }
+    char status[24];
+    const char* reason = download.reason;
+    if (!reason) {
+        snprintf(status, sizeof status, "status-%d", download.status);
+        reason = status;
+    }
+    log("frame slot=%s outcome=%s reason=%s got=%u have=%u total=%u ms=%lu\n",
+        slot, outcome, reason, unsigned(download.got), unsigned(download.have),
+        unsigned(total), static_cast<unsigned long>(download.ms));
+}
+
+}  // namespace
+
+FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
+                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                           uint32_t passStarted) {
+    const uint32_t started = millis();
     const auto key = decodeDeviceKey(installation.deviceKey);
     HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted);
-    if (!transport.remainingMs()) return FetchOutcome::NoProgress;
-
     auto& store = partialStore();
     const auto target = std::string("frame-") + slotName;
-    if (!buffer || !validWireSize(info.encoding, info.size) ||
-        strncmp(info.id, info.sha256, 16) != 0) {
+    const auto result = [&](FetchOutcome outcome, const char* reason) {
+        const auto size = partialStore().size(target.c_str());
+        return FrameDownload{outcome, reason, transport.bytesRead(), size_t(std::max(int64_t(0), size)),
+                             uint32_t(millis() - started), transport.status()};
+    };
+    if (!transport.remainingMs()) return result(FetchOutcome::NoProgress, "budget");
+    if (!buffer) return result(FetchOutcome::Failed, "memory");
+    if (!validWireSize(info.encoding, info.size)) {
         store.discard(target.c_str());
-        return FetchOutcome::Failed;
+        return result(FetchOutcome::Failed, "size");
+    }
+    if (strncmp(info.id, info.sha256, 16) != 0) {
+        store.discard(target.c_str());
+        return result(FetchOutcome::Failed, "hash");
     }
     auto url = hostAssetUrl(hostUrl, info.url);
     if (url.size() >= sizeof(PartialMeta::url)) {
@@ -280,22 +321,27 @@ FetchOutcome receiveFrame(const char* hostUrl, const FrameInfo& info,
     // The host publishes the same SHA-256 in signed and legacy manifests.
     const ResumeSource source{url.c_str(), info.id, info.sha256, uint32_t(info.size), true};
     const auto epoch = time(nullptr);
+    const char* reason = nullptr;
     const auto outcome = resumeFetch(transport, store, target.c_str(), source,
         transport.remainingMs(), []() -> uint32_t { return millis(); },
-        epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, nullptr);
+        epoch >= resume_detail::kValidEpoch ? uint32_t(epoch) : 0, logResume, &reason);
     if (transport.malformed()) {
         store.discard(target.c_str());
-        return FetchOutcome::Failed;
+        return result(FetchOutcome::Failed, transport.reason());
     }
-    if (outcome != FetchOutcome::Complete)
-        return &partialStore() != &store ? FetchOutcome::NoProgress : outcome;
+    if (outcome != FetchOutcome::Complete) {
+        if (&partialStore() != &store) return result(FetchOutcome::NoProgress, "storage");
+        if (!reason) reason = transport.reason();
+        if (!reason && (!transport.status() || transport.status() == 200 || transport.status() == 206))
+            reason = "budget";
+        return result(outcome, reason);
+    }
 
     const bool loaded = store.takeCommitted(target.c_str(), buffer, info.size);
     watchdog.feed();
-    log("download slot=%s id=%.16s bytes=%u verified=%d\n",
-        slotName, info.id, unsigned(info.size), loaded);
-    if (loaded) return FetchOutcome::Complete;
-    return &partialStore() != &store ? FetchOutcome::NoProgress : FetchOutcome::Failed;
+    if (loaded) return result(FetchOutcome::Complete, "ok");
+    return result(&partialStore() != &store ? FetchOutcome::NoProgress : FetchOutcome::Failed,
+                  "storage");
 }
 
 void runRefresh(const char* hostUrl, const char* deviceId,
@@ -353,41 +399,39 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             result.frameOk[slot] = true;    // keep the current entry
             continue;
         }
-        if (millis() - passStarted >= TRANSFER_BUDGET_MS) continue;
         uint8_t* bytes = nullptr;
-        if (cache.staging && cache.allocated[slot]) {
+        if (millis() - passStarted < TRANSFER_BUDGET_MS && cache.staging && cache.allocated[slot]) {
             bytes = static_cast<uint8_t*>(ps_malloc(info->size));
             if (!bytes && cache.reclaimWireMemory) {
                 cache.reclaimWireMemory(info->size);
                 bytes = static_cast<uint8_t*>(ps_malloc(info->size));
             }
         }
-        if (!bytes) {
-            log("download slot=%s skipped=no-psram bytes=%u\n", SLOT_NAMES[slot],
-                unsigned(info->size));
-            result.frameFailed[slot] = true;
-            continue;
-        }
-        FrameBody body{std::shared_ptr<uint8_t>(bytes, free), info->size};
-        const auto outcome = [&] {
+        FrameBody body;
+        if (bytes) body = FrameBody{std::shared_ptr<uint8_t>(bytes, free), info->size};
+        auto download = [&] {
             ScanScope activity(ScanActivity::Receive);
             return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog, passStarted);
         }();
-        if (outcome == FetchOutcome::Progress || outcome == FetchOutcome::NoProgress) continue;
-        const bool received = outcome == FetchOutcome::Complete;
-        const uint32_t decodeStart = millis();
-        const bool decoded = received && [&] {
-            ScanScope activity(ScanActivity::Inflate);
-            return decodeFrame(info->encoding, bytes, info->size, cache.staging);
-        }();
-        if (received)
+        if (download.outcome == FetchOutcome::Complete) {
+            const uint32_t decodeStart = millis();
+            const bool decoded = [&] {
+                ScanScope activity(ScanActivity::Inflate);
+                return decodeFrame(info->encoding, bytes, info->size, cache.staging);
+            }();
             log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],
                 unsigned(info->size), decoded, static_cast<unsigned long>(millis() - decodeStart));
-        if (decoded && cache.publish(slot, info, body)) {
+            if (!decoded || !cache.publish(slot, info, body)) {
+                download.outcome = FetchOutcome::Failed;
+                download.reason = decoded ? "publish" : "invalid-frame";
+            }
+        }
+        logFrameOutcome(SLOT_NAMES[slot], info->size, download);
+        if (download.outcome == FetchOutcome::Complete) {
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
-        } else {
+        } else if (download.outcome == FetchOutcome::Failed) {
             // This slot's download was required (id changed or cache
             // missing) and it failed: track it separately from manifest
             // success so the pass can never report as fully current.

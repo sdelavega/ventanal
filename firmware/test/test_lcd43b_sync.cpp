@@ -11,6 +11,7 @@
 //    frames, and the redraw decision after offline changes.
 
 #include "../lcd43b/sync.h"
+#include "../lcd43b/host_transport.h"
 #include "../lcd43b/inflate.h"
 #include "../lcd43b/installation.h"
 #include "../common/resume/resume.h"
@@ -126,9 +127,12 @@ Entry makeEntry(const std::string& name, const std::vector<uint8_t>& frame,
     return entry;
 }
 
-bool receiveFrame(const Entry& entry, std::vector<uint8_t>& buffer, CountingWatchdog& watchdog) {
-    return lcd::receiveFrame("http://host", entry.info, "art", buffer.data(), watchdog, millis())
-        == FetchOutcome::Complete;
+bool receiveFrame(const Entry& entry, std::vector<uint8_t>& buffer, CountingWatchdog& watchdog,
+                  const char* reason = nullptr) {
+    const auto download =
+        lcd::receiveFrame("http://host", entry.info, "art", buffer.data(), watchdog, millis());
+    if (reason) assert(download.reason && !strcmp(download.reason, reason));
+    return download.outcome == FetchOutcome::Complete;
 }
 
 std::string manifestBody(const Entry& art, const Entry& weather) {
@@ -208,7 +212,7 @@ void serveRanges(const Entry& art, const Entry& weather,
         assert(start <= end && end < response.size() && end - start < kResumeChunk);
         const auto total = response.size();
         fakeResponseHeaders["ETag"] = etag;
-        fakeResponseHeaders["Content-Range"] = "bytes " + std::to_string(start) + "-"
+        fakeResponseHeaders["Content-Range"] = "Bytes " + std::to_string(start) + "-"
             + std::to_string(end) + "/" + std::to_string(total);
         const auto first = response.begin() + start;
         response = std::vector<uint8_t>(first, response.begin() + end + 1);
@@ -221,6 +225,9 @@ void host_frame_unfinished_is_not_failed(const lcd::RefreshResult& result,
     assert(!result.frameOk[0] && !result.frameFailed[0] && !result.frameIds[0][0]);
     assert(!stagedBodies[0].bytes && files.at("/art.vnr") == previous);
     assert(!lcd::anyRequiredFrameFailed(result));
+    const auto expected = "frame slot=art outcome=progress reason=budget got="
+        + std::to_string(kResumeChunk) + " have=" + std::to_string(kResumeChunk);
+    assert(Serial.output.find(expected + " total=") != std::string::npos);
 }
 
 void host_frame_resumes_across_passes() {
@@ -245,9 +252,12 @@ void host_frame_resumes_across_passes() {
     host_frame_unfinished_is_not_failed(result, previous);
     assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + spare.url) == 0);
     assert(!result.frameOk[3] && !result.frameFailed[3]);
+    assert(Serial.output.find("frame slot=spare0 outcome=no-progress reason=budget got=0 have=0")
+           != std::string::npos);
 
     cutFirstPass = false;
     rangeStarts.clear();
+    Serial.output.clear();
     strcpy(ids[3], spare.info.id);
     refresh("http://host", "lcd43b", ids, result, watchdog);
     assert(!rangeStarts.empty() && rangeStarts.front() == kResumeChunk);
@@ -256,6 +266,20 @@ void host_frame_resumes_across_passes() {
     assert(stagedBodies[0].size == frame.size());
     assert(memcmp(stagedBodies[0].bytes.get(), frame.data(), frame.size()) == 0);
     assert(files.size() == 1 && files.at("/art.vnr") == previous);
+    const auto total = std::to_string(frame.size());
+    assert(Serial.output.find("resume target=frame-art from=" + std::to_string(kResumeChunk)
+                              + " total=" + total + "\n") != std::string::npos);
+    const auto done = "resume done target=frame-art bytes=" + total + " ms=";
+    const auto doneAt = Serial.output.find(done);
+    assert(doneAt != std::string::npos);
+    const auto firstNonDigit = Serial.output.find_first_not_of("0123456789", doneAt + done.size());
+    assert(firstNonDigit != std::string::npos && firstNonDigit > doneAt + done.size());
+    assert(Serial.output[firstNonDigit] == '\n');
+    const auto expected = "frame slot=art outcome=complete reason=ok got="
+        + std::to_string(frame.size() - kResumeChunk) + " have=0 total=" + total + " ms=";
+    const auto outcome = Serial.output.find(expected);
+    assert(outcome != std::string::npos);
+    assert(Serial.output.find("frame slot=art outcome=", outcome + 1) == std::string::npos);
 }
 
 void host_frame_hash_mismatch_fails() {
@@ -289,6 +313,33 @@ void host_frame_hash_mismatch_fails() {
     assert(frameBytesRead == frame.size());
     assert(!result.frameOk[0] && result.frameFailed[0] && !stagedBodies[0].bytes);
     assert(files.size() == 1 && files.at("/art.vnr") == previous);
+    const auto total = std::to_string(frame.size());
+    assert(Serial.output.find("frame slot=art outcome=failed reason=hash got=" + total
+                              + " have=0 total=" + total + " ms=") != std::string::npos);
+}
+
+void host_range_transport_parses_416() {
+    resetFakes();
+    fakeGetResponse = [] {
+        assert(lastHeaders.at("Range") == "bytes=1234-1234");
+        fakeResponseHeaders["Content-Range"] = "bytes */1234";
+        response = {1, 2, 3};  // an error body must not reach the sink
+        return 416;
+    };
+    const std::string key;
+    CountingWatchdog watchdog;
+    lcd::HostRangeTransport transport("http://host", "/frames/art.vnr", key, watchdog, millis());
+    const ResumeSource source{"http://host/frames/art.vnr", "frame-id", "", 1234, true};
+    bool sawHeaders = false;
+    assert(transport.get(source, 1234, 1234, "frame-id", [&](const RangeResponse& headers) {
+        assert(!sawHeaders && headers.status == 416 && headers.total == 1234);
+        sawHeaders = true;
+        return true;
+    }, [](const uint8_t*, size_t) {
+        assert(false && "unexpected 416 body");
+        return false;
+    }));
+    assert(sawHeaders && !transport.malformed() && transport.bytesRead() == 0);
 }
 
 }  // namespace
@@ -296,6 +347,7 @@ void host_frame_hash_mismatch_fails() {
 int main() {
     host_frame_resumes_across_passes();
     host_frame_hash_mismatch_fails();
+    host_range_transport_parses_416();
     {   // Oversized response: the header advertises the frame size but the
         // body keeps sending. Reads never pass the frame end, the extra
         // bytes reject the download, and the buffer is untouched beyond it.
@@ -307,8 +359,7 @@ int main() {
         advertisedSize = int(lcd::FRAME_BYTES);        // the header lies
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES + 4096, 0);   // guard band
-        assert(!receiveFrame(art, buffer, watchdog));
-        assert(strstr(Serial.output.c_str(), "excess=1"));
+        assert(!receiveFrame(art, buffer, watchdog, "excess"));
         assert(largestRead <= kResumeChunk);   // chunk cap held
         for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
             assert(buffer[i] == 0);                // guard band never written
@@ -330,8 +381,7 @@ int main() {
         delayedUntilMs = 300;
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES + 4096, 0);   // guard band
-        assert(!receiveFrame(art, buffer, watchdog));
-        assert(strstr(Serial.output.c_str(), "excess=1"));
+        assert(!receiveFrame(art, buffer, watchdog, "excess"));
         assert(files["/art.vnr"] == previous);   // previous cache preserved
         for (size_t i = lcd::FRAME_BYTES; i < buffer.size(); ++i)
             assert(buffer[i] == 0);              // guard band never written
@@ -349,8 +399,7 @@ int main() {
         holdConnection = true;                 // no hang-up, no extra bytes
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(!receiveFrame(art, buffer, watchdog));
-        assert(!strstr(Serial.output.c_str(), "excess=1"));
+        assert(!receiveFrame(art, buffer, watchdog, "close-timeout"));
         assert(files["/art.vnr"] == previous);  // previous cache preserved
     }
     {   // A mid-stream disconnect rejects the partial body.
@@ -361,7 +410,7 @@ int main() {
         advertisedSize = int(lcd::FRAME_BYTES);
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
-        assert(!receiveFrame(art, buffer, watchdog));
+        assert(!receiveFrame(art, buffer, watchdog, "short-body"));
         assert(!files.count("/art.vnr"));
     }
     {   // A valid frame downloads, verifies, and leaves no staging files.
@@ -375,7 +424,6 @@ int main() {
         assert(receiveFrame(art, buffer, watchdog));
         assert(buffer == frame);
         assert(files.empty());
-        assert(!strstr(Serial.output.c_str(), "excess=1"));
     }
     {   // runRefresh end to end: manifest and frames arrive; solar absent
         // from the manifest stages a drop; a second pass skips downloads.
@@ -478,6 +526,8 @@ int main() {
         refresh("http://host", "lcd43b", ids, result, watchdog);
         assert(result.frameOk[0] && result.frameFailed[1]);
         assert(!stagedBodies[1].bytes && files.empty());
+        assert(Serial.output.find("frame slot=weather outcome=failed reason=invalid-frame ")
+               != std::string::npos);
         const auto& body = stagedBodies[0];
         assert(body.size == zipped.size());
         assert(memcmp(body.bytes.get(), zipped.data(), zipped.size()) == 0);
@@ -600,6 +650,11 @@ int main() {
         const uint32_t elapsed = fakeClock - started;
         assert(elapsed < lcd::TRANSFER_BUDGET_MS);
         assert(watchdog.feeds > 1000);   // fed during both frames
+        for (const char* slot : {"weather", "art"}) {
+            const auto expected = std::string("frame slot=") + slot
+                + " outcome=no-progress reason=body-idle got=0 have=0";
+            assert(Serial.output.find(expected) != std::string::npos);
+        }
         assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + weather.url) == 1);
     }
     {   // Connection-close framing must actually ask for closure: the
@@ -648,6 +703,8 @@ int main() {
         assert(result.frameFailed[1]);            // weather: required, failed
         assert(!result.frameFailed[2] && result.dropSlot[2]);   // drop != fail
         assert(lcd::anyRequiredFrameFailed(result));   // pass is a failure
+        assert(Serial.output.find("frame slot=weather outcome=failed reason=size got=0 have=0")
+               != std::string::npos);
         assert(stagedBodies[0].bytes && !stagedBodies[1].bytes && files.empty());
         assert(lastConnectionHeader == "close");  // every request asks closure
     }

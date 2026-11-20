@@ -60,29 +60,37 @@ inline unsigned hexDigit(char c) {
     return 16;
 }
 
-inline bool verifies(PartialStore& store, const char* target, const PartialMeta& meta, const char* hex) {
-    if (!meta.total || meta.have != meta.total || store.size(target) != meta.total) return false;
-    if (!*hex) return true;
+inline const char* verificationFailure(PartialStore& store, const char* target,
+                                       const PartialMeta& meta, const char* hex) {
+    if (!meta.total || meta.have != meta.total) return "size";
+    const auto storedSize = store.size(target);
+    if (storedSize < 0) return "storage";
+    if (storedSize != meta.total) return "size";
+    if (!*hex) return nullptr;
     uint8_t digest[32];
-    if (std::strlen(hex) != 2 * sizeof(digest) || !store.sha256(target, digest)) return false;
+    if (std::strlen(hex) != 2 * sizeof(digest)) return "hash";
+    if (!store.sha256(target, digest)) return "storage";
     for (size_t i = 0; i < sizeof(digest); ++i) {
         if (hexDigit(hex[2 * i]) != (unsigned(digest[i]) >> 4) ||
-            hexDigit(hex[2 * i + 1]) != (digest[i] & 0xfu)) return false;
+            hexDigit(hex[2 * i + 1]) != (digest[i] & 0xfu)) return "hash";
     }
-    return true;
+    return nullptr;
 }
 
 }  // namespace resume_detail
 
 inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, const char* target,
                                 const ResumeSource& source, uint32_t budgetMs, uint32_t (*nowMs)(),
-                                uint32_t epochNow, void (*log)(const char*, ...)) {
+                                uint32_t epochNow, void (*log)(const char*, ...),
+                                const char** failureReason = nullptr) {
     using namespace resume_detail;
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
     const char* digest = source.sha256Hex ? source.sha256Hex : "";
+    if (failureReason) *failureReason = nullptr;
     if (!source.url || !*source.url || std::strlen(source.url) >= sizeof(PartialMeta::url) ||
         std::strlen(pinned) >= sizeof(PartialMeta::validator) || source.expectedSize > kMaxBodyBytes) {
+        if (failureReason) *failureReason = "parse";
         return FetchOutcome::Failed;
     }
 
@@ -92,12 +100,15 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         meta = {};
         std::strcpy(meta.url, source.url);
     };
-    const auto fail = [&] {
+    const auto fail = [&](const char* reason) {
+        if (failureReason) *failureReason = reason;
         store.discard(target);
         return FetchOutcome::Failed;
     };
     const auto finish = [&] {
-        if (!verifies(store, target, meta, digest) || !store.commit(target)) return fail();
+        if (const char* reason = verificationFailure(store, target, meta, digest))
+            return fail(reason);
+        if (!store.commit(target)) return fail("storage");
         if (log) log("resume done target=%s bytes=%" PRIu32 " ms=%" PRIu32,
                      target, meta.total, uint32_t(nowMs() - started));
         return FetchOutcome::Complete;
@@ -112,10 +123,10 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         (source.expectedSize && source.expectedSize != meta.total)) {
         reset();
     } else if (fileSize > meta.have) {
-        if (!store.truncate(target, meta.have)) return fail();
+        if (!store.truncate(target, meta.have)) return fail("storage");
     } else if (fileSize < meta.have) {
         meta.have = static_cast<uint32_t>(fileSize);
-        if (!store.writeMeta(target, meta)) return fail();
+        if (!store.writeMeta(target, meta)) return fail("storage");
     }
 
     if (meta.have && log) {
@@ -137,7 +148,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
 
         RangeResponse response{};
         uint32_t buffered = 0;
-        bool rejected = false;
+        const char* rejection = nullptr;
         bool allocationFailed = false;
         const auto saveChunk = [&] {
             if (!buffered) return true;
@@ -154,11 +165,17 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
             if (response.status != 200) return true;
             reset();
             progressed = false;
-            if (!terminated(response.validator, sizeof(response.validator)) ||
-                (*pinned && *response.validator && std::strcmp(pinned, response.validator)) ||
-                response.total > kMaxBodyBytes ||
+            if (!terminated(response.validator, sizeof(response.validator))) {
+                rejection = "parse";
+                return false;
+            }
+            if (*pinned && *response.validator && std::strcmp(pinned, response.validator)) {
+                rejection = "validator";
+                return false;
+            }
+            if (response.total > kMaxBodyBytes ||
                 (response.total && source.expectedSize && response.total != source.expectedSize)) {
-                rejected = true;
+                rejection = "size";
                 return false;
             }
             meta.total = response.total ? response.total : source.expectedSize;
@@ -170,7 +187,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
             const uint32_t limit = whole ? (meta.total ? meta.total : kMaxBodyBytes) : kResumeChunk;
             const uint32_t received = whole ? meta.have + buffered : buffered;
             if (count > limit - received) {
-                rejected = true;
+                rejection = "size";
                 return false;
             }
             if (count && !buffer) {
@@ -187,7 +204,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 data += copied;
                 count -= copied;
                 if (whole && buffered == kResumeChunk && !saveChunk()) {
-                    rejected = true;
+                    rejection = "storage";
                     return false;
                 }
             }
@@ -195,17 +212,20 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         };
         const bool complete = transport.get(source, start, end,
                                             source.sendIfRange ? meta.validator : "", headers, sink);
-        if (allocationFailed) return FetchOutcome::Failed;
-        if (rejected) return fail();
+        if (allocationFailed) {
+            if (failureReason) *failureReason = "memory";
+            return FetchOutcome::Failed;
+        }
+        if (rejection) return fail(rejection);
         if (!complete) return pause();
         if (response.status == 200) {
             const uint32_t received = meta.have + buffered;
             if (received < meta.total) return pause();
-            if (!received) return fail();
+            if (!received) return fail("size");
             meta.total = received;
-            return saveChunk() ? finish() : fail();
+            return saveChunk() ? finish() : fail("storage");
         }
-        if (!terminated(response.validator, sizeof(response.validator))) return fail();
+        if (!terminated(response.validator, sizeof(response.validator))) return fail("parse");
 
         // Fixed sources can use their manifest/offer identity when the HTTP
         // response itself does not carry one. Public sources learn it on GET.
@@ -224,7 +244,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         const bool changed206 = response.status == 206 && start &&
             (validatorChanged || (meta.total && response.total && response.total != meta.total));
         if (shifted || changed206 || (response.status == 416 && start)) {
-            if (restarted) return fail();
+            if (restarted) return fail(response.status == 416 ? "status-416" : "parse");
             reset();
             progressed = false;
             restarted = true;
@@ -232,23 +252,23 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         }
 
         if (response.status != 206) return FetchOutcome::Failed;
-        if (*pinned && std::strcmp(pinned, validator)) return fail();
+        if (*pinned && std::strcmp(pinned, validator)) return fail("validator");
 
         const uint32_t responseTotal = response.total;
         if (!responseTotal || responseTotal > kMaxBodyBytes ||
-            (source.expectedSize && responseTotal != source.expectedSize)) return fail();
+            (source.expectedSize && responseTotal != source.expectedSize)) return fail("size");
 
         if (response.end < start || response.end > end || response.end >= responseTotal) {
-            return fail();
+            return fail("parse");
         }
         const uint32_t expectedBytes = response.end - start + 1;
         if (buffered < expectedBytes) return pause();
-        if (buffered > expectedBytes) return fail();
-        if (response.end + 1 < responseTotal && !*validator && !*digest) return fail();
+        if (buffered > expectedBytes) return fail("size");
+        if (response.end + 1 < responseTotal && !*validator && !*digest) return fail("validator");
 
         meta.total = responseTotal;
         std::strcpy(meta.validator, validator);
-        if (!saveChunk()) return fail();
+        if (!saveChunk()) return fail("storage");
         if (meta.have == meta.total) return finish();
     }
     return pause();

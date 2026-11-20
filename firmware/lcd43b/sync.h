@@ -149,12 +149,21 @@ struct DownloadPower {
 
 bool connectForUpdates(Watchdog& watchdog);
 
+struct FrameDownload {
+    FetchOutcome outcome;
+    const char* reason;
+    size_t got;
+    size_t have;
+    uint32_t ms;
+    int status;
+};
+
 // Receive and verify exactly the advertised wire bytes. The caller owns a
 // buffer at least info.size bytes long. Check connection close so even a
 // delayed packet beyond the advertised size rejects the response.
-FetchOutcome receiveFrame(const char* hostUrl, const FrameInfo& info,
-                          const char* slotName, uint8_t* buffer, Watchdog& watchdog,
-                          uint32_t passStarted);
+FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
+                           const char* slotName, uint8_t* buffer, Watchdog& watchdog,
+                           uint32_t passStarted);
 
 bool writeCachedFrame(const char* path, const FrameBody& body);
 bool copyCachedFrame(const char* path, const char* source);
