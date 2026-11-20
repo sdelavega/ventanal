@@ -82,6 +82,7 @@ struct ContentStaleness {
         const uint32_t stored[] = {overdueSince, now};
         if (prefs.putBytes("content-overdue", stored, sizeof stored) == sizeof stored) {
             if (!legacyKeyRemoved) {
+                // Attempt once per boot; absence or an I/O failure is retried next boot.
                 prefs.remove("content-epoch");
                 legacyKeyRemoved = true;
             }

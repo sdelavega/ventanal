@@ -51,4 +51,4 @@ the first refresh end and between consecutive refresh ends. It counts
 standalone weather and solar frames, art and spare-art queue entries, and
 successful host frame writes. A completed resume counts its `from` offset as
 skipped bytes. For host frames, the frame result must also confirm that the
-remaining bytes were transferred; a server that ignores Range does not count.
+remaining bytes were transferred. A whole-body restart does not count for any target.

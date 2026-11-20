@@ -217,7 +217,7 @@ int main() {
         assert(save.pending && save.queuedAt == 100 && !save.id[0] && !save.body.bytes);
         assert(save.ready(500) && !save.dueUnderPressure(500));
     }
-    { // A fault after queueing must switch to the matching resident copy.
+    { // A fault after queueing makes the matching resident copy eligible.
         FsStore store;
         lcd::FrameBody body;
         body.file = std::make_shared<lcd::FrameFile>(store, "frame", "id");

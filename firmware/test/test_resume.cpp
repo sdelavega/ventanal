@@ -211,6 +211,9 @@ void ignored_range_is_whole_download() {
     transport.body.front() ^= 0xff;
     assert(f.fetch(transport) == FetchOutcome::Complete);
     f.checkCommit(transport);
+    assert((logs == std::vector<std::string>{"resume target=/frame from=65536 total=102400",
+        "resume restart target=/frame reason=whole-body from=65536",
+        "resume done target=/frame bytes=102400 ms=10"}));
 }
 
 void whole_body_streams_in_chunks() {

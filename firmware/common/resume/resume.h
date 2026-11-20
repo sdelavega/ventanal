@@ -246,6 +246,8 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 allocationFailed = true;
                 return false;
             }
+            if (meta.have && log)
+                log("resume restart target=%s reason=whole-body from=%" PRIu32, target, meta.have);
             reset();
             progressed = false;
             canResume = !wholeOnly && (*response.validator || *pinned || *digest);

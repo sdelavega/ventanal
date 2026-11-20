@@ -72,17 +72,34 @@ def test_counts_resume(tmp_path):
 
 def test_resume_ignored_range_and_incomplete(tmp_path):
     _, report = score(tmp_path, """\
-12:00:00 resume target=frame-art from=100 total=1000
-12:00:01 resume done target=frame-art bytes=1000 ms=10
-12:00:02 frame slot=art outcome=complete reason=ok got=900 have=1000 total=1000 ms=10
-12:00:03 resume target=frame-weather from=200 total=1000
-12:00:04 resume done target=frame-weather bytes=1000 ms=10
-12:00:05 frame slot=weather outcome=complete reason=ok got=1000 have=1000 total=1000 ms=10
-12:00:06 resume target=frame-solar from=300 total=1000
-12:00:07 frame slot=solar outcome=no-progress reason=budget got=0 have=300 total=1000 ms=10
+12:00:00 resume target=frame-art from=196608 total=309257
+12:00:01 frame slot=art outcome=progress reason=budget got=281780 have=262144 total=309257
+12:00:02 resume target=frame-art from=262144 total=309257
+12:00:03 resume done target=frame-art bytes=309257 ms=25763
+12:00:04 frame slot=art outcome=complete reason=ok got=47113 have=0 total=309257
+12:00:05 resume target=frame-spare2 from=98304 total=284118
+12:00:06 resume restart target=frame-spare2 reason=whole-body from=98304
+12:00:07 resume done target=frame-spare2 bytes=284118 ms=27611
+12:00:08 frame slot=spare2 outcome=complete reason=ok got=284118 have=0 total=284118
+12:00:09 resume target=ota-1.2.1 from=983040 total=2259776
+12:00:10 resume done target=ota-1.2.1 bytes=2259776 ms=25763
+12:00:11 resume target=ota-1.2.2 from=983040 total=2259776
+12:00:12 resume restart target=ota-1.2.2 reason=whole-body from=983040
+12:00:13 resume done target=ota-1.2.2 bytes=2259776 ms=25763
 """)
-    assert report["resumes"] == 1
-    assert report["resume_bytes_skipped"] == 100
+    assert report["resumes"] == 2
+    assert report["resume_bytes_skipped"] == 262144 + 983040
+
+
+def test_restart_invalidates_pending_frame_even_after_done(tmp_path):
+    _, report = score(tmp_path, """\
+12:00:00 resume target=frame-art from=196608 total=309257
+12:00:01 resume done target=frame-art bytes=309257 ms=25763
+12:00:02 resume restart target=frame-art reason=whole-body from=196608
+12:00:03 frame slot=art outcome=complete reason=ok got=112649 have=0 total=309257
+""")
+    assert report["resumes"] == 0
+    assert report["resume_bytes_skipped"] == 0
 
 
 def test_reboot_and_watchdog_detected(tmp_path):
