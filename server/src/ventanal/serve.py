@@ -324,6 +324,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             etag = None
             if suffix in ('.vnf', '.vnr'):
                 ident = FRAME_ID_SUFFIX.search(target.stem)
+                # A fallback stem cannot match a manifest ID, so devices fetch the full frame.
                 etag = f'"{ident[1] if ident else target.stem}"'
             self.send_asset(source, kind, 'no-store' if self.proof_key is not None else cache_control, etag)
 

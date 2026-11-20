@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
 
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import closing
 import hashlib
 from http.client import HTTPConnection, HTTPSConnection
@@ -10,7 +11,8 @@ from threading import Thread
 
 import pytest
 
-from test_ota import IMAGE, IMAGE_PATH, allow_test_release_key, signed, web
+# Importing allow_test_release_key registers its autouse fixture in this module.
+from test_ota import BOARD, IMAGE, IMAGE_PATH, allow_test_release_key, signed, web
 from test_security import proof
 from ventanal.ota import verified_metadata
 from ventanal.serve import make_server
@@ -187,3 +189,75 @@ def test_firmware_range_rejects_corrupt_image(web, signed):
     response, _ = get(server, IMAGE_PATH, {'Range': 'bytes=1-3'})
     assert response.status == 404
     assert response.getheader('ETag') is None
+
+
+def test_firmware_materialized_once(web, signed, monkeypatch):
+    server, _, _ = web
+    server.ui.auth.none()
+    store = server.ui.firmware
+    store.cache(verified_metadata(*signed()), IMAGE)
+    materialize = store._materialize_image
+    calls = []
+
+    def counted_materialize(*args):
+        calls.append(1)
+        return materialize(*args)
+
+    monkeypatch.setattr(store, '_materialize_image', counted_materialize)
+
+    def request_byte(offset):
+        response, body = get(server, IMAGE_PATH, {'Range': f'bytes={offset}-{offset}'})
+        return response.status, body
+
+    with ThreadPoolExecutor(max_workers=4) as requests:
+        assert list(requests.map(request_byte, range(len(IMAGE)))) == [
+            (206, bytes([value])) for value in IMAGE
+        ]
+    response, body = get(server, IMAGE_PATH, {'Range': f'bytes={len(IMAGE)}-'})
+    assert (response.status, body) == (416, b'')
+    response, body = get(server, IMAGE_PATH, {'Range': 'bytes=0-0', 'If-Range': '"old"'})
+    assert (response.status, body) == (200, IMAGE)
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize('damage', ['missing', 'wrong size'])
+def test_firmware_cache_recreated_when_missing(web, signed, damage):
+    server, _, root = web
+    server.ui.auth.none()
+    release = verified_metadata(*signed())
+    server.ui.firmware.cache(release, IMAGE)
+    path = root / 'cache' / 'firmware' / f'{release.info.sha256}.bin'
+    assert not path.exists()
+    assert get(server, IMAGE_PATH)[1] == path.read_bytes() == IMAGE
+    if damage == 'missing':
+        path.unlink()
+    else:
+        path.write_bytes(IMAGE[:1])
+
+    response, body = get(server, IMAGE_PATH, {'Range': 'bytes=1-3'})
+    assert (response.status, body) == (206, IMAGE[1:4])
+    assert path.read_bytes() == IMAGE
+
+
+def test_firmware_cache_pruned_for_removed_release(web, signed):
+    server, _, root = web
+    server.ui.auth.none()
+    store = server.ui.firmware
+    release = verified_metadata(*signed())
+    store.cache(release, IMAGE)
+    assert get(server, IMAGE_PATH)[1] == IMAGE
+    path = root / 'cache' / 'firmware' / f'{release.info.sha256}.bin'
+    assert path.exists()
+
+    store.cache(verified_metadata(*signed(version='3.0.0')), IMAGE)
+    new_image = b'new firmware'
+    for version in ('4.0.0', '5.0.0'):
+        store.cache(verified_metadata(*signed(version=version, image=new_image)), new_image)
+    assert get(server, IMAGE_PATH)[0].status == 404
+    assert path.exists()
+    assert get(server, f'/firmware/{BOARD}-3.0.0.bin')[1] == IMAGE
+
+    store.cache(verified_metadata(*signed(version='6.0.0', image=new_image)), new_image)
+    response, body = get(server, f'/firmware/{BOARD}-6.0.0.bin', {'Range': 'bytes=0-2'})
+    assert (response.status, body) == (206, new_image[:3])
+    assert not path.exists()

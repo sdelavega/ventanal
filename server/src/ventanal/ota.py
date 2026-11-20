@@ -5,14 +5,17 @@
 from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
+import fcntl
 import hashlib
 from importlib.metadata import version
 import json
 import logging
+import os
+from pathlib import Path
 import re
 import secrets
 import sqlite3
-from tempfile import TemporaryFile
+from tempfile import NamedTemporaryFile
 from time import monotonic
 from urllib.parse import urljoin, urlsplit
 
@@ -20,7 +23,8 @@ import httpx
 
 from ventanal.release import (
     BOARDS, VERSION, RELEASE_PUBLIC_KEY, ReleaseError, ReleaseInfo, check_update,
-    TEST_RELEASE_KEY_WARNING, firmware_updates_enabled, verify_release, version_tuple,
+    SHA256, TEST_RELEASE_KEY_WARNING, firmware_updates_enabled, parse_release,
+    verify_release, version_tuple,
 )
 
 OPEN_DEVICE = "open"
@@ -80,6 +84,7 @@ class FirmwareStore:
     def __init__(self, cache_dir):
         cache_dir.mkdir(parents=True, exist_ok=True)
         self.path = cache_dir / "firmware.sqlite3"
+        self.images = cache_dir / "firmware"
         with closing(self.connect()) as db, db:
             db.executescript("""
                 CREATE TABLE IF NOT EXISTS firmware_releases (
@@ -202,6 +207,7 @@ class FirmwareStore:
             ).fetchone() is not None
 
     def image(self, name):
+        """Compatibility shim for tests that expect the whole image as bytes."""
         with self.open_image(name) as image:
             if image is not None:
                 source, _ = image
@@ -215,16 +221,32 @@ class FirmwareStore:
         if match is None or not firmware_updates_enabled():
             yield None
             return
-        with ExitStack() as snapshot:
-            with closing(self.connect()) as db:
-                # Keep the metadata and blob in the same database snapshot.
-                db.execute("BEGIN")
-                image = self._snapshot_image(db, match.groups(), snapshot)
-            # A slow client must not hold the SQLite read lock or prevent pruning.
+        self.images.mkdir(exist_ok=True, mode=0o700)
+        with ExitStack() as files:
+            with (self.images / ".lock").open("a") as lock:
+                # Coordinate pruning and cold cache fills across server processes.
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                with closing(self.connect()) as db:
+                    db.execute("BEGIN")
+                    self._prune_images(db)
+                    image = self._open_cached_image(db, match.groups(), files)
+            # The open file survives pruning while a slow client is downloading.
             yield image
 
-    @staticmethod
-    def _snapshot_image(db, release, snapshot):
+    def _prune_images(self, db):
+        cached = {path for path in self.images.glob("*.bin") if SHA256.fullmatch(path.stem)}
+        if not cached:
+            return
+        for row in db.execute("SELECT metadata FROM firmware_releases"):
+            try:
+                info = parse_release(row["metadata"].encode())
+            except ReleaseError:
+                continue
+            cached.discard(self.images / f"{info.sha256}.bin")
+        for path in cached:
+            path.unlink(missing_ok=True)
+
+    def _open_cached_image(self, db, release, files):
         row = db.execute(
             "SELECT rowid, metadata, signature FROM firmware_releases WHERE board=? AND version=?", release
         ).fetchone()
@@ -236,18 +258,36 @@ class FirmwareStore:
             return None
         if (info.board, info.version) != release:
             return None
-        with db.blobopen("firmware_releases", "image", row["rowid"], readonly=True) as blob:
-            if len(blob) != info.size:
-                return None
-            source = snapshot.enter_context(TemporaryFile())
-            digest = hashlib.sha256()
-            while chunk := blob.read(65536):
-                digest.update(chunk)
-                source.write(chunk)
-        if not info.matches_image(source.tell(), digest.digest()):
+        path = self.images / f"{info.sha256}.bin"
+        try:
+            if path.stat().st_size == info.size:
+                return files.enter_context(path.open("rb", buffering=0)), info.sha256
+        except FileNotFoundError:
+            pass
+        if not self._materialize_image(db, row["rowid"], info, path):
             return None
-        source.seek(0)
-        return source, info.sha256
+        return files.enter_context(path.open("rb", buffering=0)), info.sha256
+
+    @staticmethod
+    def _materialize_image(db, rowid, info, path):
+        with db.blobopen("firmware_releases", "image", rowid, readonly=True) as blob:
+            if len(blob) != info.size:
+                return False
+            with NamedTemporaryFile(dir=path.parent, delete=False) as stream:
+                temporary = Path(stream.name)
+                try:
+                    digest = hashlib.sha256()
+                    while chunk := blob.read(65536):
+                        stream.write(chunk)
+                        digest.update(chunk)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                    if not info.matches_image(stream.tell(), digest.digest()):
+                        return False
+                    temporary.replace(path)
+                    return True
+                finally:
+                    temporary.unlink(missing_ok=True)
 
     def boards(self, device):
         with closing(self.connect()) as db:
