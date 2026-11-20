@@ -277,7 +277,13 @@ class Security:
                     return None
             key = bytes.fromhex(entry['device_key'])
             expected = hmac.new(key, f'{method}\n{path}\n{counter}'.encode(), hashlib.sha256).hexdigest()
-            if int(counter) <= entry['counter'] or not hmac.compare_digest(auth[9:], expected):
+            valid = hmac.compare_digest(auth[9:], expected)
+            # Released 1.0.0 e-paper firmware omitted separators. Only the
+            # original pairing and its GET requests may use that format.
+            if not valid and entry is self.state and method == 'GET':
+                legacy = hmac.new(key, f'{method}{path}{counter}'.encode(), hashlib.sha256).hexdigest()
+                valid = hmac.compare_digest(auth[9:], legacy)
+            if int(counter) <= entry['counter'] or not valid:
                 return None
             previous = entry['counter']
             entry['counter'] = int(counter)

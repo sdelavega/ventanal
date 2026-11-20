@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import hashlib
 import hmac
+import importlib.util
 from http.client import HTTPConnection, HTTPSConnection
 import json
 from pathlib import Path
@@ -296,6 +297,103 @@ def web(tmp_path):
         server.shutdown()
         server.server_close()
         thread.join()
+
+
+@pytest.fixture
+def upgraded_web(tmp_path):
+    # Execute the actual 302726b state writer, before starting the new server.
+    spec = importlib.util.spec_from_file_location('security_302726b',
+        Path(__file__).parent / 'fixtures/security_302726b.py')
+    legacy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(legacy)
+    cache = tmp_path / 'cache'
+    old = legacy.Security(cache)
+    old.enable(['127.0.0.1'])
+    key = old.key
+    path = '/manifest.json'
+    assert old.accept('GET', path, proof(key, path, 339))
+    from ventanal.auth import Auth
+    Auth(cache).set_password('test password', 'test password')
+    config = tmp_path / 'settings.toml'
+    config.write_text(EXAMPLE.read_text().replace('/var/lib/ventanal', str(tmp_path))
+                      .replace('/var/cache/ventanal', str(cache)))
+    (tmp_path / 'manifest.json').write_text('{"version":1,"screens":{}}')
+    (tmp_path / 'frames').mkdir()
+    (tmp_path / 'frames/test.vnf').write_bytes(b'frame')
+    profile = tmp_path / 'devices/lcd43b'
+    profile.mkdir(parents=True)
+    (profile / 'manifest.json').write_text('{"version":1,"screens":{}}')
+    server = make_server(tmp_path, '127.0.0.1', 0, cache_dir=cache,
+                         config_path=config, https_host='127.0.0.1', https_port=0)
+    thread = Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+
+    def request(path, headers):
+        context = ssl.create_default_context(cadata=server.ui.security.certificate)
+        conn = HTTPSConnection(*server.tls_server.server_address, context=context, timeout=5)
+        try:
+            conn.request('GET', path, headers=headers)
+            response = conn.getresponse()
+            return response.status, response.read()
+        finally:
+            conn.close()
+
+    try:
+        yield server, request, key
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()
+
+
+def release_proof(key, path, counter):
+    digest = hmac.new(key, f'GET{path}{counter}'.encode(), hashlib.sha256).hexdigest()
+    return {'Authorization': 'Ventanal ' + digest, 'X-Ventanal-Counter': str(counter)}
+
+
+def test_upgraded_1_0_0_state_accepts_existing_board(upgraded_web):
+    server, request, key = upgraded_web
+    status, body = request('/manifest.json', release_proof(key, '/manifest.json', 340))
+    assert status == 200
+    document = json.loads(body)
+    assert document.pop('sig') == hmac.new(key, canonical(document), hashlib.sha256).hexdigest()
+    assert request('/frames/test.vnf', release_proof(key, '/frames/test.vnf', 341)) == (200, b'frame')
+    assert json.loads(server.ui.security.path.read_text())['counter'] == 341
+
+
+def test_upgraded_state_rejects_replayed_counter(upgraded_web):
+    server, request, key = upgraded_web
+    path = '/manifest.json'
+    assert request(path, release_proof(key, path, 339))[0] == 403
+    assert request(path, release_proof(key, path, 340))[0] == 200
+    assert request(path, release_proof(key, path, 340))[0] == 403
+    assert request(path, proof(key, path, 340))[0] == 403
+    assert request(path, proof(key, path, 341))[0] == 200
+    assert request(path, release_proof(key, path, 341))[0] == 403
+    assert json.loads(server.ui.security.path.read_text())['counter'] == 341
+
+
+def test_lcd_pairing_coexists_with_legacy_board(upgraded_web):
+    server, request, key = upgraded_web
+    server.ui.security.pair_lcd('desk', LCD)
+    lcd_key = bytes.fromhex(server.ui.security.lcd_values('desk')[1])
+    lcd_path = '/devices/lcd43b/manifest.json'
+    assert request(lcd_path, {**proof(lcd_key, lcd_path, 1), 'X-Ventanal-Device': 'desk'})[0] == 200
+    assert request('/manifest.json', release_proof(key, '/manifest.json', 340))[0] == 200
+    assert request(lcd_path, {**release_proof(lcd_key, lcd_path, 2), 'X-Ventanal-Device': 'desk'})[0] == 403
+    state = json.loads(server.ui.security.path.read_text())
+    assert state['counter'] == 340 and state['lcd_devices']['desk']['counter'] == 1
+
+
+def test_upgraded_legacy_board_firmware_checkin(upgraded_web, signed):
+    server, request, key = upgraded_web
+    identity = server.ui.firmware_devices()[None]
+    server.ui.firmware.cache(verified_metadata(*signed()), IMAGE)
+    assert request(CHECKIN, release_proof(key, CHECKIN, 340))[0] == 200
+    server.ui.firmware.approve(BOARD, identity, '2.0.0')
+    status, body = request(CHECKIN, release_proof(key, CHECKIN, 341))
+    assert status == 200 and json.loads(body)['firmware']['path'] == IMAGE_PATH
+    assert request(IMAGE_PATH, release_proof(key, IMAGE_PATH, 342)) == (200, IMAGE)
 
 
 def multipart(parts):
