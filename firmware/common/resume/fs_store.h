@@ -19,7 +19,7 @@ public:
     // Commit stays on the same filesystem. Replacement on FAT is non-atomic.
     bool commit(const char* target) override;
     void discard(const char* target) override;
-    bool sha256(const char* target, uint8_t out[32]) override;
+    bool sha256(const char* target, uint8_t out[32], const HashFeed& feed = {}) override;
 
     // Read a verified staging file into the caller's buffer and retire it.
     bool takeCommitted(const char* target, uint8_t* bytes, size_t size);

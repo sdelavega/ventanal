@@ -149,15 +149,16 @@ void FsStore::discard(const char* target) {
     remove(base + ".part");
 }
 
-bool FsStore::sha256(const char* target, uint8_t out[32]) {
+bool FsStore::sha256(const char* target, uint8_t out[32], const HashFeed& feed) {
     const auto base = path(target);
     if (faulted_ || base.empty()) return false;
     auto file = openRead(base + ".part");
     if (!file) return false;
     Sha256 hash;
-    uint8_t buffer[1024];
+    uint8_t buffer[kPartialHashBlockBytes];
     size_t remaining = file.size();
     while (remaining) {
+        if (feed) feed();
         const size_t count = std::min(remaining, sizeof(buffer));
         if (!readExact(file, buffer, count)) return false;
         hash.update(buffer, count);

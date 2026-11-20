@@ -38,8 +38,9 @@ constexpr char recordKey[] = "ota-record";
 constexpr char attemptsKey[] = "ota-attempts";
 constexpr uint32_t transferMs = 60000;
 constexpr uint32_t idleMs = 10000;
-// A completed stage can wait for the next wake if the writer needs more time.
-constexpr uint32_t installReserveMs = 15000;
+// Budget for a full staged-image hash plus a second read, flash write and
+// finalization at the largest supported image size.
+constexpr uint32_t installReserveMs = 40000;
 
 bool storeRecord(Preferences& prefs, const OtaRecord& record) {
     if (prefs.putBytes(recordKey, &record, sizeof record) == sizeof record) return true;
@@ -287,7 +288,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
                            const ReleaseInfo& release, const char* url, RangeTransport& transport,
                            uint32_t started, OtaAttempts& attempts, const char* version,
                            const char* approval, StillAllowed stillAllowed, bool& installed,
-                           bool& deferred) {
+                           bool& deferred, void (*feed)()) {
     auto available = attempts;
     if (!reserveOtaAttempt(available, version, approval)) return OtaFailure::Attempts;
     if (!stillAllowed()) return OtaFailure::Schedule;
@@ -308,12 +309,19 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
     const char* reason = nullptr;
     const auto outcome = stageUpdate(transport, release, transferMs - elapsed, store, url, true,
                                      otaClock, uint32_t(time(nullptr)), free, evict, logStage,
-                                     +[] {}, &reason);
+                                     feed, &reason);
     if (!flash && reason && !strcmp(reason, "space")) partialStoreFull();
-    if (&partialStore() != &store || outcome == OtaStage::Progress || outcome == OtaStage::NoProgress ||
-        (outcome == OtaStage::Complete && (millis() - started >= transferMs - installReserveMs || !stillAllowed()))) {
+    if (&partialStore() != &store || outcome == OtaStage::Progress || outcome == OtaStage::NoProgress) {
         deferred = true;
         return OtaFailure::None;
+    }
+    if (outcome == OtaStage::Complete) {
+        const bool fits = otaInstallFitsWindow(started, otaClock(), transferMs, installReserveMs);
+        if (!fits || !stillAllowed()) {
+            deferred = true;
+            Serial.printf("ota install=deferred reason=%s\n", fits ? "schedule" : "budget");
+            return OtaFailure::None;
+        }
     }
     const auto reservation = reserveAttempt(prefs, attempts, version, approval);
     if (reservation != OtaFailure::None) return reservation;
@@ -321,24 +329,20 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
         return reason && (!strcmp(reason, "hash") || !strcmp(reason, "size"))
             ? OtaFailure::Digest : OtaFailure::Download;
 
-    auto failure = OtaFailure::Digest;
-    installed = installStaged(store, release, [] {}, [&](fs::File& file) {
-        if (millis() - started >= transferMs || !stillAllowed()) {
-            failure = OtaFailure::Schedule;
-            return false;
-        }
-        failure = writeImage(prefs, target, release, started, [&](uint8_t* bytes, size_t count) {
-            return store.readExact(file, bytes, count) ? int(count) : -1;
+    const auto failure = installStaged(store, release, feed, [&](fs::File& file) {
+        if (millis() - started >= transferMs || !stillAllowed()) return OtaFailure::Schedule;
+        return writeImage(prefs, target, release, started, [&](uint8_t* bytes, size_t count) {
+            return file.read(bytes, count) == count ? int(count) : -1;
         }, stillAllowed);
-        return failure == OtaFailure::None;
     });
+    installed = failure == OtaFailure::None;
     return failure;
 }
 
 template<class StillAllowed>
 OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
                        OtaAttempts& attempts, StillAllowed stillAllowed, bool& installed,
-                       bool& deferred) {
+                       bool& deferred, void (*feed)()) {
     // An approval scopes the attempt budget even when its metadata or path
     // cannot be trusted. Older hosts omit it, so use a bounded path hint.
     char hint[otaVersionCapacity]{};
@@ -368,7 +372,7 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
     const auto started = otaClock();
     HostOtaTransport transport(started);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
-                           version, offer.approval, stillAllowed, installed, deferred);
+                           version, offer.approval, stillAllowed, installed, deferred, feed);
 }
 
 #if VENTANAL_OTA_GITHUB
@@ -440,7 +444,7 @@ struct GithubResponse {
 
 template<class StillAllowed>
 OtaFailure installGithub(Preferences& prefs, OtaAttempts& attempts, StillAllowed stillAllowed,
-                         bool& installed, bool& deferred) {
+                         bool& installed, bool& deferred, void (*feed)()) {
     const auto* target = installSlot();
     if (!target) return OtaFailure::Slot;
     const uint32_t started = millis();
@@ -515,7 +519,7 @@ OtaFailure installGithub(Preferences& prefs, OtaAttempts& attempts, StillAllowed
     OtaGithubTransport transport(url.c_str(), elapsed < transferMs ? transferMs - elapsed : 0,
                                  otaClock, nullptr);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
-                           tag + 1, "", stillAllowed, installed, deferred);
+                           tag + 1, "", stillAllowed, installed, deferred, feed);
 }
 #endif
 }  // namespace
@@ -604,7 +608,7 @@ bool otaCacheLayout() {
 }
 
 bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
-            int battery, int quietStart, int quietEnd) {
+            int battery, int quietStart, int quietEnd, void (*feed)()) {
     auto allowed = [&] { return otaCanInstall(battery, localMinute(), quietStart, quietEnd); };
     if (boot.pending || (boot.record.result != OtaResult::None && boot.record.failure != OtaFailure::Attempts)
         || !allowed()) return false;
@@ -619,10 +623,10 @@ bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeS
     bool installed = false;
     bool deferred = false;
     if (manifestOk && manifestFirmware.release[0]) {
-        failure = installHost(prefs, manifestFirmware, attempts, allowed, installed, deferred);
+        failure = installHost(prefs, manifestFirmware, attempts, allowed, installed, deferred, feed);
 #if VENTANAL_OTA_GITHUB
     } else if (otaGithubCheckDue(timeSynced, now, prefs.getLong64(githubCheckKey, 0))) {
-        failure = installGithub(prefs, attempts, allowed, installed, deferred);
+        failure = installGithub(prefs, attempts, allowed, installed, deferred, feed);
         if (!deferred && (failure == OtaFailure::None || failure == OtaFailure::Attempts)
             && prefs.putLong64(githubCheckKey, now) != sizeof now) Serial.println("ota error=nvs-week");
 #endif

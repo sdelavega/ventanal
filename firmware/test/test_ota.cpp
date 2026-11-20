@@ -50,9 +50,10 @@ struct OtaFixture : RangeTransport {
                sink(body.data() + start, end - start + 1);
     }
 
-    OtaStage stage() {
+    OtaStage stage(const HashFeed& feed = {}) {
         return stageUpdate(*this, release, 1, store, "/firmware.bin", true, stageClock, 1704067200,
-                           [&] { return fs.totalBytes() - fs.usedBytes(); }, [] { return false; });
+                           [&] { return fs.totalBytes() - fs.usedBytes(); }, [] { return false; },
+                           nullptr, feed);
     }
 
     void complete() {
@@ -68,10 +69,11 @@ void ota_stages_across_passes() {
     assert(f.offset == 2 * kResumeChunk);
     assert(f.stage() == OtaStage::Complete && f.calls == 3);
     unsigned installs = 0;
-    assert(installStaged(f.store, f.release, [] {}, [&](fs::File& file) {
+    assert(installStaged(f.store, f.release, {}, [&](fs::File& file) {
         ++installs;
-        return file.size() == f.release.size;
-    }));
+        assert(file.size() == f.release.size);
+        return OtaFailure::None;
+    }) == OtaFailure::None);
     assert(installs == 1);
 }
 
@@ -90,13 +92,62 @@ void ota_new_offer_discards_old_partial() {
 
 void ota_install_requires_verified_partial() {
     OtaFixture f;
-    const auto forbidden = [](fs::File&) { assert(false); return false; };
-    const auto feed = [] {};
-    assert(!installStaged(f.store, f.release, feed, forbidden));
+    const auto forbidden = [](fs::File&) { assert(false); return OtaFailure::None; };
+    assert(installStaged(f.store, f.release, {}, forbidden) == OtaFailure::Digest);
     f.complete();
     f.fs.files.at("/partials/ota-12.345.6789")[0] ^= 1;
-    assert(!installStaged(f.store, f.release, feed, forbidden));
+    assert(installStaged(f.store, f.release, {}, forbidden) == OtaFailure::Digest);
     assert(!f.store.openCommitted("ota-12.345.6789"));
+}
+
+void ota_install_failure_keeps_verified_stage() {
+    OtaFixture f;
+    f.complete();
+    const auto target = otaStageTarget(f.release);
+    for (const auto result : {OtaFailure::Write, OtaFailure::Download, OtaFailure::None}) {
+        assert(f.stage() == OtaStage::Complete && f.calls == 3);
+        assert(installStaged(f.store, f.release, {}, [&](fs::File& file) {
+            uint8_t byte = 0;
+            assert(f.store.readExact(file, &byte, 1));
+            assert(byte == f.body.front());
+            if (result == OtaFailure::Download) {
+                uint8_t tail[2];
+                assert(file.seek(file.size() - 1));
+                assert(file.read(tail, sizeof tail) < sizeof tail);
+            }
+            return result;
+        }) == result);
+        assert(bool(f.store.openCommitted(target.c_str())) == (result != OtaFailure::None));
+    }
+
+    f.complete();
+    assert(installStaged(f.store, f.release, {}, [](fs::File&) {
+        return OtaFailure::Digest;
+    }) == OtaFailure::Digest);
+    assert(!f.store.openCommitted(target.c_str()));
+}
+
+void ota_install_deferred_when_window_short() {
+    constexpr uint32_t window = 60000;
+    constexpr uint32_t install = 40000;
+    assert(otaInstallFitsWindow(1000, 1000, window, install));
+    assert(otaInstallFitsWindow(1000, 21000, window, install));
+    assert(!otaInstallFitsWindow(1000, 21001, window, install));
+    assert(!otaInstallFitsWindow(1000, 61000, window, install));
+    assert(!otaInstallFitsWindow(1000, 62000, window, install));
+    assert(otaInstallFitsWindow(UINT32_MAX - 999, 19000, window, install));
+    assert(!otaInstallFitsWindow(UINT32_MAX - 999, 19001, window, install));
+}
+
+void ota_stage_hash_feeds_watchdog() {
+    OtaFixture f;
+    unsigned feeds = 0;
+    const auto feed = [&] { ++feeds; };
+    assert(f.stage(feed) == OtaStage::Progress);
+    assert(f.stage(feed) == OtaStage::Progress);
+    assert(feeds == 0);
+    assert(f.stage(feed) == OtaStage::Complete);
+    assert(feeds == (f.body.size() + kPartialHashBlockBytes - 1) / kPartialHashBlockBytes);
 }
 }
 
@@ -185,5 +236,8 @@ int main() {
     ota_stages_across_passes();
     ota_new_offer_discards_old_partial();
     ota_install_requires_verified_partial();
+    ota_install_failure_keeps_verified_stage();
+    ota_install_deferred_when_window_short();
+    ota_stage_hash_feeds_watchdog();
     puts("OTA policy: battery and quiet hours, install recovery, healthy boot, result fields and standalone weekly check passed");
 }

@@ -905,11 +905,12 @@ void setup() {
         // Reserve 30 seconds for display and shutdown after a 60-second transfer.
         const bool otaFailed=online && persisted && mounted && millis()-wakeStarted<90000
             && tryOta(prefs,otaBoot,manifestOk,timeSynced,pct,
-                      quietStart(installation.quietStart),quietEnd(installation.quietEnd));
+                      quietStart(installation.quietStart),quietEnd(installation.quietEnd),
+                      [] { ESP_ERROR_CHECK(esp_task_wdt_reset_user(wakeWatchdog)); });
         if(otaFailed) Serial.println("download deferred=failed-ota");
         if(!offline && mounted && !otaFailed) {
             // All eight slots share an absolute wake deadline, measured from
-            // watchdog arming. Never feed the watchdog, including during display.
+            // watchdog arming. Frame downloads and display don't feed it.
             uint8_t next=0;
             if(persisted) prefs.getBytes("dl-next",&next,sizeof next);
             if(next>=8) next=0;

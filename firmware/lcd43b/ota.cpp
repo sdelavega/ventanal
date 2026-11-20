@@ -421,11 +421,13 @@ OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const Updat
     auto& store = partialStore();
     String paths[SPARE_SLOTS * 2];
     const char* spares[SPARE_SLOTS * 2]{};
+    constexpr int firstSpare = SCREEN_SLOTS - SPARE_SLOTS;
     for (int i = 0; flash && i < SPARE_SLOTS; ++i) {
-        if (3 + i == protectedSpare) continue;
+        const int slot = firstSpare + i;
+        if (slot == protectedSpare) continue;
         for (int alt = 0; alt < 2; ++alt) {
             const int index = i * 2 + alt;
-            paths[index] = residentPath(3 + i, alt);
+            paths[index] = residentPath(slot, alt);
             spares[index] = paths[index].c_str();
         }
     }
@@ -495,30 +497,23 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
         }
     }
     if (failure == OtaFailure::None) {
-        failure = OtaFailure::Digest;
         auto& store = partialStore();
-        installStaged(store, release, [&] { watchdog.feed(); }, [&](fs::File& file) {
+        failure = installStaged(store, release, [&] { watchdog.feed(); }, [&](fs::File& file) {
             // Retire old slot metadata only after the staged image verifies.
             esp_ota_img_states_t oldState;
             if (esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND
                 && (esp_ota_invalidate_inactive_ota_data_slot() != ESP_OK
-                    || esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND)) {
-                failure = OtaFailure::Slot;
-                return false;
-            }
+                    || esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND))
+                return OtaFailure::Slot;
             record.result = OtaResult::Installing;
             record.slot = spare->subtype;
-            if (!saveJournal(prefs, journal)) {
-                failure = OtaFailure::Write;
-                return false;
-            }
-            failure = writeImage(spare, release, millis(), [&](uint8_t* bytes, size_t count) {
+            if (!saveJournal(prefs, journal)) return OtaFailure::Write;
+            const auto result = writeImage(spare, release, millis(), [&](uint8_t* bytes, size_t count) {
                 watchdog.feed();
-                return store.readExact(file, bytes, count) ? int(count) : -1;
+                return file.read(bytes, count) == count ? int(count) : -1;
             }, [&] { return file.size() == release.size; });
-            if (failure == OtaFailure::None && esp_ota_set_boot_partition(spare) != ESP_OK)
-                failure = OtaFailure::Write;
-            return failure == OtaFailure::None;
+            if (result != OtaFailure::None) return result;
+            return esp_ota_set_boot_partition(spare) == ESP_OK ? OtaFailure::None : OtaFailure::Write;
         });
     }
     if (failure != OtaFailure::None) {

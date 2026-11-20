@@ -34,4 +34,4 @@ void rollbackOtaBoot();
 bool otaCacheLayout();
 // Returns true when a failed attempt should defer frame downloads.
 bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeSynced,
-            int battery, int quietStart, int quietEnd);
+            int battery, int quietStart, int quietEnd, void (*feed)());

@@ -3,10 +3,12 @@
 #pragma once
 
 #include "../../lcd43b/sha256.h"  // Portable SHA-256 shared with LCD frames.
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <functional>
 #include <map>
 #include <string>
 #include <utility>
@@ -104,6 +106,9 @@ inline bool decodePartialMeta(const uint8_t* bytes, size_t size, PartialMeta& me
     return true;
 }
 
+using HashFeed = std::function<void()>;
+inline constexpr size_t kPartialHashBlockBytes = 1024;
+
 class PartialStore {
 public:
     virtual bool readMeta(const char* target, PartialMeta&) = 0;
@@ -116,7 +121,7 @@ public:
     // Atomically replace target with <target>.part and retire the sidecar.
     virtual bool commit(const char* target) = 0;
     virtual void discard(const char* target) = 0;
-    virtual bool sha256(const char* target, uint8_t out[32]) = 0;
+    virtual bool sha256(const char* target, uint8_t out[32], const HashFeed& feed = {}) = 0;
     virtual ~PartialStore() = default;
 };
 
@@ -163,11 +168,17 @@ public:
         metadata_.erase(target);
     }
 
-    bool sha256(const char* target, uint8_t out[32]) override {
+    bool sha256(const char* target, uint8_t out[32], const HashFeed& feed = {}) override {
         const auto found = partials_.find(target);
         if (found == partials_.end()) return false;
+        const auto& bytes = found->second;
         Sha256 hash;
-        hash.update(found->second.data(), found->second.size());
+        for (size_t offset = 0; offset < bytes.size();) {
+            if (feed) feed();
+            const size_t count = std::min(bytes.size() - offset, kPartialHashBlockBytes);
+            hash.update(bytes.data() + offset, count);
+            offset += count;
+        }
         std::memcpy(out, hash.digest(), 32);
         return true;
     }

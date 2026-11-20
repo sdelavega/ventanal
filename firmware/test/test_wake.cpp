@@ -50,7 +50,7 @@ bool confirmOtaBoot(Preferences&, OtaBoot& boot, bool manifestOk, bool screenDra
 }
 void rollbackOtaBoot() { esp_restart(); }
 bool otaCacheLayout() { return otaLayout; }
-bool tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int) { return otaFails; }
+bool tryOta(Preferences&, const OtaBoot&, bool, bool, int, int, int, void (*)()) { return otaFails; }
 #include "../ventanal/ventanal.cpp"
 static void simulateBoot(esp_reset_reason_t reason) {
     fakeReset=reason;

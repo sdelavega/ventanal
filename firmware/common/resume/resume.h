@@ -89,7 +89,8 @@ inline unsigned hexDigit(char c) {
 }
 
 inline const char* verificationFailure(PartialStore& store, const char* target,
-                                       const PartialMeta& meta, const char* hex) {
+                                       const PartialMeta& meta, const char* hex,
+                                       const HashFeed& feed) {
     if (!meta.total || meta.have != meta.total) return "size";
     const auto storedSize = store.size(target);
     if (storedSize < 0) return "storage";
@@ -97,7 +98,7 @@ inline const char* verificationFailure(PartialStore& store, const char* target,
     if (!*hex) return nullptr;
     uint8_t digest[32];
     if (std::strlen(hex) != 2 * sizeof(digest)) return "hash";
-    if (!store.sha256(target, digest)) return "storage";
+    if (!store.sha256(target, digest, feed)) return "storage";
     for (size_t i = 0; i < sizeof(digest); ++i) {
         if (hexDigit(hex[2 * i]) != (unsigned(digest[i]) >> 4) ||
             hexDigit(hex[2 * i + 1]) != (digest[i] & 0xfu)) return "hash";
@@ -110,7 +111,7 @@ inline const char* verificationFailure(PartialStore& store, const char* target,
 inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, const char* target,
                                 const ResumeSource& source, uint32_t budgetMs, uint32_t (*nowMs)(),
                                 uint32_t epochNow, void (*log)(const char*, ...),
-                                const char** failureReason = nullptr) {
+                                const char** failureReason = nullptr, const HashFeed& feed = {}) {
     using namespace resume_detail;
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
@@ -135,7 +136,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         return FetchOutcome::Failed;
     };
     const auto finish = [&] {
-        if (const char* reason = verificationFailure(store, target, meta, digest))
+        if (const char* reason = verificationFailure(store, target, meta, digest, feed))
             return fail(reason);
         if (!store.commit(target)) return fail("storage");
         if (log) log("resume done target=%s bytes=%" PRIu32 " ms=%" PRIu32,

@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 
+#include "../ota_state.h"
 #include "../release_info.h"
 #include "fs_store.h"
 #include "resume.h"
@@ -9,6 +10,12 @@
 
 using OtaStage = FetchOutcome;
 using OtaStageLog = void (*)(const char*, ...);
+
+constexpr bool otaInstallFitsWindow(uint32_t started, uint32_t now, uint32_t windowMs,
+                                   uint32_t installMs) {
+    const uint32_t elapsed = now - started;
+    return elapsed < windowMs && installMs <= windowMs - elapsed;
+}
 
 inline OtaStage logOtaStage(OtaStage outcome, const char* reason, uint32_t have,
                             uint32_t total, OtaStageLog log) {
@@ -44,40 +51,47 @@ inline std::string otaStageTarget(const ReleaseInfo& release) {
     return target;
 }
 
-template<class Feed>
-bool verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInfo& release, Feed feed) {
-    if (!file || file.size() != release.size) return false;
+inline OtaFailure verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInfo& release,
+                                const HashFeed& feed) {
+    if (file.size() != release.size) return OtaFailure::Digest;
     Sha256 hash;
-    uint8_t block[1024];
+    uint8_t block[kPartialHashBlockBytes];
     for (size_t remaining = release.size; remaining;) {
-        feed();
+        if (feed) feed();
         const size_t count = std::min(remaining, sizeof block);
-        if (!store.readExact(file, block, count)) return false;
+        if (!store.readExact(file, block, count)) return OtaFailure::Download;
         hash.update(block, count);
         remaining -= count;
     }
-    return releaseImageMatches(release, file.size(), hash.digest()) && file.seek(0);
+    return releaseImageMatches(release, file.size(), hash.digest())
+        ? OtaFailure::None : OtaFailure::Digest;
 }
 
 // Callers pass metadata authenticated by their existing release-signature
 // check. The same file handle is verified, rewound and handed to the writer.
-template<class Feed, class Write>
-bool installStaged(FsStore& store, const ReleaseInfo& release, Feed feed, Write write) {
+// A writer's short read aborts the install. Let the next staging pass check
+// the store again so a transient read error doesn't force a store switch.
+template<class Write>
+OtaFailure installStaged(FsStore& store, const ReleaseInfo& release, const HashFeed& feed,
+                         Write write) {
     const auto target = otaStageTarget(release);
     auto file = store.openCommitted(target.c_str());
-    const bool verified = verifyOtaFile(store, file, release, feed);
-    const bool installed = verified && write(file);
+    if (!file) return OtaFailure::Digest;
+    auto failure = verifyOtaFile(store, file, release, feed);
+    if (failure == OtaFailure::None)
+        failure = file.seek(0) ? write(file) : OtaFailure::Download;
     file.close();
-    store.removeCommitted(target.c_str());
-    if (!verified) store.discard(target.c_str());
-    return installed;
+    if (failure == OtaFailure::None || failure == OtaFailure::Digest)
+        store.removeCommitted(target.c_str());
+    if (failure == OtaFailure::Digest) store.discard(target.c_str());
+    return failure;
 }
 
-template<class FreeBytes, class Evict, class Feed = void (*)()>
+template<class FreeBytes, class Evict>
 OtaStage stageUpdate(RangeTransport& transport, const ReleaseInfo& release, uint32_t budgetMs,
                      FsStore& store, const char* url, bool sendIfRange, uint32_t (*nowMs)(),
                      uint32_t epochNow, FreeBytes freeBytes, Evict evict, OtaStageLog log = nullptr,
-                     Feed feed = +[] {}, const char** resultReason = nullptr) {
+                     const HashFeed& feed = {}, const char** resultReason = nullptr) {
     const auto targetName = otaStageTarget(release);
     const char* target = targetName.c_str();
     const auto report = [&](OtaStage result, const char* reason, uint32_t have = 0) {
@@ -94,9 +108,10 @@ OtaStage stageUpdate(RangeTransport& transport, const ReleaseInfo& release, uint
     store.retainOtaTarget(target);
     auto file = store.openCommitted(target);
     if (file) {
-        const bool verified = verifyOtaFile(store, file, release, feed);
+        const auto failure = verifyOtaFile(store, file, release, feed);
         file.close();
-        if (verified) return report(OtaStage::Complete, "ok", release.size);
+        if (failure == OtaFailure::None) return report(OtaStage::Complete, "ok", release.size);
+        if (failure == OtaFailure::Download) return report(OtaStage::Failed, "storage");
         store.removeCommitted(target);
     }
 
@@ -127,7 +142,7 @@ OtaStage stageUpdate(RangeTransport& transport, const ReleaseInfo& release, uint
     const uint32_t elapsed = nowMs() - started;
     const auto outcome = resumeFetch(transport, store, target, source,
                                      elapsed < budgetMs ? budgetMs - elapsed : 0,
-                                     nowMs, epochNow, log, &reason);
+                                     nowMs, epochNow, log, &reason, feed);
     if (outcome == OtaStage::Complete) return report(outcome, "ok", release.size);
     if (outcome == OtaStage::Failed) store.discard(target);
     have = store.readMeta(target, meta) ? meta.have : 0;
