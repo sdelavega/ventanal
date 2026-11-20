@@ -16,7 +16,9 @@ HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlin
     esp_http_client_config_t config{};
     config.url = url;
     config.user_agent = publicUserAgent;
-    config.timeout_ms = 5000;
+    constexpr uint32_t SocketTimeoutMs = 5000;
+    if (!deadlineMs) return result;
+    config.timeout_ms = std::min(SocketTimeoutMs, deadlineMs);
     config.disable_auto_redirect = true;
     config.crt_bundle_attach = esp_crt_bundle_attach;
     esp_http_client_handle_t client = esp_http_client_init(&config);
@@ -24,32 +26,45 @@ HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlin
     const bool rangeReady = !range || esp_http_client_set_header(client, "Range", range) == ESP_OK;
     const uint32_t started = millis();
     int64_t announced = -1;
-    if (rangeReady && esp_http_client_open(client, 0) == ESP_OK
-        && (announced = esp_http_client_fetch_headers(client)) >= 0) {
+    if (feed) feed();
+    if (rangeReady && esp_http_client_open(client, 0) == ESP_OK) {
+        if (feed) feed();
+        const uint32_t elapsed = millis() - started;
+        if (elapsed < deadlineMs) {
+            esp_http_client_set_timeout_ms(client, std::min(SocketTimeoutMs, deadlineMs - elapsed));
+            announced = esp_http_client_fetch_headers(client);
+        }
+    }
+    if (announced >= 0) {
         result.status = esp_http_client_get_status_code(client);
-        // A body the server says is too big is refused before reading it.
-        if (announced > 0 && size_t(announced) >= cap) result.truncated = true;
-        while (!result.truncated && millis() - started < deadlineMs) {
+        const auto complete = [&] {
+            // fetch_headers returns zero for chunked/unknown length. A known
+            // length must count bytes actually copied, including ranged tails.
+            return announced > 0 ? uint64_t(announced) == result.length
+                                 : esp_http_client_is_complete_data_received(client);
+        };
+        if (announced > 0 && uint64_t(announced) >= cap) result.truncated = true;
+        const auto read = [&](char* dest, size_t bytes) {
             if (feed) feed();
+            const uint32_t elapsed = millis() - started;
+            if (elapsed >= deadlineMs) return -1;
+            esp_http_client_set_timeout_ms(client, std::min(SocketTimeoutMs, deadlineMs - elapsed));
+            return esp_http_client_read(client, dest, bytes);
+        };
+        while (!result.truncated) {
             if (result.length + 1 >= cap) {
                 char probe;
-                result.truncated = esp_http_client_read(client, &probe, 1) > 0;
+                result.truncated = read(&probe, 1) > 0;
                 break;
             }
-            // Small reads: one call for a whole body can block past the task
-            // watchdog on a slow connection, and the deadline needs checking.
-            constexpr size_t Chunk = 16 * 1024;
-            const int got = esp_http_client_read(client, buffer + result.length,
-                                                 std::min(Chunk, cap - 1 - result.length));
-            if (got < 0) {
-                result.status = -1;
-                break;
-            }
+            // Read in chunks to check the deadline and feed the watchdog.
+            constexpr size_t Chunk = 1024;
+            const int got = read(buffer + result.length, std::min(Chunk, cap - 1 - result.length));
+            if (got <= 0) break;
             result.length += size_t(got);
-            if (esp_http_client_is_complete_data_received(client) || got == 0) break;
+            if (complete()) break;
         }
-        if (millis() - started >= deadlineMs && !esp_http_client_is_complete_data_received(client))
-            result.status = -1;  // ran out of time mid-body
+        if (!result.truncated && !complete()) result.status = -1;
     }
     buffer[result.length] = '\0';
     esp_http_client_close(client);

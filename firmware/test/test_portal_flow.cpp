@@ -49,7 +49,7 @@ static void portal_saves_after_join_and_locate() {
     assert(fakenet::joins == 1 && !strcmp(fakenet::lastSsid, "Synthetic Net"));
     assert(!strcmp(fakenet::lastPassword, "synthetic-pass") && fakenet::lastTimeoutMs == 20000);
     assert(fakenet::locates == 1 && !strcmp(fakenet::lastZip, "12345"));
-    assert(fakenet::saves == 1);
+    assert(fakenet::saves == 1 && fakenet::disconnects == 0);
     const Response done = core.handleGet("/", 2200);
     assert(contains(done.body, "Saved") && !contains(done.body, "<form"));
     // The success page gets a moment to reach the phone before the board restarts.
@@ -63,7 +63,7 @@ static void portal_rejects_failed_join_keeps_ap() {
     fakenet::joinResult = false;
     core.handlePost("/save", goodBody, 2000);
     assert(settle(core, 2100) == PortalOutcome::Running);
-    assert(fakenet::joins == 1 && fakenet::locates == 0 && fakenet::saves == 0);
+    assert(fakenet::joins == 1 && fakenet::locates == 0 && fakenet::saves == 0 && fakenet::disconnects == 0);
     const Response again = core.handleGet("/", 2200);
     assert(contains(again.body, "<form") && contains(again.body, "Couldn&#39;t join"));
     assert(contains(again.body, "<option value=\"Synthetic Net\" selected>"));
@@ -83,7 +83,7 @@ static void unknown_zip_is_reported() {
     fakenet::location.ok = false;
     core.handlePost("/save", goodBody, 2000);
     settle(core, 2100);
-    assert(fakenet::saves == 0);
+    assert(fakenet::saves == 0 && fakenet::disconnects == 1);
     const Response page = core.handleGet("/", 2200);
     assert(contains(page.body, formErrorText(FormError::Zip)) && contains(page.body, "ZIP not found"));
 }
@@ -94,7 +94,7 @@ static void unreachable_locator_is_reported() {
     fakenet::location.ok = false;
     core.handlePost("/save", goodBody, 2000);
     settle(core, 2100);
-    assert(fakenet::saves == 0 && contains(core.status(), "location service"));
+    assert(fakenet::saves == 0 && fakenet::disconnects == 1 && contains(core.status(), "location service"));
 }
 
 static void save_is_single_putBytes() {
@@ -112,14 +112,23 @@ static void save_is_single_putBytes() {
     fakenet::saveResult = false;
     failing.handlePost("/save", goodBody, 10);
     assert(settle(failing, 20) == PortalOutcome::Running && contains(failing.status(), "Couldn't save"));
+    assert(fakenet::disconnects == 1);
 }
 
-static void host_join_without_zip_skips_locate() {
-    PortalCore core = freshCore();
+static void host_join_requires_zip_until_timezone_is_set() {
+    PortalCore fresh = freshCore();
     const std::string body = std::string("ssid=n&password=synthetic-pass&host=https%3A%2F%2Fframe.test")
         + "&pairing=desk&certificate=-----BEGIN+CERTIFICATE-----x&device_key=" + std::string(64, 'a');
-    core.handlePost("/save", body.c_str(), 2000);
-    settle(core, 2100);
+    const Response rejected = fresh.handlePost("/save", body.c_str(), 2000);
+    assert(contains(rejected.body, "required to set your time zone") && contains(rejected.body, " required"));
+    settle(fresh, 2100);
+    assert(fakenet::joins == 0 && fakenet::saves == 0);
+
+    PortalFields current{};
+    current.needsTimezone = false;
+    PortalCore configured(fakenet::hooks(), {}, 1000, current);
+    configured.handlePost("/save", body.c_str(), 2000);
+    settle(configured, 2100);
     assert(fakenet::locates == 0 && fakenet::saves == 1 && !fakenet::savedLocation.ok);
 }
 
@@ -190,7 +199,7 @@ int main() {
     unknown_zip_is_reported();
     unreachable_locator_is_reported();
     save_is_single_putBytes();
-    host_join_without_zip_skips_locate();
+    host_join_requires_zip_until_timezone_is_set();
     form_errors_answer_immediately();
     portal_times_out_after_15_min();
     hotspot_shares_the_home_network_channel();

@@ -103,9 +103,9 @@ static void form_partial_host_rejected() {
            == FormError::Pairing);
     assert(parsePortalForm(hostBody("https%3A%2F%2Fframe.test", "desk", "not+a+pem", key.c_str()).c_str(), f)
            == FormError::Host);
-    // Complete: no ZIP needed with a host; CRLF becomes LF; the key is lower-cased.
-    assert(parsePortalForm(hostBody("https%3A%2F%2Fframe.test%2F", "desk", pem, key.c_str()).c_str(), f)
-           == FormError::None);
+    const std::string complete = hostBody("https%3A%2F%2Fframe.test%2F", "desk", pem, key.c_str());
+    assert(parsePortalForm(complete.c_str(), f) == FormError::Zip);
+    assert(parsePortalForm((complete + "&zip=12345").c_str(), f) == FormError::None);
     assert(!strcmp(f.host, "https://frame.test/") && !strcmp(f.pairing, "desk"));
     assert(!strcmp(f.certificate, "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----"));
     assert(f.deviceKey == std::string(64, 'a'));
@@ -154,6 +154,7 @@ static void page_never_echoes_secrets() {
 // What the board is set up with now: the portal starts from it.
 static PortalFields currentPaired(const char* host = "https://frame.test") {
     PortalFields c{};
+    c.needsTimezone = false;
     strcpy(c.ssid, "Synthetic Net");
     strcpy(c.password, "synthetic-pass");
     strcpy(c.zip, "12345");

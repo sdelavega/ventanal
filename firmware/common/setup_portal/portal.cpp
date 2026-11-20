@@ -19,6 +19,7 @@ namespace portal {
 namespace {
 
 constexpr int maxNetworks = 20;
+const IPAddress apAddress(192, 168, 4, 1);
 
 struct Runtime {
     DNSServer dns;
@@ -83,6 +84,10 @@ std::string encodedBody(WebServer& server) {
 void handleRequest() {
     if (!active) return;
     WebServer& server = active->server;
+    if (server.client().localIP() != apAddress) {
+        server.send(403, "text/plain", "Forbidden");
+        return;
+    }
     const std::string path = server.uri().c_str();
     const uint32_t now = millis();
     const Response r = server.method() == HTTP_POST
@@ -125,6 +130,7 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     runtime->userFeed = hooks.feed;
     runtime->note = hooks.note;
     hooks.feed = feedAndServe;  // long checks keep answering the phone
+    hooks.disconnect = [] { WiFi.disconnect(false); };  // keep the SoftAP up
     // The station must stay idle while the hotspot runs: background
     // reconnects scan every channel and the hotspot stops beaconing on its
     // own (phones took minutes to see it). The old network is forgotten in
@@ -138,8 +144,7 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     const int channel = chooseApChannel(scan, preferredSsid);
     std::vector<std::string> networks = networkNames(scan);
     const size_t scanned = networks.size();
-    const IPAddress address(192, 168, 4, 1);
-    if (!WiFi.softAPConfig(address, address, IPAddress(255, 255, 255, 0))
+    if (!WiFi.softAPConfig(apAddress, apAddress, IPAddress(255, 255, 255, 0))
         || !WiFi.softAP(apSsid, apPass, channel)) {  // an 8+ character passphrase means WPA2-PSK
         WiFi.mode(WIFI_OFF);
         return false;
@@ -148,7 +153,7 @@ bool SetupPortal::begin(const char* apSsid, const char* apPass, PortalHooks hook
     runtime->core = std::make_unique<PortalCore>(hooks, std::move(networks), millis(),
                                                  current ? *current : PortalFields{});
     runtime->dns.setErrorReplyCode(DNSReplyCode::NoError);
-    runtime->dns.start(53, "*", address);  // every name resolves to the portal
+    runtime->dns.start(53, "*", apAddress);  // every name resolves to the portal
     runtime->server.onNotFound(handleRequest);
     runtime->server.begin();
     active = runtime.release();

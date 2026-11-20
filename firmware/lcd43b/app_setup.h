@@ -45,6 +45,7 @@ void buildSetupQr() {
 // The portal's save hook: one write of the whole record, with scanout
 // paused like every other lit NVS write. The board restarts afterwards.
 bool saveSetupRecord(const portal::PortalFields& fields, const portal::LocationResult& where) {
+    if (lcd::needsSetupTimezone(lcd::installation) && (!fields.zip[0] || !where.ok)) return false;
     auto next = std::make_unique<lcd::Installation>();  // 4.8 KB: not on the loop stack
     lcd::installationFromPortal(lcd::installation, fields, where, time(nullptr), *next);
     if (!lcd::validInstallation(*next)) {

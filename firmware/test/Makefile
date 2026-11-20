@@ -24,7 +24,8 @@ check_lcd43b_pie:
 
 test: check_lcd43b_pie check-arduinojson check-hardening check_lcd43b_display_owner check_standalone_screens build/test_lcd43b_wifi_roam
 
-test: build/test_lcd43b_installation build/test_portal_form build/test_portal_flow build/test_locate build/test_local_weather build/test_local_solar build/test_fcc build/test_local_text build/test_local_art build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_setup build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_display_owner
+test: build/test_https_get build/test_lcd43b_installation build/test_portal_form build/test_portal_flow build/test_locate build/test_local_weather build/test_local_solar build/test_fcc build/test_local_text build/test_local_art build/test_settings build/test_ota build/test_release build/test_lcd43b_owner build/test_lcd43b_power_session build/test_lcd43b_power check_lcd43b_chrome build/test_lcd43b_settings_page build/test_lcd43b_setup build/test_lcd43b_settings build/test_lcd43b_clock build/test_lcd43b_battery build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_battcal build/test_secure_transport build/test_security build/test_statelost build/test_spares build/test_owner build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_logic build/test_cache build/test_cache_abort build/test_net build/test_overlay build/test_wake build/test_lcd43b_gesture build/test_lcd43b_frame build/test_lcd43b_manifest build/test_lcd43b_overlay build/test_lcd43b_panel build/test_lcd43b_diag build/test_lcd43b_screens build/test_lcd43b_touch build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_display_owner
+	./build/test_https_get
 	./build/test_lcd43b_installation
 	./build/test_portal_form
 	./build/test_portal_flow
@@ -369,3 +370,8 @@ check_lcd43b_display_owner:
 	    | grep -vE '^[^:]+:[0-9]+:[[:space:]]*//' \
 	    | grep -vE '^firmware/lcd43b/app_buffers.h:[0-9]+:bool setBacklight\(bool on\);' && rc=1; \
 	    test "$$rc" -eq 0 || { echo "Direct backlight calls bypass the display owner" >&2; exit 1; }
+
+
+build/test_https_get: test_https_get.cpp ../common/https_get.cpp ../common/https_get.h fakes/Arduino.h fakes/esp_http_client.h fakes/esp_crt_bundle.h Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_FIRMWARE_VERSION='"test"' -Ifakes test_https_get.cpp ../common/https_get.cpp $(LDFLAGS) -o $@

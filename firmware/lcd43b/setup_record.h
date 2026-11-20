@@ -80,9 +80,14 @@ inline void installationFromPortal(const Installation& current, const portal::Po
     }
 }
 
+inline bool needsSetupTimezone(const Installation& r) {
+    return !r.timezone[0] || strcmp(r.timezone, "UTC0") == 0;
+}
+
 // The portal starts from the stored record (secrets are used, never shown).
 inline portal::PortalFields portalFieldsFrom(const Installation& r) {
     portal::PortalFields f{};
+    f.needsTimezone = needsSetupTimezone(r);
     copyText(f.ssid, r.ssid);
     copyText(f.password, r.password);
     copyText(f.zip, r.zip);

@@ -160,12 +160,12 @@ size_t sunLength = 0;
 int64_t sunDay = -1;
 
 bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog,
-                  bool allowCut = false, const char* range = nullptr) {
+                  const char* range = nullptr) {
     char url[128];
     snprintf(url, sizeof url, "%s%s", SwpcBase, path);
     const HttpsResult got = get(url, body, watchdog, range);
     log("standalone solar %s status=%d bytes=%u\n", path, got.status, unsigned(got.length));
-    return (got.status == 200 || (range && got.status == 206)) && (allowCut || !got.truncated);
+    return (got.status == 200 || (range && got.status == 206)) && !got.truncated;
 }
 
 bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
@@ -174,8 +174,8 @@ bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
     const bool ok = solarProduct("text/daily-solar-indices.txt", body, watchdog)
         && local::parseDailyIndices(body.data, s.sfi, s.ssn)
         && solarProduct("products/noaa-planetary-k-index.json", body, watchdog) && local::parseKp(body.data, s)
-        // The tail contains the latest readings, even if its last row is cut off.
-        && solarProduct("json/goes/primary/xrays-6-hour.json", body, watchdog, true, "bytes=-8192")
+        // The ranged tail can start mid-row; the HTTP body must still be complete.
+        && solarProduct("json/goes/primary/xrays-6-hour.json", body, watchdog, "bytes=-8192")
         && local::parseXray(body.data, s.xray)
         && solarProduct("products/noaa-scales.json", body, watchdog) && local::parseScales(body.data, s)
         && solarProduct("text/3-day-forecast.txt", body, watchdog);

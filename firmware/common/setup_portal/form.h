@@ -28,6 +28,7 @@ struct PortalFields {
     char pairing[33]{};
     char certificate[4096]{};
     char deviceKey[65]{};
+    bool needsTimezone = true;  // from the stored record, never from the submitted form
     uint8_t leaveHost = 0;   // the "Leave the host" box was ticked
 };
 
@@ -167,6 +168,7 @@ inline bool httpsHost(const std::string& host) {
 inline FormError parsePortalForm(const char* body, PortalFields& out, const PortalFields* current = nullptr) {
     using namespace detail;
     out = PortalFields{};
+    out.needsTimezone = !current || current->needsTimezone;
     std::string ssid, ssidOther, password, zip, units = "imperial", clock = "24";
     std::string quietStart, quietEnd, call, host, pairing, certificate, deviceKey, leave;
     struct { const char* name; std::string* value; } fields[] = {
@@ -237,7 +239,7 @@ inline FormError parsePortalForm(const char* body, PortalFields& out, const Port
     }
 
     zip = trimmed(zip);
-    if (zip.empty() ? !out.host[0] : !zipValid(zip)) return FormError::Zip;  // standalone needs a ZIP
+    if (zip.empty() ? (out.needsTimezone || !out.host[0]) : !zipValid(zip)) return FormError::Zip;
     copyField(out.zip, zip);
     return FormError::None;
 }
@@ -303,7 +305,10 @@ inline std::string renderPortalPage(const PortalFields& prefill, const std::vect
         + htmlEscape(listed ? "" : prefill.ssid) + "\">"
         "<label>Wi-Fi password</label><input name=password type=password maxlength=64 autocomplete=off"
         + (prefill.password[0] ? unchanged : "") + ">"
-        "<label>ZIP code</label><input name=zip inputmode=numeric maxlength=10 value=\""
+        "<label>ZIP code"
+        + (prefill.needsTimezone ? " (required to set your time zone)" : "")
+        + "</label><input name=zip inputmode=numeric maxlength=10"
+        + (prefill.needsTimezone ? " required" : "") + " value=\""
         + htmlEscape(prefill.zip) + "\">"
         "<div class=row><div><label>Units</label><select name=units>"
         + option("imperial", "\xc2\xb0" "F, mph", prefill.units == 0) + option("metric", "\xc2\xb0" "C, km/h", prefill.units == 1)

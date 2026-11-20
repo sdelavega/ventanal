@@ -25,6 +25,7 @@ struct PortalHooks {
     LocationResult (*locate)(const char* zip) = nullptr;
     // Writes the whole record in one go; false leaves the old record as it was.
     bool (*save)(const PortalFields& fields, const LocationResult& location) = nullptr;
+    void (*disconnect)() = nullptr;  // leave the station network while keeping the portal up
     void (*feed)() = nullptr;  // watchdog (and, on boards, keeps serving the page)
     void (*note)(const char* line) = nullptr;  // board log; never given names or passwords
 };
@@ -155,6 +156,7 @@ private:
             location = hooks_.locate(pending_.zip);
             feed();
             if (!location.ok) {
+                if (hooks_.disconnect) hooks_.disconnect();
                 switch (location.why) {
                 case LocationResult::ZipUnknown:
                     return fail("ZIP not found by the location service.", FormError::Zip);
@@ -165,7 +167,10 @@ private:
                 }
             }
         }
-        if (!hooks_.save(pending_, location)) return fail("Couldn't save the settings. Try again.");
+        if (!hooks_.save(pending_, location)) {
+            if (hooks_.disconnect) hooks_.disconnect();
+            return fail("Couldn't save the settings. Try again.");
+        }
         state_ = State::Saved;
         savedAt_ = lastActivity_ = nowMs;
         status_ = "Saved.";

@@ -8,7 +8,7 @@
 
 namespace fakenet {
 
-inline int joins, locates, saves, feeds;
+inline int joins, locates, saves, feeds, disconnects;
 inline bool joinResult, saveResult;
 inline char lastSsid[33], lastPassword[65], lastZip[11];
 inline uint32_t lastTimeoutMs;
@@ -17,7 +17,7 @@ inline portal::PortalFields savedFields;
 inline portal::LocationResult savedLocation;
 
 inline void reset() {
-    joins = locates = saves = feeds = 0;
+    joins = locates = saves = feeds = disconnects = 0;
     joinResult = saveResult = true;
     lastSsid[0] = lastPassword[0] = lastZip[0] = '\0';
     lastTimeoutMs = 0;
@@ -52,6 +52,7 @@ inline portal::PortalHooks hooks() {
         savedLocation = l;
         return saveResult;
     };
+    h.disconnect = [] { ++disconnects; };
     h.feed = [] { ++feeds; };
     return h;
 }
