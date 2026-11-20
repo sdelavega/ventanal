@@ -6,6 +6,10 @@
 #include "net.h"
 #include "security.h"
 #include "../common/release.h"
+#include "../common/resume/ota_stage.h"
+#include "../common/resume/storage.h"
+#include <LittleFS.h>
+#include <cstdarg>
 #include <Update.h>
 #include <algorithm>
 #include <esp_ota_ops.h>
@@ -15,6 +19,8 @@
 #define VENTANAL_OTA_GITHUB 0
 #endif
 #if VENTANAL_OTA_GITHUB
+#include "../common/ota_github_transport.h"
+#include "../common/https_get.cpp"
 #include <ArduinoJson.h>
 #include <esp_crt_bundle.h>
 #include <esp_http_client.h>
@@ -32,6 +38,8 @@ constexpr char recordKey[] = "ota-record";
 constexpr char attemptsKey[] = "ota-attempts";
 constexpr uint32_t transferMs = 60000;
 constexpr uint32_t idleMs = 10000;
+// A completed stage can wait for the next wake if the writer needs more time.
+constexpr uint32_t installReserveMs = 15000;
 
 bool storeRecord(Preferences& prefs, const OtaRecord& record) {
     if (prefs.putBytes(recordKey, &record, sizeof record) == sizeof record) return true;
@@ -50,7 +58,7 @@ void reportFailure(Preferences& prefs, OtaFailure reason, bool exhausted) {
 
 OtaFailure reserveAttempt(Preferences& prefs, OtaAttempts& attempts, const char* version,
                           const char* approval) {
-    // Reserve before touching the network or spare slot, so a reset counts.
+    // Reserve before writing the spare slot, so a reset during install counts.
     auto reserved = attempts;
     if (!reserveOtaAttempt(reserved, version, approval)) return OtaFailure::Attempts;
     if (prefs.putBytes(attemptsKey, &reserved, sizeof reserved) != sizeof reserved) {
@@ -174,9 +182,163 @@ OtaFailure writeImage(Preferences& prefs, const esp_partition_t& target,
     return Update.end() ? OtaFailure::None : OtaFailure::Write;
 }
 
+uint32_t otaClock() { return millis(); }
+
+void logStage(const char* format, ...) {
+    char line[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    Serial.println(line);
+}
+
+class HostOtaTransport : public RangeTransport {
+public:
+    explicit HostOtaTransport(uint32_t started) : started_(started) {}
+
+    bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
+             const ResponseHeaders& headers, const ChunkSink& sink) override {
+        const auto elapsed = millis() - started_;
+        if (elapsed >= transferMs) return false;
+        TransportClient client;
+        HTTPClient http;
+        configureHttp(http);
+        http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+        http.setConnectTimeout(std::min(uint32_t(transferMs - elapsed), uint32_t(5000)));
+        http.setTimeout(std::min(uint32_t(transferMs - elapsed), idleMs));
+        if (!beginTransport(http, client, source.url)) return false;
+        http.setReuse(false);
+        const char* names[] = {"Content-Range", "ETag"};
+        http.collectHeaders(names, 2);
+        const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
+        http.addHeader("Range", range.c_str());
+        if (*ifRange) http.addHeader("If-Range", ifRange);
+        const bool complete = receive(http, source, headers, sink);
+        finishTransport(http, false);
+        return complete;
+    }
+
+    const char* failureReason() const override { return failure_; }
+
+private:
+    bool reject(const char* reason) { failure_ = reason; return false; }
+
+    bool receive(HTTPClient& http, const ResumeSource& source, const ResponseHeaders& headers,
+                 const ChunkSink& sink) {
+        RangeResponse response{};
+        response.status = http.GET();
+        if (response.status <= 0 || response.status == 408 || response.status == 429 ||
+            response.status >= 500 || millis() - started_ >= transferMs) return false;
+
+        const auto tag = http.header("ETag");
+        if (tag.length() >= sizeof response.validator) return reject("validator");
+        if (tag.length() && (response.status == 200 || response.status == 206)) {
+            const auto expected = std::string("\"") + source.sha256Hex + "\"";
+            if (expected != tag.c_str()) return reject("validator");
+        }
+        memcpy(response.validator, tag.c_str(), tag.length());
+
+        const int length = http.getSize();
+        size_t bodySize = 0;
+        if (response.status == 200) {
+            if (length != int(source.expectedSize)) return reject("size");
+            bodySize = response.total = length;
+        } else if (response.status == 206 || response.status == 416) {
+            const auto range = http.header("Content-Range");
+            if (!resume_detail::parseContentRange(range.c_str(), response)) return reject("range");
+            if (response.status == 206) {
+                bodySize = response.end - response.start + 1;
+                if (bodySize > kResumeChunk || length != int(bodySize)) return reject("size");
+            }
+        }
+
+        if (!headers(response)) return false;
+        if (!bodySize) return true;
+        auto* stream = http.getStreamPtr();
+        if (!stream) return false;
+        uint8_t block[1024];
+        uint32_t last = millis();
+        while (millis() - started_ < transferMs && millis() - last < idleMs) {
+            const int available = stream->available();
+            if (available > 0) {
+                if (!bodySize) return reject("excess");
+                const auto limit = std::min({size_t(available), bodySize, sizeof block});
+                const int count = stream->read(block, limit);
+                if (count <= 0) return false;
+                bodySize -= count;
+                if (!sink(block, count)) return false;
+                last = millis();
+                continue;
+            }
+            if (!http.connected()) return bodySize == 0;
+            if (!bodySize && millis() - last >= 1000) return false;
+            delay(1);
+        }
+        return false;
+    }
+
+    uint32_t started_;
+    const char* failure_ = nullptr;
+};
+
+template<class StillAllowed>
+OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
+                           const ReleaseInfo& release, const char* url, RangeTransport& transport,
+                           uint32_t started, OtaAttempts& attempts, const char* version,
+                           const char* approval, StillAllowed stillAllowed, bool& installed,
+                           bool& deferred) {
+    auto available = attempts;
+    if (!reserveOtaAttempt(available, version, approval)) return OtaFailure::Attempts;
+    if (!stillAllowed()) return OtaFailure::Schedule;
+    const auto elapsed = millis() - started;
+    if (elapsed >= transferMs) {
+        deferred = true;
+        logOtaStage(OtaStage::NoProgress, "budget", 0, release.size, logStage);
+        return OtaFailure::None;
+    }
+
+    const bool flash = partialsOnFlash();
+    auto& store = partialStore();
+    // Selection copies the active spare to /override.vnf before displaying it.
+    const char* spares[] = {"/spare0.vnf", "/spare1.vnf", "/spare2.vnf"};
+    auto spare = spareFrameEvictor(LittleFS, spares);
+    const auto evict = [&] { return flash && spare(); };
+    const auto free = [&] { return &partialStore() == &store ? partialFreeBytes() : uint64_t{0}; };
+    const char* reason = nullptr;
+    const auto outcome = stageUpdate(transport, release, transferMs - elapsed, store, url, true,
+                                     otaClock, uint32_t(time(nullptr)), free, evict, logStage,
+                                     +[] {}, &reason);
+    if (!flash && reason && !strcmp(reason, "space")) partialStoreFull();
+    if (&partialStore() != &store || outcome == OtaStage::Progress || outcome == OtaStage::NoProgress ||
+        (outcome == OtaStage::Complete && (millis() - started >= transferMs - installReserveMs || !stillAllowed()))) {
+        deferred = true;
+        return OtaFailure::None;
+    }
+    const auto reservation = reserveAttempt(prefs, attempts, version, approval);
+    if (reservation != OtaFailure::None) return reservation;
+    if (outcome == OtaStage::Failed)
+        return reason && (!strcmp(reason, "hash") || !strcmp(reason, "size"))
+            ? OtaFailure::Digest : OtaFailure::Download;
+
+    auto failure = OtaFailure::Digest;
+    installed = installStaged(store, release, [] {}, [&](fs::File& file) {
+        if (millis() - started >= transferMs || !stillAllowed()) {
+            failure = OtaFailure::Schedule;
+            return false;
+        }
+        failure = writeImage(prefs, target, release, started, [&](uint8_t* bytes, size_t count) {
+            return store.readExact(file, bytes, count) ? int(count) : -1;
+        }, stillAllowed);
+        return failure == OtaFailure::None;
+    });
+    return failure;
+}
+
 template<class StillAllowed>
 OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
-                       OtaAttempts& attempts, StillAllowed stillAllowed) {
+                       OtaAttempts& attempts, StillAllowed stillAllowed, bool& installed,
+                       bool& deferred) {
     // An approval scopes the attempt budget even when its metadata or path
     // cannot be trusted. Older hosts omit it, so use a bounded path hint.
     char hint[otaVersionCapacity]{};
@@ -187,47 +349,26 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
         if (len > 1 && len <= sizeof hint && !strcmp(tail + len - 1, ".bin"))
             memcpy(hint, tail, len - 1);
     }
-    const auto reservation = reserveAttempt(prefs, attempts, hint, offer.approval);
-    if (reservation != OtaFailure::None) return reservation;
-
+    const auto reject = [&](OtaFailure failure, const char* reason) {
+        logOtaStage(OtaStage::Failed, reason, 0, 0, logStage);
+        const auto reservation = reserveAttempt(prefs, attempts, hint, offer.approval);
+        return reservation == OtaFailure::None ? failure : reservation;
+    };
     const auto* target = installSlot();
-    if (!target) return OtaFailure::Slot;
+    if (!target) return reject(OtaFailure::Slot, "slot");
     ReleaseInfo release{};
-    if (!checkOffer(offer, *target, release)) return OtaFailure::Release;
+    if (!checkOffer(offer, *target, release)) return reject(OtaFailure::Release, "release");
     char version[otaVersionCapacity];
     versionString(release, version);
     char path[sizeof offer.path];
     hostFirmwarePath(path, version);
-    if (strcmp(path, offer.path)) return OtaFailure::Path;
+    if (strcmp(path, offer.path)) return reject(OtaFailure::Path, "path");
 
-    TransportClient localClient;
-    auto& client = requestClient(localClient);
-    HTTPClient localHttp;
-    auto& http = requestHttp(localHttp);
-    configureHttp(http);
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    const String url = String(installation.host) + path;
-    if (!beginTransport(http, client, url.c_str())) return OtaFailure::Download;
-    const uint32_t started = millis();
-    OtaFailure reason = OtaFailure::Download;
-    if (http.GET() == HTTP_CODE_OK && http.getSize() == int(release.size)) {
-        auto* stream = http.getStreamPtr();
-        auto read = [&](uint8_t* block, size_t limit) {
-            if (!stream) return -1;
-            const uint32_t readStarted = millis();
-            while (millis() - started < transferMs && millis() - readStarted < idleMs) {
-                const int available = stream->available();
-                if (available > 0) return stream->read(block, std::min(limit, size_t(available)));
-                if (!http.connected()) break;
-                delay(1);
-            }
-            return -1;
-        };
-        reason = writeImage(prefs, *target, release, started, read, stillAllowed);
-    }
-    // Close on failure, including a partially consumed response.
-    finishTransport(http, reason == OtaFailure::None);
-    return reason;
+    const auto url = std::string(installation.host) + path;
+    const auto started = otaClock();
+    HostOtaTransport transport(started);
+    return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
+                           version, offer.approval, stillAllowed, installed, deferred);
 }
 
 #if VENTANAL_OTA_GITHUB
@@ -299,7 +440,7 @@ struct GithubResponse {
 
 template<class StillAllowed>
 OtaFailure installGithub(Preferences& prefs, OtaAttempts& attempts, StillAllowed stillAllowed,
-                         bool& installed) {
+                         bool& installed, bool& deferred) {
     const auto* target = installSlot();
     if (!target) return OtaFailure::Slot;
     const uint32_t started = millis();
@@ -358,19 +499,23 @@ OtaFailure installGithub(Preferences& prefs, OtaAttempts& attempts, StillAllowed
     if (verdict == ReleaseVerdict::TooOld || verdict == ReleaseVerdict::NotNewer) return OtaFailure::None;
     if (verdict != ReleaseVerdict::Ok || major != release.major || minor != release.minor || patch != release.patch)
         return OtaFailure::Release;
-    if (!stillAllowed()) return OtaFailure::Schedule;
-    const auto reservation = reserveAttempt(prefs, attempts, tag + 1, "");
-    if (reservation != OtaFailure::None) return reservation;
-    GithubResponse response;
-    if (millis() - started >= transferMs || !response.getAsset(assetBase + ".bin")
-        || response.length != release.size) return OtaFailure::Download;
-    auto read = [&](uint8_t* block, size_t limit) {
-        if (millis() - started >= transferMs) return -1;
-        return esp_http_client_read(response.client, reinterpret_cast<char*>(block), limit);
-    };
-    const auto failure = writeImage(prefs, *target, release, started, read, stillAllowed);
-    installed = failure == OtaFailure::None;
-    return failure;
+    // Inkplate has no local Updates page. A diagnostic build may approve
+    // one explicit version; discovering a newer release grants no approval.
+#ifdef VENTANAL_OTA_GITHUB_APPROVED_VERSION
+    const bool approved = !strcmp(tag + 1, VENTANAL_OTA_GITHUB_APPROVED_VERSION);
+#else
+    const bool approved = false;
+#endif
+    if (!approved) {
+        Serial.println("ota github=awaiting-approval");
+        return OtaFailure::None;
+    }
+    const auto elapsed = millis() - started;
+    const String url = assetBase + ".bin";
+    OtaGithubTransport transport(url.c_str(), elapsed < transferMs ? transferMs - elapsed : 0,
+                                 otaClock, nullptr);
+    return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
+                           tag + 1, "", stillAllowed, installed, deferred);
 }
 #endif
 }  // namespace
@@ -471,14 +616,14 @@ bool tryOta(Preferences& prefs, const OtaBoot& boot, bool manifestOk, bool timeS
 #endif
 
     OtaFailure failure;
-    bool installed=false;
+    bool installed = false;
+    bool deferred = false;
     if (manifestOk && manifestFirmware.release[0]) {
-        failure = installHost(prefs, manifestFirmware, attempts, allowed);
-        installed = failure == OtaFailure::None;
+        failure = installHost(prefs, manifestFirmware, attempts, allowed, installed, deferred);
 #if VENTANAL_OTA_GITHUB
     } else if (otaGithubCheckDue(timeSynced, now, prefs.getLong64(githubCheckKey, 0))) {
-        failure = installGithub(prefs, attempts, allowed, installed);
-        if ((failure == OtaFailure::None || failure == OtaFailure::Attempts)
+        failure = installGithub(prefs, attempts, allowed, installed, deferred);
+        if (!deferred && (failure == OtaFailure::None || failure == OtaFailure::Attempts)
             && prefs.putLong64(githubCheckKey, now) != sizeof now) Serial.println("ota error=nvs-week");
 #endif
     } else {

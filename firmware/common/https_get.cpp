@@ -17,14 +17,15 @@ constexpr uint32_t SocketTimeoutMs = 5000;
 class HttpsRequest {
 public:
     HttpsRequest(const char* url, uint32_t budget, void (*feed)(),
-                 esp_http_client_config_t config = {})
+                 esp_http_client_config_t config = {}, bool benchHttp = false)
         : budget_(budget), feed_(feed), started_(millis()) {
-        if (!budget || strncmp(url, "https://", 8)) return;
+        const bool tls = !strncmp(url, "https://", 8);
+        if (!budget || (!tls && !(benchHttp && !strncmp(url, "http://", 7)))) return;
         config.url = url;
         config.user_agent = publicUserAgent;
         config.timeout_ms = std::min(SocketTimeoutMs, budget);
         config.disable_auto_redirect = true;
-        config.crt_bundle_attach = esp_crt_bundle_attach;
+        if (tls) config.crt_bundle_attach = esp_crt_bundle_attach;
         client = esp_http_client_init(&config);
     }
 
@@ -69,6 +70,7 @@ struct RangeHeaders {
     char contentRange[64]{};
     char etag[sizeof(RangeResponse::validator)]{};
     char modified[sizeof(RangeResponse::validator)]{};
+    std::string* location = nullptr;
 
     static esp_err_t collect(esp_http_client_event_t* event) {
         if (event->event_id != HTTP_EVENT_ON_HEADER) return ESP_OK;
@@ -81,6 +83,8 @@ struct RangeHeaders {
         if (!strcasecmp(event->header_key, "Content-Range")) save(self.contentRange);
         else if (!strcasecmp(event->header_key, "ETag")) save(self.etag);
         else if (!strcasecmp(event->header_key, "Last-Modified")) save(self.modified);
+        else if (self.location && !strcasecmp(event->header_key, "Location")
+                 && strlen(event->header_value) <= 4096) *self.location = event->header_value;
         return ESP_OK;
     }
 
@@ -92,31 +96,6 @@ struct RangeHeaders {
         return modified;
     }
 };
-
-bool readNumber(const char*& cursor, uint32_t& value, char delimiter) {
-    if (*cursor < '0' || *cursor > '9') return false;
-    value = 0;
-    do {
-        value = value * 10 + uint32_t(*cursor++ - '0');
-        if (value > resume_detail::kMaxBodyBytes) return false;
-    } while (*cursor >= '0' && *cursor <= '9');
-    if (*cursor != delimiter) return false;
-    cursor += delimiter != '\0';
-    return true;
-}
-
-bool parseContentRange(const char* cursor, RangeResponse& response) {
-    if (strncasecmp(cursor, "bytes ", 6) != 0) return false;
-    cursor += 6;
-    if (response.status == 416) {
-        if (strncmp(cursor, "*/", 2) != 0) return false;
-        cursor += 2;
-        return readNumber(cursor, response.total, '\0');
-    }
-    return readNumber(cursor, response.start, '-') && readNumber(cursor, response.end, '/') &&
-        readNumber(cursor, response.total, '\0') &&
-        response.start <= response.end && response.end < response.total;
-}
 
 }  // namespace
 
@@ -158,9 +137,9 @@ HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlin
     return result;
 }
 
-HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+static HttpsResult getRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
                           const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
-                          const ResponseHeaders& headers) {
+                          const ResponseHeaders& headers, std::string* location, bool benchHttp) {
     HttpsResult result;
     out = {};
     if (start > end) return result;
@@ -168,10 +147,11 @@ HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const c
     snprintf(range, sizeof range, "bytes=%" PRIu32 "-%" PRIu32, start, end);
 
     RangeHeaders received;
+    received.location = location;
     esp_http_client_config_t config{};
     config.user_data = &received;
     config.event_handler = RangeHeaders::collect;
-    HttpsRequest request(url, deadlineMs, feed, config);
+    HttpsRequest request(url, deadlineMs, feed, config, benchHttp);
     const auto client = request.client;
     if (!client || !request.setHeader("Range", range) || !request.setHeader("If-Range", ifRange))
         return result;
@@ -181,7 +161,7 @@ HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const c
 
     size_t expected = 0;
     if (out.status == 206 || out.status == 416) {
-        if (!parseContentRange(received.contentRange, out)) {
+        if (!resume_detail::parseContentRange(received.contentRange, out)) {
             result.truncated = true;
             return result;
         }
@@ -229,6 +209,41 @@ HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const c
     if (expected && result.length != expected) return result;
     result.status = out.status;
     return result;
+}
+
+HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+                          const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
+                          const ResponseHeaders& headers) {
+    return getRange(url, start, end, ifRange, sink, deadlineMs, feed, out, headers, nullptr, false);
+}
+
+HttpsResult githubGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+                           const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
+                           const ResponseHeaders& headers, bool benchHttp) {
+    const uint32_t started = millis();
+    std::string location;
+    const auto firstHeaders = [&](const RangeResponse& response) {
+        switch (response.status) {
+        case 301: case 302: case 303: case 307: case 308: return false;
+        default: return headers(response);
+        }
+    };
+    const auto first = getRange(url, start, end, ifRange, sink, deadlineMs, feed, out,
+                                firstHeaders, benchHttp ? nullptr : &location, benchHttp);
+    switch (out.status) {
+    case 301: case 302: case 303: case 307: case 308: break;
+    default: return first;
+    }
+    const auto elapsed = millis() - started;
+    if (elapsed >= deadlineMs) return {};
+    if (location.compare(0, sizeof("https://release-assets.githubusercontent.com/") - 1,
+                         "https://release-assets.githubusercontent.com/") != 0 &&
+        location.compare(0, sizeof("https://objects.githubusercontent.com/") - 1,
+                         "https://objects.githubusercontent.com/") != 0) {
+        return {out.status, 0, false};
+    }
+    return getRange(location.c_str(), start, end, ifRange, sink, deadlineMs - elapsed,
+                    feed, out, headers, nullptr, false);
 }
 
 HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,

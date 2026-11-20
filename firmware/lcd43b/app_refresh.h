@@ -418,8 +418,11 @@ void applyFinishedRefresh() {
 #else
     const bool writesCallState = callStateChanged;
 #endif
-    if (!refreshStaging.manifestOk
-        || !lcd::validateOffer(refreshStaging.firmware, lcd::UpdateSource::Host, hostOffer))
+    // A failed check-in leaves the queued approval intact. A successfully
+    // fetched manifest can replace or withdraw it.
+    if (refreshStaging.manifestOk)
+        lcd::validateOffer(refreshStaging.firmware, lcd::UpdateSource::Host, hostOffer);
+    else if (installQueued != lcd::UpdateSource::Host)
         hostOffer = {};
     const bool staleRollback = lcd::rolledBackOffer(updateBoot, hostOffer);
     if (staleRollback) hostOffer = {};

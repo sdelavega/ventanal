@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../common/resume/fs_store.h"
+#include "../common/resume/ota_stage.h"
 #include "../common/resume/resume.h"
 #include "../common/resume/storage.h"
 #include <LittleFS.h>
@@ -25,6 +26,23 @@ PartialMeta metaAt(uint32_t epoch, const char* validator = "live") {
 void seed(FsStore& store, const char* target, uint32_t epoch, const char* validator = "live") {
     assert(store.append(target, kBody, sizeof(kBody)));
     assert(store.writeMeta(target, metaAt(epoch, validator)));
+}
+
+void ota_space_evicts_spares_only() {
+    FakeFS flash;
+    flash.capacity = 65536 + 48;
+    flash.files["/weather.vnf"].resize(8);
+    flash.files["/override.vnf"].resize(8);
+    flash.files["/spare0.vnf"].resize(16);
+    flash.files["/spare1.vnf"].resize(16);
+    flash.files["/spare2.vnf"].resize(16);
+    const char* spares[] = {"/spare1.vnf", "/spare2.vnf"};
+    auto free = [&] { return flash.totalBytes() - flash.usedBytes(); };
+    auto evict = spareFrameEvictor(flash, spares);
+    assert(makeOtaSpace(16, free, evict));
+    assert(flash.exists("/weather.vnf") && flash.exists("/override.vnf") && flash.exists("/spare0.vnf"));
+    assert(!flash.exists("/spare1.vnf") && !flash.exists("/spare2.vnf"));
+    assert(!makeOtaSpace(17, free, evict));
 }
 
 void fs_store_roundtrip() {
@@ -175,11 +193,12 @@ void prune_old_committed_sun_files() {
 }
 
 int main() {
+    ota_space_evicts_spares_only();
     fs_store_roundtrip();
     write_failure_abandons_partial();
     sd_gone_falls_back_to_flash();
     sweep_removes_old_and_orphaned();
     sweep_needs_valid_time();
     prune_old_committed_sun_files();
-    std::puts("resume store: 6 cases passed");
+    std::puts("resume store: 7 cases passed");
 }

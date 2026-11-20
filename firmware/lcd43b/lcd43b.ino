@@ -449,7 +449,8 @@ void loop() {
 #endif
 #endif
     const uint32_t interval=powerPollMs();
-    const bool networkIdle = !refreshBusy && installQueued == lcd::UpdateSource::None;
+    const bool networkIdle = !refreshBusy &&
+        (installQueued == lcd::UpdateSource::None || updateRetry.waiting());
     const bool refreshDue = wifiRetry.waiting()
         ? networkIdle && wifiRetry.due(millis())
         : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,

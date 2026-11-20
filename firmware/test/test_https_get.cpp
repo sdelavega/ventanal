@@ -71,8 +71,35 @@ static void streaming_ranges() {
     puts("HTTPS streaming ranges: headers before body, validators, whole response and interruptions passed");
 }
 
+static void github_asset_redirects_keep_range_and_tls() {
+    constexpr char url[] = "https://github.com/release.bin";
+    constexpr char asset[] = "https://release-assets.githubusercontent.com/file?token=fixture";
+    FakeHttpsResponse redirected{3, 206, 3};
+    redirected.contentRange = "bytes 32768-32770/32771";
+    fakeHttps = {0, 302};
+    fakeHttps.location = asset;
+    fakeRedirectResponse = &redirected;
+    RangeResponse response{};
+    size_t bytes = 0;
+    const auto sink = [&](const uint8_t*, size_t count) { bytes += count; return true; };
+    const auto headers = [](const RangeResponse& head) { return head.status == 206; };
+    const auto result = githubGetRange(url, 32768, 32770, "\"tag\"", sink, 1000, nullptr,
+                                       response, headers, false);
+    assert(result.status == 206 && bytes == 3 && fakeLastUrl == asset);
+    assert(fakeRange == "bytes=32768-32770" && fakeIfRange == "\"tag\"");
+    assert(fakeHttpsConfig.crt_bundle_attach && fakeHttpsConfig.disable_auto_redirect);
+
+    fakeHttps.location = "https://release-assets.githubusercontent.com.evil.test/file";
+    bytes = 0;
+    const auto rejected = githubGetRange(url, 0, 2, nullptr, sink, 1000, nullptr,
+                                         response, headers, false);
+    assert(rejected.status == 302 && bytes == 0 && fakeLastUrl == url);
+    fakeRedirectResponse = nullptr;
+}
+
 int main() {
     streaming_ranges();
+    github_asset_redirects_keep_range_and_tls();
     char body[8193];
     fakeHttps = {};
     fakeHttps.openResult = -1;

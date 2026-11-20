@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "../ventanal/ota.h"
 #include "../lcd43b/ota.h"
+#include "../common/resume/ota_stage.h"
+#include <LittleFS.h>
 #include <cassert>
 
 static void standalone_checks_github_weekly() {
@@ -14,6 +16,88 @@ static void standalone_checks_github_weekly() {
     assert(lcd::githubCheckDue(true, 0, validSince));
     assert(!lcd::githubCheckDue(false, 0, last + 7 * day));
     assert(!lcd::githubCheckDue(true, last, last - day));
+}
+
+namespace {
+uint32_t clockMs;
+uint32_t stageClock() { return clockMs; }
+
+struct OtaFixture : RangeTransport {
+    FakeFS fs;
+    FsStore store{fs};
+    std::vector<uint8_t> body = std::vector<uint8_t>(2 * kResumeChunk + 1, 42);
+    ReleaseInfo release{};
+    uint32_t offset = 0;
+    unsigned calls = 0;
+
+    OtaFixture() {
+        release.major = 12;
+        release.minor = 345;
+        release.patch = 6789;
+        release.size = body.size();
+        Sha256 hash;
+        hash.update(body.data(), body.size());
+        memcpy(release.sha256, hash.digest(), sizeof release.sha256);
+    }
+
+    bool get(const ResumeSource&, uint32_t start, uint32_t end, const char* ifRange,
+             const ResponseHeaders& headers, const ChunkSink& sink) override {
+        assert(!strcmp(ifRange, start ? "\"etag\"" : ""));
+        ++calls;
+        offset = start;
+        ++clockMs;
+        return headers({206, start, end, release.size, "\"etag\""}) &&
+               sink(body.data() + start, end - start + 1);
+    }
+
+    OtaStage stage() {
+        return stageUpdate(*this, release, 1, store, "/firmware.bin", true, stageClock, 1704067200,
+                           [&] { return fs.totalBytes() - fs.usedBytes(); }, [] { return false; });
+    }
+
+    void complete() {
+        assert(stage() == OtaStage::Progress);
+        assert(stage() == OtaStage::Progress);
+        assert(stage() == OtaStage::Complete);
+    }
+};
+
+void ota_stages_across_passes() {
+    OtaFixture f;
+    f.complete();
+    assert(f.offset == 2 * kResumeChunk);
+    assert(f.stage() == OtaStage::Complete && f.calls == 3);
+    unsigned installs = 0;
+    assert(installStaged(f.store, f.release, [] {}, [&](fs::File& file) {
+        ++installs;
+        return file.size() == f.release.size;
+    }));
+    assert(installs == 1);
+}
+
+void ota_new_offer_discards_old_partial() {
+    OtaFixture f;
+    assert(f.stage() == OtaStage::Progress);
+    PartialMeta meta{};
+    assert(f.store.readMeta("ota-12.345.6789", meta));
+    assert(!strncmp(meta.validator, "12.345.6789:", 12));
+    ++f.release.patch;
+    assert(f.stage() == OtaStage::Progress && f.offset == 0);
+    assert(f.store.size("ota-12.345.6789") < 0);
+    f.release.sha256[0] ^= 1;
+    assert(f.stage() == OtaStage::Progress && f.offset == 0);
+}
+
+void ota_install_requires_verified_partial() {
+    OtaFixture f;
+    const auto forbidden = [](fs::File&) { assert(false); return false; };
+    const auto feed = [] {};
+    assert(!installStaged(f.store, f.release, feed, forbidden));
+    f.complete();
+    f.fs.files.at("/partials/ota-12.345.6789")[0] ^= 1;
+    assert(!installStaged(f.store, f.release, feed, forbidden));
+    assert(!f.store.openCommitted("ota-12.345.6789"));
+}
 }
 
 int main() {
@@ -98,5 +182,8 @@ int main() {
     assert(!otaGithubCheckDue(true, now, now + 1));
 
     standalone_checks_github_weekly();
+    ota_stages_across_passes();
+    ota_new_offer_discards_old_partial();
+    ota_install_requires_verified_partial();
     puts("OTA policy: battery and quiet hours, install recovery, healthy boot, result fields and standalone weekly check passed");
 }

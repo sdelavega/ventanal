@@ -8,6 +8,7 @@
 #include <functional>
 #include <memory>
 #include <new>
+#include <strings.h>
 
 inline constexpr uint32_t kResumeChunk = 32768;
 
@@ -17,6 +18,7 @@ struct ResumeSource {
     const char* sha256Hex;
     uint32_t expectedSize;
     bool sendIfRange;
+    bool separateWireValidator = false;
 };
 
 struct RangeResponse {
@@ -39,6 +41,7 @@ public:
     virtual bool get(const ResumeSource&, uint32_t start, uint32_t end,
                      const char* ifRange, const ResponseHeaders& headers,
                      const ChunkSink& sink) = 0;
+    virtual const char* failureReason() const { return nullptr; }
     virtual ~RangeTransport() = default;
 };
 
@@ -48,6 +51,31 @@ namespace resume_detail {
 
 inline constexpr uint32_t kMaxBodyBytes = 0x380000;
 inline constexpr uint32_t kValidEpoch = 1704067200;
+
+inline bool readRangeNumber(const char*& cursor, uint32_t& value, char delimiter) {
+    if (*cursor < '0' || *cursor > '9') return false;
+    value = 0;
+    do {
+        value = value * 10 + uint32_t(*cursor++ - '0');
+        if (value > resume_detail::kMaxBodyBytes) return false;
+    } while (*cursor >= '0' && *cursor <= '9');
+    if (*cursor != delimiter) return false;
+    cursor += delimiter != '\0';
+    return true;
+}
+
+inline bool parseContentRange(const char* cursor, RangeResponse& response) {
+    if (strncasecmp(cursor, "bytes ", 6) != 0) return false;
+    cursor += 6;
+    if (response.status == 416) {
+        if (strncmp(cursor, "*/", 2) != 0) return false;
+        cursor += 2;
+        return readRangeNumber(cursor, response.total, '\0');
+    }
+    return readRangeNumber(cursor, response.start, '-') && readRangeNumber(cursor, response.end, '/') &&
+        readRangeNumber(cursor, response.total, '\0') &&
+        response.start <= response.end && response.end < response.total;
+}
 
 inline bool terminated(const char* text, size_t size) {
     return std::memchr(text, 0, size) != nullptr;
@@ -86,6 +114,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
     using namespace resume_detail;
     const uint32_t started = nowMs();
     const char* pinned = source.validator ? source.validator : "";
+    const bool separate = source.separateWireValidator;
     const char* digest = source.sha256Hex ? source.sha256Hex : "";
     if (failureReason) *failureReason = nullptr;
     if (!source.url || !*source.url || std::strlen(source.url) >= sizeof(PartialMeta::url) ||
@@ -119,6 +148,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         meta.have > kMaxBodyBytes || (meta.total && meta.have > meta.total) ||
         meta.total > kMaxBodyBytes || !terminated(meta.url, sizeof(meta.url)) ||
         !terminated(meta.validator, sizeof(meta.validator)) || std::strcmp(meta.url, source.url) ||
+        !terminated(meta.wireValidator, sizeof(meta.wireValidator)) ||
         (*pinned && std::strcmp(pinned, meta.validator)) || (!*meta.validator && !*digest) ||
         (source.expectedSize && source.expectedSize != meta.total)) {
         reset();
@@ -169,7 +199,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 rejection = "parse";
                 return false;
             }
-            if (*pinned && *response.validator && std::strcmp(pinned, response.validator)) {
+            if (!separate && *pinned && *response.validator && std::strcmp(pinned, response.validator)) {
                 rejection = "validator";
                 return false;
             }
@@ -179,7 +209,8 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
                 return false;
             }
             meta.total = response.total ? response.total : source.expectedSize;
-            std::strcpy(meta.validator, *response.validator ? response.validator : pinned);
+            std::strcpy(meta.validator, !separate && *response.validator ? response.validator : pinned);
+            if (separate) std::strcpy(meta.wireValidator, response.validator);
             return true;
         };
         const ChunkSink sink = [&](const uint8_t* data, size_t count) {
@@ -211,12 +242,14 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
             return true;
         };
         const bool complete = transport.get(source, start, end,
-                                            source.sendIfRange ? meta.validator : "", headers, sink);
+                                            source.sendIfRange ? (separate ? meta.wireValidator : meta.validator) : "",
+                                            headers, sink);
         if (allocationFailed) {
             if (failureReason) *failureReason = "memory";
             return FetchOutcome::Failed;
         }
         if (rejection) return fail(rejection);
+        if (const char* reason = transport.failureReason()) return fail(reason);
         if (!complete) return pause();
         if (response.status == 200) {
             const uint32_t received = meta.have + buffered;
@@ -230,7 +263,9 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         // Fixed sources can use their manifest/offer identity when the HTTP
         // response itself does not carry one. Public sources learn it on GET.
         const char* validator = *response.validator ? response.validator : pinned;
-        const bool validatorChanged = start && std::strcmp(meta.validator, validator);
+        const bool validatorChanged = start && (separate
+            ? std::strcmp(meta.wireValidator, response.validator)
+            : std::strcmp(meta.validator, validator));
         const bool complete416 = response.status == 416 && start &&
             (total ? start == total && (!response.total || response.total == total)
                    : response.total == start) &&
@@ -252,7 +287,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         }
 
         if (response.status != 206) return FetchOutcome::Failed;
-        if (*pinned && std::strcmp(pinned, validator)) return fail("validator");
+        if (!separate && *pinned && std::strcmp(pinned, validator)) return fail("validator");
 
         const uint32_t responseTotal = response.total;
         if (!responseTotal || responseTotal > kMaxBodyBytes ||
@@ -267,7 +302,8 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         if (response.end + 1 < responseTotal && !*validator && !*digest) return fail("validator");
 
         meta.total = responseTotal;
-        std::strcpy(meta.validator, validator);
+        std::strcpy(meta.validator, separate ? pinned : validator);
+        if (separate) std::strcpy(meta.wireValidator, response.validator);
         if (!saveChunk()) return fail("storage");
         if (meta.have == meta.total) return finish();
     }

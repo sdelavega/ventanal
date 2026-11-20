@@ -108,6 +108,7 @@ bool updateScreenShowing = false;  // the Updating notice is lit even in quiet h
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
 lcd::WifiRetry wifiRetry;
+lcd::WifiRetry updateRetry;
 uint32_t lastTouchPollMs = 0;
 bool lastTouched = false;
 uint32_t fetchCounter = 0;

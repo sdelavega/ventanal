@@ -37,6 +37,7 @@ void closeSettings(const char* reason) {
     show(screenIndex);
 }
 void queueInstall(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
+    updateRetry = {};
     queuedOffer = offer;
     installQueued = source;
     lcd::log("ota install=queued refresh_busy=%d\n", refreshBusy);

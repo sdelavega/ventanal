@@ -103,7 +103,7 @@ bool showSettings(lcd::ReadoutRect damage) {
         if (updatesPage) {
             const bool waiting = installQueued != lcd::UpdateSource::None;
             lcd::drawUpdatePage(pixels, hostOffer.version, githubOffer.version,
-                                waiting ? "Waiting for refresh..." : updateNotice, busy, waiting);
+                                waiting && !updateRetry.waiting() ? "Waiting for refresh..." : updateNotice, busy, waiting);
         } else {
             lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer,
                                   CallState(lcd::installation.callState));

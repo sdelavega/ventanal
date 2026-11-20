@@ -25,6 +25,8 @@ public:
     bool takeCommitted(const char* target, uint8_t* bytes, size_t size);
     bool readCommitted(const char* target, uint8_t* bytes, size_t size);
     fs::File openCommitted(const char* target);
+    bool readExact(fs::File& file, uint8_t* bytes, size_t count);
+    void retainOtaTarget(const char* target);
     bool removeCommitted(const char* target);
     // Keep the newest committed day before today and return its target name.
     std::string retainPreviousCommitted(const char* prefix, uint32_t today);

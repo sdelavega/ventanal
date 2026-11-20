@@ -17,6 +17,10 @@ bool mountSdCard(Ch422g& expander) {
         SD_MMC.end();
         return false;
     }
-    setPartialSdFilesystem(SD_MMC);
+    setPartialSdFilesystem(SD_MMC, []() -> uint64_t {
+        const auto total = SD_MMC.totalBytes();
+        const auto used = SD_MMC.usedBytes();
+        return total > used ? total - used : 0;
+    });
     return true;
 }

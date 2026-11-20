@@ -8,14 +8,7 @@
 #include <sodium.h>
 
 #include "release_key.h"
-
-struct ReleaseInfo {
-    char board[24];
-    uint16_t major, minor, patch;
-    uint32_t size;
-    uint8_t sha256[32];
-    uint16_t minMajor, minMinor, minPatch;
-};
+#include "release_info.h"
 
 enum class ReleaseVerdict { Ok, BadSignature, WrongBoard, NotNewer, TooOld, BadSize };
 
@@ -189,9 +182,4 @@ inline ReleaseVerdict checkRelease(const char* json, size_t len, const char* sig
     if (info.size == 0 || info.size > slotSize) return ReleaseVerdict::BadSize;
     out = info;
     return ReleaseVerdict::Ok;
-}
-
-// Call with the measured size and final SHA-256 of the streamed image.
-inline bool releaseImageMatches(const ReleaseInfo& info, size_t size, const uint8_t sha256[32]) {
-    return size == info.size && memcmp(info.sha256, sha256, sizeof(info.sha256)) == 0;
 }

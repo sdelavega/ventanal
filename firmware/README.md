@@ -74,6 +74,9 @@ Pairing and counters stay in NVS.
 `VENTANAL_OTA_GITHUB=1` enables diagnostic checks of the latest GitHub release
 at most once a week. It uses the ESP-IDF certificate bundle and applies the
 same signed-image checks and battery and quiet-hours gates as host offers.
+To approve a specific GitHub image on a diagnostic Inkplate build, define
+`VENTANAL_OTA_GITHUB_APPROVED_VERSION` as its quoted version without the `v`
+prefix. With the flag unset, the diagnostic checks release metadata.
 The first boot of an updated image requires Wi-Fi, a valid host manifest, and
 a completed frame refresh. A transient connection failure gets one light-sleep
 retry while the image is still pending.

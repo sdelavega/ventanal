@@ -5,9 +5,6 @@
 #include "../common/resume/resume.h"
 #include "host_request.h"
 #include "sync.h"
-#include <cerrno>
-#include <cstdlib>
-#include <strings.h>
 #ifdef VENTANAL_LCD_DIAG_PANEL
 #include <esp_heap_caps.h>
 #endif
@@ -17,14 +14,15 @@ namespace lcd {
 class HostRangeTransport : public RangeTransport {
 public:
     HostRangeTransport(const char* origin, const char* path, const std::string& key,
-                       Watchdog& watchdog, uint32_t passStarted)
-        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted) {}
+                       Watchdog& watchdog, uint32_t passStarted, bool ota = false)
+        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted), ota_(ota) {}
 
     uint32_t remainingMs() const {
         const uint32_t elapsed = millis() - passStarted_;
         return elapsed < TRANSFER_BUDGET_MS ? TRANSFER_BUDGET_MS - elapsed : 0;
     }
 
+    const char* failureReason() const override { return ota_ && malformed_ ? reason_ : nullptr; }
     bool malformed() const { return malformed_; }
     size_t bytesRead() const { return bytesRead_; }
     int status() const { return status_; }
@@ -69,6 +67,9 @@ public:
             ++tag;
             tagSize -= 2;
         }
+        // The host's firmware ETag is the signed image's SHA-256.
+        if (ota_ && (response.status == 200 || response.status == 206) && tagSize &&
+            (tagSize != 64 || strncmp(tag, source.sha256Hex, tagSize))) return reject("validator");
         if (tagSize >= sizeof response.validator) return reject("parse");
         memcpy(response.validator, tag, tagSize);
 
@@ -80,7 +81,7 @@ public:
             bodySize = response.total ? response.total : source.expectedSize;
         } else if (response.status == 206 || response.status == 416) {
             const auto contentRange = http.header("Content-Range");
-            if (!parseContentRange(contentRange.c_str(), response)) return reject("parse");
+            if (!resume_detail::parseContentRange(contentRange.c_str(), response)) return reject("parse");
             if (response.status == 206) {
                 bodySize = response.end - response.start + 1;
                 if (bodySize > kResumeChunk || (length >= 0 && size_t(length) != bodySize))
@@ -95,31 +96,6 @@ public:
     }
 
 private:
-    static bool readNumber(const char*& text, uint32_t& number, char delimiter) {
-        if (*text < '0' || *text > '9') return false;
-        char* end;
-        errno = 0;
-        const auto value = std::strtoul(text, &end, 10);
-        if (errno == ERANGE || value > resume_detail::kMaxBodyBytes || *end != delimiter)
-            return false;
-        number = value;
-        text = end + (delimiter != '\0');
-        return true;
-    }
-
-    static bool parseContentRange(const char* text, RangeResponse& response) {
-        if (strncasecmp(text, "bytes ", 6) != 0) return false;
-        text += 6;
-        if (response.status == 416) {
-            if (strncmp(text, "*/", 2) != 0) return false;
-            text += 2;
-            return readNumber(text, response.total, '\0');
-        }
-        return readNumber(text, response.start, '-') && readNumber(text, response.end, '/') &&
-            readNumber(text, response.total, '\0') &&
-            response.start <= response.end && response.end < response.total;
-    }
-
     bool interrupt(const char* reason) {
         reason_ = reason;
         return false;
@@ -182,6 +158,7 @@ private:
     int status_ = 0;
     const char* reason_ = nullptr;
     bool malformed_ = false;
+    bool ota_;
 #ifdef VENTANAL_LCD_DIAG_PANEL
     bool sampledHeap_ = false;
 #endif

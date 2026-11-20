@@ -34,3 +34,8 @@ HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const c
 HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
                           const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
                           const ResponseHeaders& headers);
+
+// Release assets may follow one redirect to GitHub's HTTPS asset hosts.
+HttpsResult githubGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+                           const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
+                           const ResponseHeaders& headers, bool benchHttp);

@@ -35,8 +35,11 @@ struct FakeHttpsResponse {
     const char* contentRange = nullptr;
     const char* etag = nullptr;
     const char* modified = nullptr;
+    const char* location = nullptr;
 };
 inline FakeHttpsResponse fakeHttps;
+inline FakeHttpsResponse* fakeRedirectResponse = nullptr;
+inline std::string fakeLastUrl;
 inline esp_http_client_config_t fakeHttpsConfig;
 inline std::string fakeRange, fakeIfRange;
 using esp_http_client_handle_t = FakeHttpsResponse*;
@@ -44,6 +47,9 @@ inline esp_http_client_handle_t esp_http_client_init(const esp_http_client_confi
     fakeHttpsConfig = *config;
     fakeRange.clear();
     fakeIfRange.clear();
+    fakeLastUrl = config->url;
+    if (fakeRedirectResponse && fakeHttps.location && fakeLastUrl == fakeHttps.location)
+        return fakeRedirectResponse;
     return &fakeHttps;
 }
 inline int esp_http_client_set_header(esp_http_client_handle_t c, const char* name, const char* value) {
@@ -66,6 +72,7 @@ inline int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) {
     emit("content-range", c->contentRange);
     emit("etag", c->etag);
     emit("Last-Modified", c->modified);
+    emit("Location", c->location);
     return c->contentLength;
 }
 inline int esp_http_client_get_status_code(esp_http_client_handle_t c) { return c->status; }

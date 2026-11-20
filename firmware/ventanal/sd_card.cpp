@@ -24,7 +24,11 @@ bool mountSdCard() {
     if (ready && bus.begin(kSck, kMiso, kMosi, kCs) &&
         SD.begin(kCs, bus, 20000000) && probePartialStorage(SD)) {
         mounted = true;
-        setPartialSdFilesystem(SD);
+        setPartialSdFilesystem(SD, []() -> uint64_t {
+        const auto total = SD.totalBytes();
+        const auto used = SD.usedBytes();
+        return total > used ? total - used : 0;
+    });
         return true;
     }
     SD.end();

@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../common/ota_state.h"
+#include "../common/resume/resume.h"
 
 class Preferences;
 namespace lcd {
@@ -53,6 +54,11 @@ void acknowledgeUpdate(Preferences& prefs, UpdateBoot& boot, const char* sentRep
 bool confirmUpdate(Preferences& prefs, UpdateBoot& boot);
 [[noreturn]] void rollbackUpdate();
 
+FetchOutcome stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const UpdateOffer& offer,
+                             UpdateSource source, Watchdog& watchdog, int protectedSpare,
+                             OtaFailure& failure);
+void recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
+                         UpdateSource source, OtaFailure failure);
 OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
                          UpdateSource source, Watchdog& watchdog);
 CheckResult checkGithub(int64_t last, GithubCheck& result, Watchdog& watchdog);

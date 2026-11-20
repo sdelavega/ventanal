@@ -3,7 +3,11 @@
 #include "ota.h"
 
 #include "../common/release.h"
-#include "host_request.h"
+#include "../common/ota_github_transport.h"
+#include "../common/resume/ota_stage.h"
+#include "../common/resume/storage.h"
+#include "host_transport.h"
+#include <cstdarg>
 #include "sync.h"
 #include <LittleFS.h>
 #include <esp_littlefs.h>
@@ -37,7 +41,7 @@ constexpr char githubAttemptsKey[] = "ota-gh-tries";
 constexpr char checkKey[] = "ota-gh-check";
 constexpr char autoFailureKey[] = "ota-gh-fail";
 constexpr uint32_t transferMs = 60000;
-constexpr uint32_t idleMs = 6000;
+
 constexpr uint64_t healthyBootUs = 150ULL * 1000 * 1000;
 esp_timer_handle_t updateDeadline = nullptr;
 
@@ -154,40 +158,6 @@ OtaFailure writeImage(const esp_partition_t* spare, const ReleaseInfo& release,
     return OtaFailure::None;
 }
 
-OtaFailure downloadHost(const esp_partition_t* spare, const ReleaseInfo& release, const char* path,
-                        Watchdog& watchdog) {
-    HostRequest request;
-    auto& http = request.http;
-    if (!request.begin(installation.host, path, decodeDeviceKey(installation.deviceKey)))
-        return OtaFailure::Download;
-    http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-    const uint32_t started = millis();
-    if (http.GET() != HTTP_CODE_OK || http.getSize() != int(release.size)) return OtaFailure::Download;
-    auto* stream = http.getStreamPtr();
-    if (!stream) return OtaFailure::Download;
-    auto read = [&](uint8_t* block, size_t limit) {
-        watchdog.feed();
-        const uint32_t readStarted = millis();
-        while (millis() - started < transferMs && millis() - readStarted < idleMs) {
-            const int available = stream->available();
-            if (available > 0) return stream->read(block, std::min(limit, size_t(available)));
-            if (!http.connected()) break;
-            delay(1);
-        }
-        return -1;
-    };
-    auto complete = [&] {
-        const uint32_t end = millis();
-        while (millis() - started < transferMs && millis() - end < FRAME_CLOSE_GRACE_MS) {
-            if (stream->available() > 0) return false;
-            if (!http.connected()) return true;
-            delay(1);
-        }
-        return false;
-    };
-    return writeImage(spare, release, started, read, complete);
-}
-
 #ifdef VENTANAL_LCD_OTA_BASE_URL
 constexpr char latestUrl[] = VENTANAL_LCD_OTA_BASE_URL "/repos/sdelavega/ventanal/releases/latest";
 constexpr char assetBaseUrl[] = VENTANAL_LCD_OTA_BASE_URL "/sdelavega/ventanal/releases/download/";
@@ -279,21 +249,20 @@ private:
     }
 };
 
-OtaFailure downloadGithub(const esp_partition_t* spare, const ReleaseInfo& release,
-                          const char* version, Watchdog& watchdog) {
-    GithubResponse response;
-    const uint32_t started = millis();
-    if (!response.getAsset(assetBase(version) + ".bin") || response.length != release.size)
-        return OtaFailure::Download;
-    auto read = [&](uint8_t* block, size_t limit) {
-        watchdog.feed();
-        if (millis() - started >= transferMs) return -1;
-        return esp_http_client_read(response.client, reinterpret_cast<char*>(block), limit);
-    };
-    return writeImage(spare, release, started, read, [&] {
-        return esp_http_client_is_complete_data_received(response.client);
-    });
+uint32_t otaClock() { return millis(); }
+
+Watchdog* otaWatchdog = nullptr;
+void feedOta() { otaWatchdog->feed(); }
+
+void logStage(const char* format, ...) {
+    char line[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    log("%s\n", line);
 }
+
 }  // namespace
 
 bool validateOffer(const FirmwareOffer& input, UpdateSource source, UpdateOffer& out) {
@@ -425,9 +394,93 @@ bool confirmUpdate(Preferences& prefs, UpdateBoot& boot) {
     esp_restart();  // A reset with pending verification also triggers rollback.
 }
 
+OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const UpdateOffer& offer,
+                         UpdateSource source, Watchdog& watchdog, int protectedSpare,
+                         OtaFailure& failure) {
+    failure = OtaFailure::Slot;
+    if (boot.pending || !installSlot()) return logOtaStage(OtaStage::Failed, "slot", 0, 0, logStage);
+    ReleaseInfo release{};
+    char version[otaVersionCapacity]{};
+    failure = OtaFailure::Release;
+    if (!verifyOffer(offer.signedOffer, source, release, version))
+        return logOtaStage(OtaStage::Failed, "release", 0, 0, logStage);
+    OtaAttempts attempts{};
+    failure = OtaFailure::Write;
+    if (!readAttempts(prefs, attemptsKey(source), attempts))
+        return logOtaStage(OtaStage::Failed, "attempt-record", 0, release.size, logStage);
+    failure = OtaFailure::Attempts;
+    if (!reserveOtaAttempt(attempts, version, offer.signedOffer.approval))
+        return logOtaStage(OtaStage::Failed, "attempts", 0, release.size, logStage);
+
+    failure = OtaFailure::Download;
+    DownloadPower radio;
+    const auto started = otaClock();
+    if (!connectForUpdates(watchdog))
+        return logOtaStage(OtaStage::NoProgress, "offline", 0, release.size, logStage);
+    const bool flash = partialsOnFlash();
+    auto& store = partialStore();
+    String paths[SPARE_SLOTS * 2];
+    const char* spares[SPARE_SLOTS * 2]{};
+    for (int i = 0; flash && i < SPARE_SLOTS; ++i) {
+        if (3 + i == protectedSpare) continue;
+        for (int alt = 0; alt < 2; ++alt) {
+            const int index = i * 2 + alt;
+            paths[index] = residentPath(3 + i, alt);
+            spares[index] = paths[index].c_str();
+        }
+    }
+    auto evict = spareFrameEvictor(LittleFS, spares);
+    otaWatchdog = &watchdog;
+    const auto free = [&] { return &partialStore() == &store ? partialFreeBytes() : uint64_t{0}; };
+    const auto elapsed = otaClock() - started;
+    const auto budget = elapsed < transferMs ? transferMs - elapsed : 0;
+    const char* reason = nullptr;
+    const auto stage = [&](RangeTransport& transport, const char* url) {
+        return stageUpdate(transport, release, budget, store, url, true, otaClock,
+                           uint32_t(time(nullptr)), free, evict, logStage, feedOta, &reason);
+    };
+    OtaStage outcome;
+    if (source == UpdateSource::Host) {
+        const char* path = offer.signedOffer.path;
+        const auto key = decodeDeviceKey(installation.deviceKey);
+        HostRangeTransport transport(installation.host, path, key, watchdog, started, true);
+        const auto url = hostAssetUrl(installation.host, path);
+        outcome = stage(transport, url.c_str());
+    } else {
+        const String url = assetBase(version) + ".bin";
+#ifdef VENTANAL_LCD_OTA_BASE_URL
+        constexpr bool bench = true;
+#else
+        constexpr bool bench = false;
+#endif
+        OtaGithubTransport transport(url.c_str(), budget, otaClock, feedOta, bench);
+        outcome = stage(transport, url.c_str());
+    }
+    otaWatchdog = nullptr;
+    if (!flash && reason && !strcmp(reason, "space")) partialStoreFull();
+    if (&partialStore() != &store) return OtaStage::NoProgress;
+    if (outcome == OtaStage::Failed) {
+        if (reason && (!strcmp(reason, "size") || !strcmp(reason, "hash"))) failure = OtaFailure::Digest;
+        const auto reservation = reserveAttempt(prefs, source, version, offer.signedOffer.approval);
+        if (reservation != OtaFailure::None) failure = reservation;
+    }
+    return outcome;
+}
+
+void recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
+                         UpdateSource source, OtaFailure failure) {
+    UpdateJournal journal{};
+    journal.source = source;
+    snprintf(journal.record.version, sizeof journal.record.version, "%s", offer.version);
+    snprintf(journal.approval, sizeof journal.approval, "%s", offer.signedOffer.approval);
+    journal.record.result = OtaResult::Failed;
+    journal.record.failure = failure;
+    saveJournal(prefs, journal);
+    boot.journal = journal;
+}
+
 OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
                          UpdateSource source, Watchdog& watchdog) {
-    DownloadPower radio;
     const auto* spare = boot.pending ? nullptr : installSlot();
     UpdateJournal journal{};
     journal.source = source;
@@ -442,26 +495,31 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
         }
     }
     if (failure == OtaFailure::None) {
-        // Clear stale boot metadata before journaling the target. An interrupted
-        // transfer is distinguishable from a newly activated image that rolled back.
-        esp_ota_img_states_t oldState;
-        if (esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND
-            && (esp_ota_invalidate_inactive_ota_data_slot() != ESP_OK
-                || esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND))
-            failure = OtaFailure::Slot;
-    }
-    if (failure == OtaFailure::None) {
-        record.result = OtaResult::Installing;
-        record.slot = spare->subtype;
-        if (!saveJournal(prefs, journal)) failure = OtaFailure::Write;
-    }
-    if (failure == OtaFailure::None) {
-        watchdog.feed();
-        failure = source == UpdateSource::Host
-            ? downloadHost(spare, release, offer.signedOffer.path, watchdog)
-            : downloadGithub(spare, release, record.version, watchdog);
-        if (failure == OtaFailure::None && esp_ota_set_boot_partition(spare) != ESP_OK)
-            failure = OtaFailure::Write;
+        failure = OtaFailure::Digest;
+        auto& store = partialStore();
+        installStaged(store, release, [&] { watchdog.feed(); }, [&](fs::File& file) {
+            // Retire old slot metadata only after the staged image verifies.
+            esp_ota_img_states_t oldState;
+            if (esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND
+                && (esp_ota_invalidate_inactive_ota_data_slot() != ESP_OK
+                    || esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND)) {
+                failure = OtaFailure::Slot;
+                return false;
+            }
+            record.result = OtaResult::Installing;
+            record.slot = spare->subtype;
+            if (!saveJournal(prefs, journal)) {
+                failure = OtaFailure::Write;
+                return false;
+            }
+            failure = writeImage(spare, release, millis(), [&](uint8_t* bytes, size_t count) {
+                watchdog.feed();
+                return store.readExact(file, bytes, count) ? int(count) : -1;
+            }, [&] { return file.size() == release.size; });
+            if (failure == OtaFailure::None && esp_ota_set_boot_partition(spare) != ESP_OK)
+                failure = OtaFailure::Write;
+            return failure == OtaFailure::None;
+        });
     }
     if (failure != OtaFailure::None) {
         record.result = OtaResult::Failed;

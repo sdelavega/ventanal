@@ -11,14 +11,29 @@ namespace {
 FsStore flash(LittleFS);
 std::optional<FsStore> sd;
 std::atomic<bool> useSd{false};
+uint64_t (*sdFreeBytes)() = nullptr;
 
 void fallBackToFlash() {
     if (useSd.exchange(false)) Serial.println("storage partials=flash");
 }
 }
 
-void setPartialSdFilesystem(fs::FS& fs) {
+void setPartialSdFilesystem(fs::FS& fs, uint64_t (*freeBytes)()) {
+    sdFreeBytes = freeBytes;
     sd.emplace(fs, "/partials", fallBackToFlash);
+}
+
+void partialStoreFull() { fallBackToFlash(); }
+
+bool partialsOnFlash() { return !useSd.load(); }
+
+uint64_t partialFreeBytes() {
+    if (!partialsOnFlash()) {
+        return sdFreeBytes ? sdFreeBytes() : 0;
+    }
+    const auto total = LittleFS.totalBytes();
+    const auto used = LittleFS.usedBytes();
+    return total > used ? total - used : 0;
 }
 
 FsStore& partialStore() {

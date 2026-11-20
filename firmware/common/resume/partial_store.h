@@ -14,17 +14,18 @@
 
 struct PartialMeta {
     char url[256];
-    char validator[72];
+    char validator[96];
+    char wireValidator[72];  // Optional HTTP validator for a pinned source.
     uint32_t total;  // Zero until a response establishes the full length.
     uint32_t have;
     uint32_t touchedAt;
 };
 
-// <target>.meta format: VRP1, URL, validator, total, have, touchedAt, CRC32.
-// The strings occupy their full fixed widths. Integers are little-endian and
-// the IEEE CRC32 covers every byte before the CRC field.
-inline constexpr size_t kPartialMetaBytes = 348;
-using PartialMetaBytes = std::array<uint8_t, kPartialMetaBytes>;
+// VRP1 keeps the original frame sidecar layout. VRP2 holds the longer
+// signed OTA identity and its independent HTTP validator.
+inline constexpr size_t kPartialMetaV1Bytes = 348;
+inline constexpr size_t kPartialMetaBytes = 444;
+using PartialMetaBytes = std::vector<uint8_t>;
 
 namespace resume_detail {
 
@@ -51,40 +52,55 @@ inline uint32_t metaCrc(const uint8_t* data, size_t size) {
 
 inline constexpr size_t kUrlOffset = 4;
 inline constexpr size_t kValidatorOffset = kUrlOffset + sizeof(PartialMeta::url);
-inline constexpr size_t kTotalOffset = kValidatorOffset + sizeof(PartialMeta::validator);
-inline constexpr size_t kCrcOffset = kTotalOffset + 12;
-static_assert(kPartialMetaBytes == kCrcOffset + 4);
+inline constexpr size_t kV1ValidatorBytes = 72;
+static_assert(kPartialMetaV1Bytes == kValidatorOffset + kV1ValidatorBytes + 16);
+static_assert(kPartialMetaBytes == kValidatorOffset + sizeof(PartialMeta::validator) +
+               sizeof(PartialMeta::wireValidator) + 16);
 
 }  // namespace resume_detail
 
 inline PartialMetaBytes encodePartialMeta(const PartialMeta& meta) {
     using namespace resume_detail;
-    PartialMetaBytes bytes{};
-    std::memcpy(bytes.data(), "VRP1", kUrlOffset);
+    const bool v2 = *meta.wireValidator || !std::memchr(meta.validator, 0, kV1ValidatorBytes);
+    const size_t validatorBytes = v2 ? sizeof(meta.validator) : kV1ValidatorBytes;
+    const size_t totalOffset = kValidatorOffset + validatorBytes + (v2 ? sizeof(meta.wireValidator) : 0);
+    const size_t crcOffset = totalOffset + 12;
+    PartialMetaBytes bytes(crcOffset + 4);
+    std::memcpy(bytes.data(), v2 ? "VRP2" : "VRP1", kUrlOffset);
     std::memcpy(bytes.data() + kUrlOffset, meta.url, sizeof(meta.url));
-    std::memcpy(bytes.data() + kValidatorOffset, meta.validator, sizeof(meta.validator));
-    writeLe32(bytes.data() + kTotalOffset, meta.total);
-    writeLe32(bytes.data() + kTotalOffset + 4, meta.have);
-    writeLe32(bytes.data() + kTotalOffset + 8, meta.touchedAt);
-    writeLe32(bytes.data() + kCrcOffset, metaCrc(bytes.data(), kCrcOffset));
+    std::memcpy(bytes.data() + kValidatorOffset, meta.validator, validatorBytes);
+    if (v2) std::memcpy(bytes.data() + kValidatorOffset + validatorBytes,
+                        meta.wireValidator, sizeof(meta.wireValidator));
+    writeLe32(bytes.data() + totalOffset, meta.total);
+    writeLe32(bytes.data() + totalOffset + 4, meta.have);
+    writeLe32(bytes.data() + totalOffset + 8, meta.touchedAt);
+    writeLe32(bytes.data() + crcOffset, metaCrc(bytes.data(), crcOffset));
     return bytes;
 }
 
 inline bool decodePartialMeta(const uint8_t* bytes, size_t size, PartialMeta& meta) {
     using namespace resume_detail;
-    if (size != kPartialMetaBytes || std::memcmp(bytes, "VRP1", kUrlOffset) != 0 ||
-        readLe32(bytes + kCrcOffset) != metaCrc(bytes, kCrcOffset) ||
+    const bool v2 = size == kPartialMetaBytes && std::memcmp(bytes, "VRP2", kUrlOffset) == 0;
+    if (!v2 && (size != kPartialMetaV1Bytes || std::memcmp(bytes, "VRP1", kUrlOffset) != 0)) return false;
+    const size_t validatorBytes = v2 ? sizeof(meta.validator) : kV1ValidatorBytes;
+    const size_t wireOffset = kValidatorOffset + validatorBytes;
+    const size_t totalOffset = size - 16;
+    const size_t crcOffset = size - 4;
+    if (readLe32(bytes + crcOffset) != metaCrc(bytes, crcOffset) ||
         !std::memchr(bytes + kUrlOffset, 0, sizeof(meta.url)) ||
-        !std::memchr(bytes + kValidatorOffset, 0, sizeof(meta.validator))) return false;
+        !std::memchr(bytes + kValidatorOffset, 0, validatorBytes) ||
+        (v2 && !std::memchr(bytes + wireOffset, 0, sizeof(meta.wireValidator)))) return false;
 
-    const uint32_t total = readLe32(bytes + kTotalOffset);
-    const uint32_t have = readLe32(bytes + kTotalOffset + 4);
+    const uint32_t total = readLe32(bytes + totalOffset);
+    const uint32_t have = readLe32(bytes + totalOffset + 4);
     if (total && have > total) return false;
+    meta = {};
     std::memcpy(meta.url, bytes + kUrlOffset, sizeof(meta.url));
-    std::memcpy(meta.validator, bytes + kValidatorOffset, sizeof(meta.validator));
+    std::memcpy(meta.validator, bytes + kValidatorOffset, validatorBytes);
+    if (v2) std::memcpy(meta.wireValidator, bytes + wireOffset, sizeof(meta.wireValidator));
     meta.total = total;
     meta.have = have;
-    meta.touchedAt = readLe32(bytes + kTotalOffset + 8);
+    meta.touchedAt = readLe32(bytes + totalOffset + 8);
     return true;
 }
 

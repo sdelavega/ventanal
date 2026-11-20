@@ -101,11 +101,11 @@ build/test_settings: test_settings.cpp ../ventanal/settings.h ../ventanal/securi
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_settings.cpp $(LDFLAGS) -o $@
 
-build/test_ota: test_ota.cpp ../common/ota_state.h ../lcd43b/ota.h ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
+build/test_ota: test_ota.cpp ../common/release_info.h $(wildcard ../common/resume/*.h fakes/*.h) ../common/resume/fs_store.cpp ../common/release.h ../common/ota_state.h ../lcd43b/ota.h ../ventanal/ota.h ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_ota.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Ifakes -UNDEBUG test_ota.cpp ../common/resume/fs_store.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
-build/test_release: test_release.cpp ../common/release.h ../common/release_key.h Makefile
+build/test_release: test_release.cpp ../common/release_info.h ../common/release.h ../common/release_key.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG $(SODIUM_CFLAGS) -I"$(ARDUINOJSON)" test_release.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
@@ -381,6 +381,6 @@ build/test_https_get: test_https_get.cpp ../common/https_get.cpp ../common/https
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_FIRMWARE_VERSION='"test"' -Ifakes test_https_get.cpp ../common/https_get.cpp $(LDFLAGS) -o $@
 
-build/test_resume_store: test_resume_store.cpp $(wildcard ../common/resume/*.h ../common/resume/*.cpp fakes/*.h) Makefile
+build/test_resume_store: test_resume_store.cpp ../common/release_info.h $(wildcard ../common/resume/*.h ../common/resume/*.cpp fakes/*.h) Makefile
 	@mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -Ifakes -UNDEBUG test_resume_store.cpp $(wildcard ../common/resume/*.cpp) $(LDFLAGS) -o $@

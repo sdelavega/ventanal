@@ -85,10 +85,12 @@ bool FsStore::readMeta(const char* target, PartialMeta& meta) {
     const auto base = path(target);
     if (faulted_ || base.empty()) return false;
     auto file = openRead(base + ".meta");
-    PartialMetaBytes bytes{};
-    if (!file || file.size() != bytes.size()) return false;
-    if (file.read(bytes.data(), bytes.size()) != bytes.size()) return fail();
-    return decodePartialMeta(bytes.data(), bytes.size(), meta);
+    if (!file) return false;
+    const auto count = file.size();
+    if (count != kPartialMetaV1Bytes && count != kPartialMetaBytes) return false;
+    uint8_t bytes[kPartialMetaBytes];
+    if (file.read(bytes, count) != count) return fail();
+    return decodePartialMeta(bytes, count, meta);
 }
 
 bool FsStore::writeMeta(const char* target, const PartialMeta& meta) {
@@ -157,7 +159,7 @@ bool FsStore::sha256(const char* target, uint8_t out[32]) {
     size_t remaining = file.size();
     while (remaining) {
         const size_t count = std::min(remaining, sizeof(buffer));
-        if (file.read(buffer, count) != count) return fail();
+        if (!readExact(file, buffer, count)) return false;
         hash.update(buffer, count);
         remaining -= count;
     }
@@ -194,6 +196,28 @@ bool FsStore::readFile(const std::string& base, uint8_t* bytes, size_t size) {
 fs::File FsStore::openCommitted(const char* target) {
     const auto base = path(target);
     return faulted_ || base.empty() ? fs::File{} : openRead(base);
+}
+
+bool FsStore::readExact(fs::File& file, uint8_t* bytes, size_t count) {
+    return file.read(bytes, count) == count || fail();
+}
+
+void FsStore::retainOtaTarget(const char* target) {
+    if (faulted_) return;
+    auto directory = openRead(root_);
+    if (!directory || !directory.isDirectory()) return;
+    std::vector<std::string> retired;
+    while (auto entry = directory.openNextFile()) {
+        if (entry.isDirectory()) continue;
+        const std::string name = entry.name();
+        if (name.compare(0, 4, "ota-") != 0) continue;
+        auto base = name;
+        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta")) base.resize(name.size() - 5);
+        if (base != target && !path(base.c_str()).empty()) retired.push_back(name);
+    }
+    directory.close();
+    for (const auto& name : retired)
+        if (!remove(root_ + '/' + name)) break;
 }
 
 bool FsStore::removeCommitted(const char* target) {
