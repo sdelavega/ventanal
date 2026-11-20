@@ -266,7 +266,7 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
             memcpy(hint, tail, len - 1);
     }
     const auto reject = [&](OtaFailure failure, const char* reason) {
-        logOtaStage(OtaStage::Failed, reason, 0, 0, logStage);
+        logOtaStage(OtaStage::Failed, reason, 0, 0, logTransferOutcome);
         const auto reservation = recordAttempt(prefs, attempts, hint, offer.approval);
         return reservation == OtaFailure::None ? failure : reservation;
     };
