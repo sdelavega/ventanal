@@ -418,6 +418,8 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             const uint32_t decodeStart = millis();
             const bool decoded = [&] {
                 ScanScope activity(ScanActivity::Inflate);
+                if (info->encoding == FrameEncoding::Jpeg)
+                    return decodeHostJpeg(bytes, info->size, cache.staging, watchdog);
                 return decodeFrame(info->encoding, bytes, info->size, cache.staging);
             }();
             log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],

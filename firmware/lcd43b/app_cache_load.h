@@ -29,9 +29,15 @@ bool loadResidentFrame(const char* path, uint8_t* frame, const char* id) {
             if (wire) {
                 // Standalone art is cached as its source (VNA1): compose it again.
                 const bool read = file.read(wire, bytes) == bytes && lcd::frameHashMatches(wire, bytes, id, 16);
-                const bool valid = read && (lcd::isArtBody(wire, bytes)
-                    ? lcd::composeArtBody(wire, bytes, frame, bootWatchdog)
-                    : lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame));
+                bool valid = false;
+                if (read) {
+                    if (lcd::isArtBody(wire, bytes))
+                        valid = lcd::composeArtBody(wire, bytes, frame, bootWatchdog);
+                    else if (lcd::isJpegFrame(wire, bytes))
+                        valid = lcd::decodeHostJpeg(wire, bytes, frame, bootWatchdog);
+                    else
+                        valid = lcd::decodeFrame(lcd::FrameEncoding::Zlib, wire, bytes, frame);
+                }
                 free(wire);
                 if (valid) return true;
             }

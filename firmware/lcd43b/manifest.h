@@ -62,6 +62,7 @@ inline bool parseFrameInfo(JsonVariantConst value, FrameInfo& out) {
     const char* encoding = value["encoding"] | "";
     FrameEncoding format = FrameEncoding::Raw;
     if (strcmp(encoding, "zlib") == 0) format = FrameEncoding::Zlib;
+    else if (strcmp(encoding, "jpeg") == 0) format = FrameEncoding::Jpeg;
     else if (!value["encoding"].isNull()) return false;  // legacy entries omit it
     if (strlen(id) != 16 || strlen(sha) != 64 || !validWireSize(format, size))
         return false;

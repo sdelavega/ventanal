@@ -17,7 +17,8 @@ import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
-from ventanal.manifest import MAX_SERVED_MANIFEST_BYTES, encode_board_manifest, omit_board_credits
+from ventanal.manifest import (MAX_SERVED_MANIFEST_BYTES, encode_board_manifest,
+                               omit_board_credits, select_lcd_encoding)
 from ventanal.owner import SkipQueue, parse_skips
 
 
@@ -194,8 +195,11 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 self.send_error(404)
                 return
             device_manifest = re.fullmatch(r'/devices/([a-z0-9-]+)/manifest\.json', path)
-            if cache_dir is not None and (path == '/manifest.json' or device_manifest):
+            report = {}
+            if device_manifest or (cache_dir is not None and path == '/manifest.json'):
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
+                report = parse_board(query)
+            if cache_dir is not None and (path == '/manifest.json' or device_manifest):
                 values = query.get('skips', [])
                 if values:
                     try:
@@ -205,7 +209,6 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         self.send_error(503)
                         return
                 try:
-                    report = parse_board(query)
                     if device_manifest:
                         board_store.checkin_lcd(self.pairing_id or device_manifest[1],
                                                self.client_address[0], report, timeout=1)
@@ -268,7 +271,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                     except (ConnectionError, TimeoutError):
                         pass
                 return
-            if ui is not None and device_manifest:
+            if device_manifest:
                 # Device manifests re-check the ham licence on every
                 # request, fail closed like the main manifest above: a
                 # solar screen published while authorised must stop being
@@ -289,9 +292,10 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 except (OSError, ValueError):
                     self.send_error(404); return
                 screens = manifest.get('screens')
-                if not solar_allowed(load_config(config_path)) and isinstance(screens, dict):
+                if ui is not None and isinstance(screens, dict) and not solar_allowed(load_config(config_path)):
                     screens.pop('solar', None)
                 try:
+                    select_lcd_encoding(manifest, report)
                     sign = None
                     if self.proof_key is not None:
                         omit_board_credits(manifest)
@@ -303,8 +307,20 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 except (OSError, ValueError, KeyError, TypeError, AttributeError):
                     self.send_error(503); return
                 if len(body) > MAX_SERVED_MANIFEST_BYTES:
-                    ui.respond(self, 503); return
-                ui.respond(self, 200, body, 'application/json'); return
+                    self.send_error(503); return
+                if ui is not None:
+                    ui.respond(self, 200, body, 'application/json')
+                else:
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/json')
+                    self.send_header('Content-Length', str(len(body)))
+                    self.send_header('Cache-Control', 'no-cache')
+                    self.end_headers()
+                    try:
+                        self.wfile.write(body)
+                    except (ConnectionError, TimeoutError):
+                        pass
+                return
             if active() and path.startswith('/previews/'):
                 ui.handle(self, path); return
             target = root / path.lstrip('/')

@@ -15,6 +15,7 @@ from typing import Literal
 from PIL import Image
 
 from ventanal.frame import frame_id
+from ventanal.release import version_tuple
 
 
 MAX_SERVED_MANIFEST_BYTES = 6144
@@ -46,6 +47,20 @@ def omit_board_credits(manifest: dict) -> None:
     """The artwork already has its credits rendered into the frame."""
     for entry in _entries(manifest):
         entry.pop("credit", None)
+
+
+def select_lcd_encoding(manifest: dict, report: dict) -> None:
+    """Select the LCD art wire encoding before returning or signing the manifest."""
+    jpeg_capable = False
+    if report.get("board") == "lcd43b":
+        try:
+            jpeg_capable = version_tuple(report.get("fw")) >= (1, 2, 0)
+        except ValueError:
+            pass
+    for entry in _entries(manifest):
+        jpeg = entry.pop("jpeg", None)
+        if jpeg_capable and jpeg is not None:
+            entry.update(jpeg)
 
 
 def encode_board_manifest(manifest, firmware=None, *, sign=None):

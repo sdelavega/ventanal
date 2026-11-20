@@ -32,6 +32,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
+#include <iterator>
 #include <string>
 #include <vector>
 #include <ctime>
@@ -46,6 +48,7 @@ struct CountingWatchdog : lcd::Watchdog {
 
 lcd::FrameBody stagedBodies[lcd::SCREEN_SLOTS];
 bool stagedDrops[lcd::SCREEN_SLOTS]{};
+bool jpegPixelsChecked = false;
 int rejectStageSlot = -1;
 unsigned wireReclaims = 0;
 
@@ -120,9 +123,11 @@ Entry makeEntry(const std::string& name, const std::vector<uint8_t>& frame,
     entry.info.present = true;
     entry.info.encoding = encoding;
     entry.info.size = frame.size();
+    const char* wireEncoding = encoding == lcd::FrameEncoding::Jpeg ? ",\"encoding\":\"jpeg\""
+        : encoding == lcd::FrameEncoding::Zlib ? ",\"encoding\":\"zlib\"" : "";
     entry.body = "{\"id\":\"" + std::string(entry.info.id) + "\",\"url\":\""
                + entry.url + "\",\"size\":" + std::to_string(frame.size())
-               + (encoding == lcd::FrameEncoding::Zlib ? ",\"encoding\":\"zlib\"" : "")
+               + wireEncoding
                + ",\"sha256\":\"" + sha + "\"}";
     return entry;
 }
@@ -344,6 +349,24 @@ void host_range_transport_parses_416() {
 
 }  // namespace
 
+// The ESP32-S3 ROM is absent on the host. Supply the RGB888 MCU blocks it
+// would emit for the solid-red JPEG to exercise the real staging writer.
+bool lcd::decodeHostJpeg(const uint8_t* data, size_t size, uint8_t* frame, Watchdog& watchdog) {
+    if (!validJpegEnvelope(data, size)) return false;
+    uint8_t rgb[16 * 16 * 3]{};
+    for (size_t i = 0; i < sizeof rgb; i += 3) rgb[i] = 248;
+    for (unsigned y = 0; y < HEIGHT; y += 16) {
+        watchdog.feed();
+        for (unsigned x = 0; x < WIDTH; x += 16)
+            assert(writeJpegBlock(frame, rgb, x, y, 16, 16));
+    }
+    assert(!writeJpegBlock(frame, rgb, WIDTH - 1, HEIGHT - 1, 2, 1));
+    for (size_t i = HEADER_BYTES; i < FRAME_BYTES; i += 2)
+        assert(frame[i] == 0 && frame[i + 1] == 0xf8);
+    jpegPixelsChecked = true;
+    return true;
+}
+
 int main() {
     host_frame_resumes_across_passes();
     host_frame_hash_mismatch_fails();
@@ -424,6 +447,39 @@ int main() {
         assert(receiveFrame(art, buffer, watchdog));
         assert(buffer == frame);
         assert(files.empty());
+    }
+    {   // Verified JPEG bytes reach the staging decoder. A malformed
+        // replacement fails without publishing or dropping the old art.
+        std::ifstream fixture("fixtures/lcd43b-host-art.jpg", std::ios::binary);
+        assert(fixture);
+        std::vector<uint8_t> jpeg(std::istreambuf_iterator<char>{fixture}, {});
+        assert(lcd::validJpegEnvelope(jpeg.data(), jpeg.size()));
+        const auto weatherFrame = solidFrame(0x07e0);
+        const Entry weather = makeEntry("weather", weatherFrame);
+        char currentIds[lcd::SCREEN_SLOTS][17] = {};
+        strcpy(currentIds[0], "aaaaaaaaaaaaaaaa");
+        strcpy(currentIds[1], weather.info.id);
+        CountingWatchdog watchdog;
+        for (bool valid : {true, false}) {
+            resetFakes();
+            if (!valid) jpeg.pop_back();
+            Entry art = makeEntry("art", jpeg, lcd::FrameEncoding::Jpeg);
+            responseBody = manifestBody(art, weather);
+            urlResponses["http://host" + art.url] = jpeg;
+            sizeFromResponse = true;
+            jpegPixelsChecked = false;
+            lcd::RefreshResult result;
+            refresh("http://host", "lcd43b", currentIds, result, watchdog);
+            assert(result.manifestOk && result.frameOk[0] == valid && result.frameFailed[0] == !valid);
+            assert(jpegPixelsChecked == valid);
+            assert(bool(stagedBodies[0].bytes) == valid && !stagedDrops[0]);
+            if (valid) {
+                assert(!strcmp(result.frameIds[0], art.info.id));
+                assert(stagedBodies[0].size == jpeg.size());
+                assert(!memcmp(stagedBodies[0].bytes.get(), jpeg.data(), jpeg.size()));
+                strcpy(currentIds[0], art.info.id);
+            }
+        }
     }
     {   // runRefresh end to end: manifest and frames arrive; solar absent
         // from the manifest stages a drop; a second pass skips downloads.

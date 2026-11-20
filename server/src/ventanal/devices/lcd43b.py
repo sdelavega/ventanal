@@ -12,6 +12,7 @@ can hash-verify every download.
 """
 
 from dataclasses import replace
+from io import BytesIO
 
 import hashlib
 import json
@@ -62,6 +63,13 @@ def encode_frame(image: Image.Image) -> bytes:
              | (pixels[..., 1].astype(np.uint16) >> 2) << 5
              | (pixels[..., 2].astype(np.uint16) >> 3))
     return _HEADER + value.astype('<u2').tobytes()
+
+
+def encode_art_jpeg(image: Image.Image) -> bytes:
+    """Encode the composed art at the lowest quality that passes the art goldens."""
+    with BytesIO() as wire:
+        image.save(wire, format='JPEG', quality=85, subsampling='4:2:0', progressive=False)
+        return wire.getvalue()
 
 
 def decode_frame(data: bytes) -> np.ndarray:
@@ -151,9 +159,13 @@ def _render_screen(cfg, name, now, client) -> Image.Image:
     raise ValueError(f'unknown screen: {name}')
 
 
-def _publish_frame(out, base_url: str, name: str, data: bytes, now) -> dict:
-    """Atomically publish a zlib-wrapped VNR1 frame and describe its wire bytes."""
-    data = zlib.compress(data, level=9)
+def _publish_frame(out, base_url: str, name: str, data: bytes, now, *, encoding: str = 'zlib') -> dict:
+    """Atomically publish an LCD wire frame and describe the exact bytes."""
+    if encoding == 'jpeg':
+        # Separate retention groups share the same content-addressed frame route.
+        name = f'jpeg-{name}'
+    else:
+        data = zlib.compress(data, level=9)
     digest = hashlib.sha256(data).hexdigest()
     ident = digest[:16]
     frames = out / 'frames'
@@ -174,10 +186,24 @@ def _publish_frame(out, base_url: str, name: str, data: bytes, now) -> dict:
         'id': ident,
         'url': f'{base_url}/frames/{name}-{ident}.vnr',
         'size': len(data),
-        'encoding': 'zlib',
+        'encoding': encoding,
         'sha256': digest,
         'rendered': now.isoformat(timespec='seconds'),
     }
+
+
+def _publish_screen(out, base_url, name, image, now, *, art=False):
+    raw = encode_frame(image)
+    jpeg_data = encode_art_jpeg(image) if art else None
+    entry = _publish_frame(out, base_url, name, raw, now)
+    if jpeg_data is not None:
+        entry['jpeg'] = _publish_frame(out, base_url, name, jpeg_data, now, encoding='jpeg')
+    return entry
+
+
+def _register_art_variants(owner, published, canonical_id):
+    owner.register_variant(published['id'], canonical_id)
+    owner.register_variant(published['jpeg']['id'], canonical_id)
 
 
 def _read_device_manifest(out) -> dict:
@@ -211,21 +237,21 @@ def tick(cfg, now, client) -> dict:
                if entry.get('url', '').startswith(f'{base_url}/frames/')}
     for name in ('art', 'weather'):
         try:
-            screens[name] = _publish_frame(out, base_url, name,
-                                           encode_frame(_render_screen(cfg, name, now, client)),
-                                           now)
+            screens[name] = _publish_screen(
+                out, base_url, name, _render_screen(cfg, name, now, client), now,
+                art=name == 'art')
             if name == 'art':
                 main = canonical.get('screens', {}).get('art', {})
                 if main.get('id'):
-                    owner.register_variant(screens[name]['id'], main['id'])
+                    _register_art_variants(owner, screens[name], main['id'])
         except Exception as exc:
             log.warning('lcd43b %s render failed; previous frame retained: %s',
                         name, exc)
     if _solar_allowed(cfg, now):
         try:
-            screens['solar'] = _publish_frame(
+            screens['solar'] = _publish_screen(
                 out, base_url, 'solar',
-                encode_frame(_render_screen(cfg, 'solar', now, client)), now)
+                _render_screen(cfg, 'solar', now, client), now)
         except Exception as exc:
             log.warning('lcd43b solar render failed; previous frame retained: %s', exc)
     else:
@@ -256,11 +282,11 @@ def _render_spares(cfg, now, client, out, base_url) -> list:
         credit = entry.get('credit') or {} if isinstance(entry, dict) else {}
         try:
             image = _art_image(cfg, client, credit)
-            data = encode_frame(render_art(image, credit))
-            published = _publish_frame(out, base_url, f'spare{index}', data, now)
+            published = _publish_screen(out, base_url, f'spare{index}',
+                                        render_art(image, credit), now, art=True)
             from ventanal.owner import OwnerStore
             if entry.get('id'):
-                OwnerStore(cfg.cache_dir).register_variant(published['id'], entry['id'])
+                _register_art_variants(OwnerStore(cfg.cache_dir), published, entry['id'])
             spares.append(published)
         except Exception as exc:
             if index < len(previous):

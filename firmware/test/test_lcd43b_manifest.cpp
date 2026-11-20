@@ -67,9 +67,14 @@ int main() {
         assert(lcd::parseDeviceManifest(body.c_str(), parsed));
         assert(parsed.screens[0].encoding == lcd::FrameEncoding::Zlib);
         assert(parsed.screens[0].size == 34541);
-        body.replace(body.find("34541"), 5, std::to_string(lcd::FRAME_WIRE_MAX + 1));
-        assert(!lcd::parseDeviceManifest(body.c_str(), parsed));
-        body.replace(body.find("zlib"), 4, "rle");
+        body.replace(body.find("zlib"), 4, "jpeg");
+        assert(lcd::parseDeviceManifest(body.c_str(), parsed));
+        assert(parsed.screens[0].encoding == lcd::FrameEncoding::Jpeg);
+        assert(parsed.screens[0].size == 34541);
+        std::string oversized = body;
+        oversized.replace(oversized.find("34541"), 5, std::to_string(lcd::FRAME_WIRE_MAX + 1));
+        assert(!lcd::parseDeviceManifest(oversized.c_str(), parsed));
+        body.replace(body.find("jpeg"), 4, "rle");
         assert(!lcd::parseDeviceManifest(body.c_str(), parsed));
     }
     {   // Minimal manifest: no solar, spares or quiet block.

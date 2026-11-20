@@ -20,6 +20,7 @@ inline bool decodeFrame(FrameEncoding encoding, const uint8_t* input,
         if (frame != input) memcpy(frame, input, FRAME_BYTES);
         return true;
     }
+    if (encoding != FrameEncoding::Zlib) return false;
     auto* stream = static_cast<tinfl_decompressor*>(malloc(sizeof(tinfl_decompressor)));
     if (!stream) return false;
     tinfl_init(stream);

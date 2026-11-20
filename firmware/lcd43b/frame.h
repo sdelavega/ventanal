@@ -22,16 +22,49 @@ constexpr uint16_t HEIGHT = 480;
 constexpr size_t HEADER_BYTES = 16;
 constexpr size_t PIXEL_BYTES = size_t(WIDTH) * HEIGHT * 2;
 constexpr size_t FRAME_BYTES = HEADER_BYTES + PIXEL_BYTES;
-// zlib compressBound for one complete VNR1 frame.
+// zlib compressBound for one complete VNR1 frame, also the JPEG wire cap.
 constexpr size_t FRAME_WIRE_MAX = FRAME_BYTES + (FRAME_BYTES >> 12)
     + (FRAME_BYTES >> 14) + (FRAME_BYTES >> 25) + 13;
 
-enum class FrameEncoding { Raw, Zlib };
+enum class FrameEncoding { Raw, Zlib, Jpeg };
 
 inline bool validWireSize(FrameEncoding encoding, size_t size) {
     return encoding == FrameEncoding::Raw ? size == FRAME_BYTES
         : size >= 8 && size <= FRAME_WIRE_MAX;
 }
+
+// Cached JPEGs are stored as the original wire bytes, like zlib and VNA1.
+inline bool isJpegFrame(const uint8_t* data, size_t size) {
+    return data && size >= 2 && data[0] == 0xff && data[1] == 0xd8;
+}
+
+inline bool validJpegEnvelope(const uint8_t* data, size_t size) {
+    return validWireSize(FrameEncoding::Jpeg, size) && isJpegFrame(data, size)
+        && data[size - 2] == 0xff && data[size - 1] == 0xd9;
+}
+
+// TJpgDec produces packed RGB888 MCU blocks. Write each directly into the
+// VNR1 staging pixels, rejecting any rectangle extending beyond the panel.
+inline bool writeJpegBlock(uint8_t* frame, const uint8_t* rgb, unsigned x, unsigned y,
+                           unsigned w, unsigned h) {
+    if (x >= WIDTH || y >= HEIGHT || !w || !h || w > WIDTH - x || h > HEIGHT - y)
+        return false;
+    for (unsigned row = 0; row < h; ++row) {
+        uint8_t* dst = frame + HEADER_BYTES + (size_t(y + row) * WIDTH + x) * 2;
+        for (unsigned col = 0; col < w; ++col, rgb += 3, dst += 2) {
+            const uint16_t pixel = (uint16_t(rgb[0] & 0xf8) << 8)
+                | (uint16_t(rgb[1] & 0xfc) << 3) | (rgb[2] >> 3);
+            dst[0] = uint8_t(pixel);
+            dst[1] = uint8_t(pixel >> 8);
+        }
+    }
+    return true;
+}
+
+class Watchdog;
+
+// Decode a full baseline JPEG into FRAME_BYTES of scratch, without scaling.
+bool decodeHostJpeg(const uint8_t* data, size_t size, uint8_t* frame, Watchdog& watchdog);
 
 // True when the 16 bytes are a VNR1 header for this panel.
 inline bool headerValid(const uint8_t* header) {

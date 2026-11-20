@@ -6,9 +6,11 @@
 from dataclasses import replace
 from datetime import datetime
 from http.client import HTTPConnection
+from io import BytesIO
 import json
 from pathlib import Path
 from threading import Thread
+import sys
 from zoneinfo import ZoneInfo
 
 import hashlib
@@ -26,6 +28,12 @@ from ventanal.quantize import Canvas
 from ventanal.serve import make_server
 from ventanal.art.compose import compose
 from test_weather_render import sample  # shared deterministic weather fixture
+
+# Reuse the standalone golden inputs and their established comparison bounds.
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'firmware/lcd43b/tools'))
+from standalone_compare import ART_MEAN_LIMIT, ART_NEAR_SHARE, NEAR, as_rgb565_expanded
+from standalone_render import ART_CASES, art_case
+sys.path.pop(0)
 
 TZ = ZoneInfo('America/New_York')
 LAT, LON = 29.9144193, -81.3628995
@@ -429,6 +437,70 @@ def test_device_manifest_hashes_and_schema(tmp_path, monkeypatch):
         assert entry['sha256'] == hashlib.sha256(data).hexdigest()
         assert entry['url'] == f"/devices/lcd43b/frames/{name}-{entry['id']}.vnr"
         assert entry['id'] == hashlib.sha256(data).hexdigest()[:16]
+
+
+@pytest.mark.parametrize('case', ART_CASES)
+def test_lcd_art_jpeg_golden(case):
+    frame = art_case(case)
+    wire = lcd43b.encode_art_jpeg(frame)
+    assert len(wire) < 0.40 * len(zlib.compress(lcd43b.encode_frame(frame), level=9))
+    with Image.open(BytesIO(wire)) as decoded:
+        assert decoded.format == 'JPEG'
+        assert decoded.size == (800, 480)
+        assert not decoded.info.get('progressive')
+        diff = np.abs(as_rgb565_expanded(frame) - as_rgb565_expanded(decoded))
+    assert diff.mean() <= ART_MEAN_LIMIT
+    assert (diff.max(axis=-1) <= NEAR).mean() >= ART_NEAR_SHARE
+
+
+def test_device_manifest_selects_jpeg_by_board_and_firmware(tmp_path, monkeypatch):
+    value = cfg(tmp_path)
+    run_device_tick(monkeypatch, value, screens={'art': manifest_for(value, 'art')},
+                    solar=True, spares=[manifest_for(value, 'spare0', ident='b' * 16)])
+    srv = make_server(value.output_dir, '127.0.0.1', 0)
+    thread = Thread(target=srv.serve_forever, daemon=True)
+    thread.start()
+
+    client = httpx.Client(base_url=f'http://127.0.0.1:{srv.server_port}', trust_env=False)
+
+    def get(path, headers=None):
+        response = client.get(path, headers=headers)
+        response.raise_for_status()
+        return response
+
+    try:
+        path = '/devices/lcd43b/manifest.json'
+        legacy = get(path).json()
+        for query in (
+            '?board=lcd43b&fw=1.1.99', '?board=lcd43b&fw=1.2.0-rc.1',
+            '?board=lcd43b&fw=1.2', '?board=lcd43b', '?fw=1.2.0',
+            '?board=inkplate13spectra&fw=1.2.0', '?board=lcd43b&fw=1.2.0&fw=1.1.0',
+        ):
+            assert get(path + query).json() == legacy
+        current = get(path + '?board=lcd43b&fw=1.2.0').json()
+        assert get(path + '?board=lcd43b&fw=1.10.0').json() == current
+        for name in ('weather', 'solar'):
+            assert current['screens'][name] == legacy['screens'][name]
+        for manifest, encoding in ((legacy, 'zlib'), (current, 'jpeg')):
+            for entry in (manifest['screens']['art'], manifest['spares'][0]):
+                assert entry['encoding'] == encoding
+                response = get(entry['url'])
+                digest = hashlib.sha256(response.content).hexdigest()
+                assert (entry['size'], entry['sha256'], entry['id']) == (
+                    len(response.content), digest, digest[:16])
+                assert response.headers['ETag'] == f'"{entry["id"]}"'
+                resumed = get(entry['url'], {'Range': 'bytes=32-', 'If-Range': response.headers['ETag']})
+                assert resumed.status_code == 206
+                assert resumed.content == response.content[32:]
+                if encoding == 'jpeg':
+                    assert response.content.startswith(b'\xff\xd8')
+                else:
+                    assert zlib.decompress(response.content).startswith(b'VNR1')
+    finally:
+        client.close()
+        srv.shutdown()
+        srv.server_close()
+        thread.join()
 
 
 def test_device_manifest_solar_gated_by_ham(tmp_path, monkeypatch):
