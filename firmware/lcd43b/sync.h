@@ -33,14 +33,6 @@ namespace lcd {
 inline const char* const SLOT_NAMES[SCREEN_SLOTS] = {
     "art", "weather", "solar", "spare0", "spare1", "spare2"};
 
-struct ArtFrame {
-    int slot = 0;
-    FrameInfo info;
-    FrameBody body;
-    // Publication consumes the pixels and returns a retired buffer (or null).
-    uint8_t* pixels = nullptr;
-};
-
 struct ResidentCache {
     uint8_t* staging = nullptr; // decoded scratch, reused after each hand-off
     bool allocated[SCREEN_SLOTS] = {};
@@ -56,8 +48,6 @@ struct ResidentCache {
     // about to be replaced) so its PSRAM can be used meanwhile. Refused for a
     // spare on screen or pinned; a released slot reads as empty until filled.
     bool (*releaseFrame)(int slot) = nullptr;
-    // Publish a complete, decoded standalone art set in a single loop hand-off.
-    void (*publishArt)(ArtFrame* frames, int count) = nullptr;
 };
 
 // Budgets (ms). The transfer budget bounds each stalled frame download;

@@ -165,7 +165,7 @@ static void art_pass_budget() {
     budget.note(-1);   // search fails
     assert(budget.keepGoing(1000));
     budget.note(503);  // an HTTP response resets the transport failure streak
-    budget.note(-1);   // the next search fails
+    budget.note(0);    // the next search has no HTTP response
     assert(budget.keepGoing(2000));
     budget.note(-1);   // an image download fails too
     assert(!budget.keepGoing(3000));

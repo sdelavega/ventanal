@@ -56,7 +56,7 @@ public:
         return failures_ < 2 && elapsedMs < limitMs ? limitMs - elapsedMs : 0;
     }
     bool keepGoing(uint32_t elapsedMs) const { return remainingMs(elapsedMs) != 0; }
-    void note(int status) { failures_ = status == -1 ? failures_ + 1 : 0; }
+    void note(int status) { failures_ = status <= 0 ? failures_ + 1 : 0; }
 
 private:
     int failures_ = 0;

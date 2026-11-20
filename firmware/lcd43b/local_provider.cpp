@@ -102,9 +102,9 @@ void wireId(const FrameBody& body, char (&id)[17]) {
 
 constexpr uint8_t VNR1[HEADER_BYTES] = {'V', 'N', 'R', '1', 0x20, 0x03, 0xE0, 0x01};
 
-local::Frame drawingFrame(uint8_t* pixels) {
-    memcpy(pixels, VNR1, HEADER_BYTES);
-    return local::Frame{reinterpret_cast<uint16_t*>(pixels + HEADER_BYTES)};
+local::Frame stagingFrame(const ResidentCache& cache) {
+    memcpy(cache.staging, VNR1, HEADER_BYTES);
+    return local::Frame{reinterpret_cast<uint16_t*>(cache.staging + HEADER_BYTES)};
 }
 
 // The staging buffer holds a finished frame: compress it and hand it over.
@@ -232,7 +232,7 @@ void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshRe
     bool sun = false;
     {
         ScanScope activity(ScanActivity::Inflate);
-        local::renderSolar(drawingFrame(cache.staging), *solar, screen, now, [&](local::Frame f) {
+        local::renderSolar(stagingFrame(cache), *solar, screen, now, [&](local::Frame f) {
             return sun = sunJpeg && drawSunJpeg(sunJpeg, sunLength, f, watchdog);
         });
     }
@@ -318,8 +318,7 @@ int searchArt(const char* term, local::ArtCandidate* pool, int max, ArtPass& pas
 }
 
 // The day's set, if it is due: art screen (slot 0) and spares (slots 3..).
-// Returns how many frames it placed, or -1 when it did not run.
-int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
+void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                const ResidentCache& cache) {
     struct tm local {};
     localtime_r(&now, &local);
@@ -337,7 +336,7 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
 #endif
     const bool haveArt = currentIds[0][0] != '\0';
     if ((state.day == day && haveArt) || (state.failedAt && uint32_t(now) - state.failedAt < ArtRetrySeconds))
-        return -1;
+        return;
 
     ArtPass pass;
     const char* term = local::dayTerm(today, deviceId());
@@ -347,16 +346,8 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
     const int ranked = local::pickCandidates(pool.get(), found, state.seen, local::daySeed(today, deviceId()), found, order);
 
     static const int slots[ArtWant] = {0, 3, 4};
-    ArtFrame frames[ArtWant];
-    uint32_t keys[ArtWant];
     int placed = 0;
-    // Empty spares have no old art to preserve. Reuse their PSRAM for the
-    // pending set, especially on first boot.
-    if (ranked >= ArtWant && cache.releaseFrame) {
-        for (int i = 1; i < ArtWant && pass.remainingMs(); ++i)
-            if (!currentIds[slots[i]][0]) cache.releaseFrame(slots[i]);
-    }
-    for (int i = 0; i < ranked && placed < ArtWant && pass.remainingMs(); ++i) {
+    for (int i = 0; i < ranked && placed < ArtWant && cache.staging && pass.remainingMs(); ++i) {
         const local::ArtCandidate& c = pool[size_t(order[i])];
         const local::ArtCredit credit{c.title, c.artist, c.date, c.museum};
         const uint32_t started = millis();
@@ -379,70 +370,49 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
             break;
         }
         const HttpsResult got = pass.fetch(c.imageUrl, reinterpret_cast<char*>(bytes + header), cap, 45000, watchdog);
-        log("standalone art piece=%s:%s status=%d bytes=%u truncated=%d ms=%lu\n", c.source, c.objectId,
-            got.status, unsigned(got.length), got.truncated, static_cast<unsigned long>(millis() - started));
-        if (got.status != 200 || got.truncated || !pass.remainingMs()) {
+        bool composed = false;
+        if (got.status == 200 && !got.truncated) {
+            if (const uint32_t remaining = pass.remainingMs()) {
+                ScanScope activity(ScanActivity::Inflate);
+                composed = composeArtJpeg(bytes + header, got.length, stagingFrame(cache), credit, watchdog, remaining);
+            }
+        }
+        log("standalone art piece=%s:%s status=%d bytes=%u truncated=%d composed=%d ms=%lu\n", c.source, c.objectId,
+            got.status, unsigned(got.length), got.truncated, composed, static_cast<unsigned long>(millis() - started));
+        if (!composed) {
             heap_caps_free(bytes);
             continue;
         }
         writeArtBodyHeader(bytes, credit);
         auto* shrunk = static_cast<uint8_t*>(heap_caps_realloc(bytes, header + got.length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         FrameBody body{std::shared_ptr<uint8_t>(shrunk ? shrunk : bytes, heap_caps_free), header + got.length};
-        auto& frame = frames[placed];
-        frame.slot = slots[placed];
-        wireId(body, frame.info.id);
-        if (strcmp(currentIds[frame.slot], frame.info.id)) {
-            // Keep the old set resident until all three pieces are ready.
-            // Two temporary decoded frames suffice: the last uses scratch.
-            if (placed < ArtWant - 1 && !frame.pixels) {
-                if (cache.reclaimWireMemory) cache.reclaimWireMemory(FRAME_BYTES);
-                frame.pixels = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
-                if (!frame.pixels) break;
-            }
-            uint8_t* pixels = frame.pixels ? frame.pixels : cache.staging;
-            bool composed = false;
-            if (const uint32_t remaining = pass.remainingMs()) {
-                ScanScope activity(ScanActivity::Inflate);
-                composed = composeArtJpeg(body.bytes.get() + header, got.length, drawingFrame(pixels), credit,
-                                          watchdog, remaining);
-            }
-            log("standalone art composed=%d\n", composed);
-            if (!composed) continue;
-            frame.pixels = pixels;
+        const int slot = slots[placed];
+        FrameInfo info{};
+        wireId(body, info.id);
+        info.size = body.size;
+        info.encoding = FrameEncoding::Zlib;  // the cache loader recognizes VNA1 by its magic
+        info.present = true;
+        if (!pass.remainingMs()) break;
+        if (!strcmp(currentIds[slot], info.id) || cache.publish(slot, &info, body)) {
+            (slot == 0 ? result.manifest.screens[0] : result.manifest.spares[slot - 3]) = info;
+            strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
+            result.frameOk[slot] = true;
+            state.seen.add(local::candidateKey(c));
+            ++placed;
         } else {
-            heap_caps_free(frame.pixels);
-            frame.pixels = nullptr;
+            result.frameFailed[slot] = true;
         }
-        frame.info.present = true;
-        frame.info.size = body.size;
-        frame.info.encoding = FrameEncoding::Zlib;  // the cache loader recognizes VNA1 by its magic
-        frame.body = std::move(body);
-        keys[placed++] = local::candidateKey(c);
     }
 
-    const bool complete = placed == ArtWant && pass.remainingMs() && cache.publishArt;
-    if (complete) {
-        cache.publishArt(frames, ArtWant);
-        for (int i = 0; i < ArtWant; ++i) {
-            const auto& frame = frames[i];
-            FrameInfo& info = frame.slot == 0 ? result.manifest.screens[0] : result.manifest.spares[frame.slot - 3];
-            info = frame.info;
-            strlcpy(result.frameIds[frame.slot], info.id, sizeof result.frameIds[frame.slot]);
-            result.frameOk[frame.slot] = true;
-            state.seen.add(keys[i]);
-        }
+    if (placed == ArtWant) {
         state.day = day;
         state.failedAt = 0;
     } else {
         state.failedAt = uint32_t(time(nullptr));
     }
-    for (const auto& frame : frames)
-        if (frame.pixels != cache.staging) heap_caps_free(frame.pixels);
     result.artState = state;
     result.artStateChanged = true;
-    log("standalone art day=%lu prepared=%d of %d candidates published=%d\n",
-        static_cast<unsigned long>(day), placed, found, complete);
-    return complete ? ArtWant : 0;
+    log("standalone art day=%lu placed=%d of %d candidates\n", static_cast<unsigned long>(day), placed, found);
 }
 
 }  // namespace
@@ -512,7 +482,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
                 const uint32_t started = millis();
                 {
                     ScanScope activity(ScanActivity::Inflate);
-                    local::renderWeather(drawingFrame(cache.staging), *weather, lastAlerts, lastAlertCount, screen, now);
+                    local::renderWeather(stagingFrame(cache), *weather, lastAlerts, lastAlertCount, screen, now);
                 }
                 log("standalone render slot=weather ms=%lu\n", static_cast<unsigned long>(millis() - started));
                 publishStaged(1, m.screens[1], currentIds, result, watchdog, cache);
@@ -524,17 +494,12 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
     if (solar) refreshSolar(now, currentIds, result, watchdog, cache);
     watchdog.feed();
 
-    // Art once a local day; otherwise keep the cached set.
-    const int placed = cache.staging ? refreshArt(now, currentIds, result, watchdog, cache) : -1;
-    if (placed <= 0) {
-        keepSlot(0, m.screens[0], currentIds, result);
-        for (int i = 0; i < StandaloneSpares && currentIds[3 + i][0]; ++i) {
-            keepSlot(3 + i, m.spares[i], currentIds, result);
-            m.spareCount = uint8_t(i + 1);
-        }
-    } else {
-        m.spareCount = uint8_t(placed - 1);
-        if (!m.screens[0].present) keepSlot(0, m.screens[0], currentIds, result);
+    // Keep cached art in the slots a partial pass did not fill.
+    if (cache.staging) refreshArt(now, currentIds, result, watchdog, cache);
+    if (!result.frameOk[0]) keepSlot(0, m.screens[0], currentIds, result);
+    for (int i = 0; i < StandaloneSpares; ++i) {
+        if (!result.frameOk[3 + i]) keepSlot(3 + i, m.spares[i], currentIds, result);
+        if (m.spares[i].present) m.spareCount = uint8_t(i + 1);
     }
     for (int i = m.spareCount; i < SPARE_SLOTS; ++i) {
         result.dropSlot[3 + i] = true;

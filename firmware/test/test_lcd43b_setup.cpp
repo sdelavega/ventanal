@@ -211,6 +211,15 @@ static void portal_starts_from_the_record() {
     assert(!strcmp(same.host, current.host) && !strcmp(same.certificate, current.certificate));
 }
 
+static void portal_requires_a_timezone_when_the_record_needs_one() {
+    Installation current = pairedRecord();
+    assert(!needsSetupTimezone(current) && !portalFieldsFrom(current).needsTimezone);
+    strcpy(current.timezone, "UTC0");
+    assert(needsSetupTimezone(current) && portalFieldsFrom(current).needsTimezone);
+    current.timezone[0] = '\0';
+    assert(needsSetupTimezone(current) && portalFieldsFrom(current).needsTimezone);
+}
+
 static void setup_screen_has_the_iphone_hint() {
     std::vector<uint16_t> px(size_t(WIDTH) * HEIGHT, 0x1234);
     SetupScreen screen{"Ventanal-3C0F", "abcDEF2345", "", false, "", true, nullptr};
@@ -252,6 +261,7 @@ int main() {
     setup_uses_portal_host_fields();
     leave_host_clears_credentials_keeps_zip();
     portal_starts_from_the_record();
+    portal_requires_a_timezone_when_the_record_needs_one();
     setup_screen_has_the_iphone_hint();
     first_boot_without_record_enters_setup();
     cancel_returns_when_record_usable();

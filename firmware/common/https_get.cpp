@@ -35,8 +35,9 @@ HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlin
             announced = esp_http_client_fetch_headers(client);
         }
     }
-    if (announced >= 0) {
-        result.status = esp_http_client_get_status_code(client);
+    const int status = announced >= 0 ? esp_http_client_get_status_code(client) : -1;
+    if (status > 0) {
+        result.status = status;
         const auto complete = [&] {
             // fetch_headers returns zero for chunked/unknown length. A known
             // length must count bytes actually copied, including ranged tails.

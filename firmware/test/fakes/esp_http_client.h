@@ -20,6 +20,7 @@ struct FakeHttpsResponse {
     int stallResult = 0;
     bool complete = false;
     const char* range = nullptr;
+    int openResult = ESP_OK;
 };
 inline FakeHttpsResponse fakeHttps;
 using esp_http_client_handle_t = FakeHttpsResponse*;
@@ -28,7 +29,7 @@ inline int esp_http_client_set_header(esp_http_client_handle_t c, const char*, c
     c->range = value;
     return ESP_OK;
 }
-inline int esp_http_client_open(esp_http_client_handle_t, int) { return ESP_OK; }
+inline int esp_http_client_open(esp_http_client_handle_t c, int) { return c->openResult; }
 inline int esp_http_client_set_timeout_ms(esp_http_client_handle_t, int) { return ESP_OK; }
 inline int64_t esp_http_client_fetch_headers(esp_http_client_handle_t c) { return c->contentLength; }
 inline int esp_http_client_get_status_code(esp_http_client_handle_t c) { return c->status; }
