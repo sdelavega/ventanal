@@ -1,12 +1,78 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../common/https_get.h"
+#include "../lcd43b/public_transport.h"
 #include "fakes/esp_http_client.h"
 #include <cassert>
 #include <cstdio>
 #include <initializer_list>
 
+static void streaming_ranges() {
+    constexpr char url[] = "https://fixture.test/piece.jpg";
+    constexpr char modified[] = "Thu, 19 Nov 2026 12:00:00 GMT";
+    const ResumeSource source{url, nullptr, nullptr, 0, true};
+    const auto clock = []() -> uint32_t { return 0; };
+    lcd::PublicRangeTransport transport(url, 500 * 1024, 1000, clock, nullptr);
+    RangeResponse received{};
+    size_t copied = 0;
+    const auto headers = [&](const RangeResponse& response) {
+        assert(fakeHttps.read == 0 && copied == 0);
+        received = response;
+        return true;
+    };
+    const auto sink = [&](const uint8_t*, size_t count) {
+        assert(received.status);
+        copied += count;
+        return true;
+    };
+
+    fakeHttps = {8, 206, 8};
+    fakeHttps.contentRange = "bytes 32768-32775/32776";
+    fakeHttps.etag = "\"strong\"";
+    fakeHttps.modified = modified;
+    assert(transport.get(source, 32768, 32775, "\"strong\"", headers, sink));
+    assert(fakeRange == "bytes=32768-32775" && fakeIfRange == "\"strong\"");
+    assert(received.total == 32776 && received.start == 32768 && received.end == 32775 && copied == 8);
+    assert(!strcmp(received.validator, "\"strong\""));
+
+    copied = 0;
+    fakeHttps.read = 0;
+    fakeHttps.etag = "W/\"weak\"";
+    assert(transport.get(source, 32768, 32775, modified, headers, sink));
+    assert(fakeIfRange == modified && !strcmp(received.validator, modified));
+
+    copied = 0;
+    fakeHttps = {32, 200, 32};
+    assert(transport.get(source, 32768, 32775, "\"old\"", headers, sink));
+    assert(received.status == 200 && received.total == 32 && copied == 32);
+
+    copied = 0;
+    fakeHttps = {0, 416, 0};
+    fakeHttps.contentRange = "bytes */32776";
+    assert(transport.get(source, 32776, 32776, modified, headers, sink));
+    assert(received.status == 416 && received.total == 32776 && copied == 0);
+
+    fakeHttps = {8, 206, 8};
+    fakeHttps.contentRange = "bytes 32768-32775/32775";
+    assert(!transport.get(source, 32768, 32775, modified, headers, sink));
+    assert(transport.malformed && fakeHttps.read == 0);
+
+    fakeHttps = {8, 206, 3};
+    fakeHttps.contentRange = "bytes 32768-32775/32776";
+    assert(!transport.get(source, 32768, 32775, modified, headers, sink));
+    assert(copied == 3);
+
+    fakeHttps = {0, 200, 13};
+    fakeHttps.complete = true;
+    RangeResponse whole{};
+    const auto getWhole = httpsGetRange(url, 0, 32767, nullptr,
+        [](const uint8_t*, size_t) { return true; }, 1000, nullptr, whole);
+    assert(getWhole.status == 200 && getWhole.length == 13 && whole.total == 0);
+    puts("HTTPS streaming ranges: headers before body, validators, whole response and interruptions passed");
+}
+
 int main() {
+    streaming_ranges();
     char body[8193];
     fakeHttps = {};
     fakeHttps.openResult = -1;

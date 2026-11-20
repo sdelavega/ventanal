@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "../lcd43b/local/art_day.h"
 #include "../lcd43b/local/art_compose.h"
+#include "../common/resume/resume.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -177,6 +178,55 @@ static void art_pass_budget() {
     puts("art pass budget: consecutive transport failures and four-minute deadline passed");
 }
 
+static void art_piece_resumes_next_pass() {
+    struct Transport : RangeTransport {
+        uint32_t allowedStart = 0;
+        int calls = 0;
+        bool get(const ResumeSource&, uint32_t start, uint32_t end, const char* ifRange,
+                 const ResponseHeaders& headers, const ChunkSink& sink) override {
+            ++calls;
+            if (start != allowedStart) return false;
+            assert(!strcmp(ifRange, start ? "\"piece-v1\"" : ""));
+            const RangeResponse response{206, start, end, kResumeChunk + 1, "\"piece-v1\""};
+            assert(headers(response));
+            std::vector<uint8_t> bytes(end - start + 1, start ? 'b' : 'a');
+            return sink(bytes.data(), bytes.size());
+        }
+    } transport;
+    MemoryStore store;
+    constexpr char target[] = "art-met-54428";
+    const ResumeSource source{"https://fixture.test/piece.jpg", nullptr, nullptr, 0, true};
+    const auto clock = []() -> uint32_t { return 0; };
+    int composed = 0;
+    const auto compose = [&] {
+        const auto* bytes = store.committed(target);
+        assert(bytes && bytes->size() == kResumeChunk + 1 && bytes->front() == 'a' && bytes->back() == 'b');
+        ++composed;
+        return true;
+    };
+    ArtPassBudget first;
+    const auto progress = resumeFetch(transport, store, target, source, 100, clock, 0, nullptr);
+    assert(progress == FetchOutcome::Progress && store.size(target) == kResumeChunk);
+    assert(!finishArtPiece(first, progress, compose) && composed == 0);
+    transport.allowedStart = kResumeChunk;
+    ArtPassBudget next;
+    const auto complete = resumeFetch(transport, store, target, source, 100, clock, 0, nullptr);
+    assert(complete == FetchOutcome::Complete);
+    assert(finishArtPiece(next, complete, compose) && composed == 1 && transport.calls == 3);
+    puts("art_piece_resumes_next_pass ok");
+}
+
+static void art_budget_streak_reset_by_progress() {
+    ArtPassBudget budget;
+    budget.note(FetchOutcome::NoProgress);
+    budget.note(FetchOutcome::Progress);
+    budget.note(FetchOutcome::NoProgress);
+    assert(budget.keepGoing(1000));
+    budget.note(FetchOutcome::NoProgress);
+    assert(!budget.keepGoing(2000));
+    puts("art_budget_streak_reset_by_progress ok");
+}
+
 static void resampler_flushes_short_block_bands() {
     constexpr int height = 32;
     std::vector<uint16_t> pixels(size_t(FRAME_WIDTH) * height);
@@ -199,6 +249,8 @@ static void resampler_flushes_short_block_bands() {
 }
 
 int main() {
+    art_piece_resumes_next_pass();
+    art_budget_streak_reset_by_progress();
     art_pass_budget();
     resampler_flushes_short_block_bands();
     seasons_from_the_example();

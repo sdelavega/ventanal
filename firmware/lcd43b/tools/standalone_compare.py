@@ -38,7 +38,7 @@ def as_rgb565_expanded(image):
 ART_MEAN_LIMIT, ART_NEAR_SHARE = 9.0, 0.85
 
 # The solar screen holds the weather bounds outside the sun, whose SDO image
-# is decoded at 1/4 and area-averaged on the board: it gets the art bounds.
+# is decoded at 1/2 and area-averaged on the board: it gets the art bounds.
 SUN = (slice(84, 270), slice(582, 768))
 
 

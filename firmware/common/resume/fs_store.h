@@ -23,6 +23,9 @@ public:
 
     // Read a verified staging file into the caller's buffer and retire it.
     bool takeCommitted(const char* target, uint8_t* bytes, size_t size);
+    fs::File openCommitted(const char* target);
+    bool removeCommitted(const char* target);
+    void pruneCommitted(const char* prefix, const char* keep);
     void sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&));
 
 private:

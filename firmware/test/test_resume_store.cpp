@@ -146,6 +146,22 @@ void sweep_needs_valid_time() {
     assert(store.size("invalid-clock") == 3);
     assert(store.size("orphan") == 3);
 }
+
+void prune_old_committed_sun_files() {
+    FsStore store(LittleFS, "/sun");
+    for (const char* target : {"sdo-20775", "sdo-20776", "art-met-1"}) {
+        seed(store, target, kNow);
+        assert(store.commit(target));
+    }
+    seed(store, "sdo-20777", kNow);
+    store.pruneCommitted("sdo-", "sdo-20776");
+    assert(!store.openCommitted("sdo-20775"));
+    auto sun = store.openCommitted("sdo-20776");
+    assert(sun && sun.size() == sizeof(kBody));
+    assert(store.openCommitted("art-met-1"));
+    PartialMeta meta{};
+    assert(store.size("sdo-20777") == sizeof(kBody) && store.readMeta("sdo-20777", meta));
+}
 }
 
 int main() {
@@ -154,5 +170,6 @@ int main() {
     sd_gone_falls_back_to_flash();
     sweep_removes_old_and_orphaned();
     sweep_needs_valid_time();
-    std::puts("resume store: 5 cases passed");
+    prune_old_committed_sun_files();
+    std::puts("resume store: 6 cases passed");
 }

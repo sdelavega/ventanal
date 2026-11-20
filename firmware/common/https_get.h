@@ -8,6 +8,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include "resume/resume.h"
 
 #ifndef VENTANAL_FIRMWARE_VERSION
 #error "VENTANAL_FIRMWARE_VERSION must be defined by the build"
@@ -25,3 +26,11 @@ struct HttpsResult {
 // A non-null range is sent as the value of the Range request header.
 HttpsResult httpsGet(const char* url, char* buffer, size_t cap, uint32_t deadlineMs, void (*feed)(),
                      const char* range = nullptr);
+
+HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+                          const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out);
+
+// The transport applies resume policy to the response before any body is delivered.
+HttpsResult httpsGetRange(const char* url, uint32_t start, uint32_t end, const char* ifRange,
+                          const ChunkSink& sink, uint32_t deadlineMs, void (*feed)(), RangeResponse& out,
+                          const ResponseHeaders& headers);

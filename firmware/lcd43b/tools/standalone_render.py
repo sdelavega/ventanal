@@ -8,6 +8,7 @@ they are rendered fresh from the server's code, never stored.
 Run with server/.venv/bin/python firmware/lcd43b/tools/standalone_render.py OUT_DIR
 """
 import sys
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -110,10 +111,16 @@ def solar_case(name):
 
 
 def write_solar_inputs(out):
-    """The SDO image at the board's decode scale (TJpgDec at 1/4), and each
+    """A baseline 512 px SDO JPEG at the board's decode scale (TJpgDec at 1/2), and each
     case's alerts (JSON list, or null for the capture's own)."""
-    with Image.open(FIXTURES / 'sdo-171.jpg') as im:
-        im.convert('RGB').reduce(4).save(out / 'solar-sun-input.ppm')
+    with BytesIO() as jpeg:
+        with Image.open(FIXTURES / 'sdo-171.jpg') as im:
+            board_sun = im.convert('RGB').resize((512, 512), Image.Resampling.LANCZOS)
+            board_sun.save(jpeg, 'JPEG', quality=90, progressive=False)
+        jpeg.seek(0)
+        with Image.open(jpeg) as im:
+            assert im.size == (512, 512) and not im.info.get('progressive')
+            im.reduce(2).save(out / 'solar-sun-input.ppm')
     for name in SOLAR_CASES:
         (out / f'{name}-alerts.json').write_text(json.dumps(solar_alerts(name)))
 

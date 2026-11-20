@@ -344,7 +344,7 @@ check_standalone_screens: build/render_local_screens
 	$(PYTHON) ../lcd43b/tools/standalone_compare.py build/standalone --inputs
 	./build/render_local_screens build/standalone
 	$(PYTHON) ../lcd43b/tools/standalone_compare.py build/standalone
-build/test_local_art: test_local_art.cpp $(wildcard ../lcd43b/local/*.h) Makefile | check-arduinojson
+build/test_local_art: test_local_art.cpp $(wildcard ../lcd43b/local/*.h) ../common/resume/resume.h ../common/resume/partial_store.h Makefile | check-arduinojson
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -I"$(ARDUINOJSON)" test_local_art.cpp $(LDFLAGS) -o $@
 build/test_lcd43b_installation: test_lcd43b_installation.cpp ../lcd43b/installation.h $(wildcard fakes/*.h) Makefile
@@ -377,7 +377,7 @@ check_lcd43b_display_owner:
 	    test "$$rc" -eq 0 || { echo "Direct backlight calls bypass the display owner" >&2; exit 1; }
 
 
-build/test_https_get: test_https_get.cpp ../common/https_get.cpp ../common/https_get.h fakes/Arduino.h fakes/esp_http_client.h fakes/esp_crt_bundle.h Makefile
+build/test_https_get: test_https_get.cpp ../common/https_get.cpp ../common/https_get.h ../lcd43b/public_transport.h ../common/resume/resume.h ../common/resume/partial_store.h fakes/Arduino.h fakes/esp_http_client.h fakes/esp_crt_bundle.h Makefile
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_FIRMWARE_VERSION='"test"' -Ifakes test_https_get.cpp ../common/https_get.cpp $(LDFLAGS) -o $@
 

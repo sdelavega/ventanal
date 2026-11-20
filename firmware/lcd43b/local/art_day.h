@@ -11,6 +11,7 @@
 #include "art_state.h"
 #include "standalone_seasons.h"
 #include "weather_data.h"
+#include "../../common/resume/resume.h"
 #include <cstdint>
 
 namespace lcd::local {
@@ -57,10 +58,19 @@ public:
     }
     bool keepGoing(uint32_t elapsedMs) const { return remainingMs(elapsedMs) != 0; }
     void note(int status) { failures_ = status <= 0 ? failures_ + 1 : 0; }
+    void note(FetchOutcome outcome) {
+        note(outcome == FetchOutcome::Progress || outcome == FetchOutcome::Complete ? 200 : -1);
+    }
 
 private:
     int failures_ = 0;
 };
+
+template<class Compose>
+bool finishArtPiece(ArtPassBudget& budget, FetchOutcome outcome, Compose compose) {
+    budget.note(outcome);
+    return outcome == FetchOutcome::Complete && compose();
+}
 
 // Up to `want` candidate indices in a seeded order: unseen pieces first, then
 // (only if there are too few) seen ones. Returns how many were chosen.

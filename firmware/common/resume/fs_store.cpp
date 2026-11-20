@@ -180,6 +180,32 @@ bool FsStore::takeCommitted(const char* target, uint8_t* bytes, size_t size) {
     return (ok && removed) || fail();
 }
 
+fs::File FsStore::openCommitted(const char* target) {
+    const auto base = path(target);
+    return faulted_ || base.empty() ? fs::File{} : openRead(base);
+}
+
+bool FsStore::removeCommitted(const char* target) {
+    const auto base = path(target);
+    return !base.empty() && remove(base);
+}
+
+void FsStore::pruneCommitted(const char* prefix, const char* keep) {
+    if (faulted_) return;
+    auto directory = openRead(root_);
+    if (!directory || !directory.isDirectory()) return;
+    std::vector<std::string> retired;
+    while (auto entry = directory.openNextFile()) {
+        if (entry.isDirectory()) continue;
+        const std::string name = entry.name();
+        if (name != keep && name.compare(0, std::strlen(prefix), prefix) == 0 && !path(name.c_str()).empty())
+            retired.push_back(name);
+    }
+    directory.close();
+    for (const auto& name : retired)
+        if (!removeCommitted(name.c_str())) break;
+}
+
 void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)) {
     if (faulted_ || epochNow < resume_detail::kValidEpoch) return;
 #ifdef ARDUINO_ARCH_ESP32

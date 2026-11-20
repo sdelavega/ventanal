@@ -27,6 +27,12 @@ inline ArtRect sunCrop(int width, int height) {
     return {margin, margin, width - 2 * margin, height - 2 * margin};
 }
 
+inline int sunJpegScale(int width, int height) {
+    int scale = 0;
+    while (scale < 3 && sunCrop(width >> (scale + 1), height >> (scale + 1)).w >= SUN_RECT.w) ++scale;
+    return scale;
+}
+
 namespace solar_render {
 
 // Python f'{sfi:.0f}'.

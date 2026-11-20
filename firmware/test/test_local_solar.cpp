@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../lcd43b/local/solar_data.h"
+#include "../lcd43b/local/render_solar.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -150,7 +151,17 @@ static void kp_skips_invalid_time_tags() {
     puts("kp_skips_invalid_time_tags ok");
 }
 
+static void sdo_512_decodes_at_half() {
+    constexpr int fixtureWidth = 512;
+    constexpr int fixtureHeight = 512;
+    const int scale = sunJpegScale(fixtureWidth, fixtureHeight);
+    assert(scale == 1 && (fixtureWidth >> scale) == 256 && (fixtureHeight >> scale) == 256);
+    assert(sunJpegScale(1024, 1024) == 2);
+    puts("sdo_512_decodes_at_half ok");
+}
+
 int main() {
+    sdo_512_decodes_at_half();
     kp_skips_invalid_time_tags();
     solar_matches_server();
     alerts_match_server();

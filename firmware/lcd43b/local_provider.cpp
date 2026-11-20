@@ -13,12 +13,15 @@
 
 #include "../common/fcc.h"
 #include "../common/https_get.h"
+#include "../common/resume/fs_store.h"
+#include "../common/resume/storage.h"
 #include "installation.h"
 #include "local/art_day.h"
 #include "local/render_solar.h"
 #include "local/render_weather.h"
 #include "local_media.h"
 #include "log.h"
+#include "public_transport.h"
 #include "scanout_diag.h"
 #include "sha256.h"
 #include <Arduino.h>
@@ -49,6 +52,56 @@ struct PsramBuffer {
 HttpsResult get(const char* url, PsramBuffer& body, Watchdog& watchdog, const char* range = nullptr) {
     fetchWatchdog = &watchdog;
     return httpsGet(url, body.data, body.cap, 20000, feedFetch, range);
+}
+
+void logPublicResume(const char* format, ...) {
+    char line[128];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(line, sizeof line, format, args);
+    va_end(args);
+    log("%s\n", line);
+}
+
+FetchOutcome downloadPublic(FsStore& store, const char* target, const char* url, size_t cap,
+                            uint32_t budgetMs, Watchdog& watchdog) {
+    const uint32_t started = millis();
+    fetchWatchdog = &watchdog;
+    const auto clock = []() -> uint32_t { return millis(); };
+    PublicRangeTransport transport(url, cap, budgetMs, clock, feedFetch);
+    const ResumeSource source{url, nullptr, nullptr, 0, true};
+    const char* reason = nullptr;
+    auto outcome = resumeFetch(transport, store, target, source, budgetMs, clock, uint32_t(time(nullptr)),
+                               logPublicResume, &reason);
+    if (transport.malformed) {
+        store.discard(target);
+        outcome = FetchOutcome::Failed;
+        reason = transport.reason;
+    }
+    if (&partialStore() != &store) {
+        outcome = FetchOutcome::NoProgress;
+        reason = "storage";
+    }
+    char status[24];
+    snprintf(status, sizeof status, "status-%d", transport.status);
+    const char* label = "failed";
+    switch (outcome) {
+        case FetchOutcome::Complete: label = "complete"; reason = "ok"; break;
+        case FetchOutcome::Progress: label = "progress"; break;
+        case FetchOutcome::NoProgress: label = "no-progress"; break;
+        case FetchOutcome::Failed: break;
+    }
+    PartialMeta meta{};
+    if (!reason) reason = transport.reason;
+    if (!reason && transport.status > 0 && transport.status != 200 && transport.status != 206)
+        reason = status;
+    const bool partial = outcome != FetchOutcome::Complete && store.readMeta(target, meta);
+    log("standalone download target=%s outcome=%s reason=%s got=%u have=%u total=%u ms=%lu\n",
+        target, label, reason ? reason : "budget", unsigned(transport.bytesRead),
+        unsigned(partial ? meta.have : (outcome == FetchOutcome::Complete ? transport.total : 0)),
+        unsigned(partial && meta.total ? meta.total : transport.total),
+        static_cast<unsigned long>(millis() - started));
+    return outcome;
 }
 
 // Alerts survive a failed NWS request: the screen keeps the last good set.
@@ -148,16 +201,13 @@ void keepSlot(int slot, FrameInfo& info, const char currentIds[SCREEN_SLOTS][17]
 // ---- solar -------------------------------------------------------------------
 
 constexpr char SwpcBase[] = "https://services.swpc.noaa.gov/";
-constexpr char SdoUrl[] = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_1024_0171.jpg";
+constexpr char SdoUrl[] = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_0171.jpg";
+constexpr size_t SunImageCap = 512 * 1024;
 constexpr int64_t SolarSeconds = 3 * 3600;
 
 // RAM only: after a restart the screen is drawn again on the first pass.
 int64_t solarDrawnAt = 0;
 std::vector<std::string> lastSolarAlerts;
-// The day's SDO image (the server fetches it once a UTC day too).
-uint8_t* sunJpeg = nullptr;
-size_t sunLength = 0;
-int64_t sunDay = -1;
 
 bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog,
                   const char* range = nullptr) {
@@ -181,27 +231,29 @@ bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
         && solarProduct("text/3-day-forecast.txt", body, watchdog);
     if (!ok) return false;
     local::parseForecastKp(body.data, s.kpMax);
-    if (solarProduct("products/alerts.json", body, watchdog))
-        local::parseActiveAlerts(body.data, time(nullptr), lastSolarAlerts);  // on failure keep the previous set
+    auto& store = partialStore();
+    constexpr char target[] = "swpc-alerts";
+    if (downloadPublic(store, target, "https://services.swpc.noaa.gov/products/alerts.json",
+                       body.cap - 1, 20000, watchdog) == FetchOutcome::Complete) {
+        auto file = store.openCommitted(target);
+        const size_t size = file ? file.size() : 0;
+        file.close();
+        if (size && size < body.cap && store.takeCommitted(target, reinterpret_cast<uint8_t*>(body.data), size)) {
+            body.data[size] = '\0';
+            local::parseActiveAlerts(body.data, time(nullptr), lastSolarAlerts);
+        }
+    }
     s.alerts = lastSolarAlerts;
     return true;
 }
 
-void fetchSun(time_t now, Watchdog& watchdog) {
-    const int64_t day = int64_t(now) / 86400;
-    if (sunJpeg && sunDay == day) return;
-    PsramBuffer body(512 * 1024);
-    if (!body.data) return;
-    const HttpsResult got = get(SdoUrl, body, watchdog);
-    log("standalone sun status=%d bytes=%u\n", got.status, unsigned(got.length));
-    if (got.status != 200 || got.truncated || !got.length) return;  // keep yesterday's
-    auto* copy = static_cast<uint8_t*>(heap_caps_malloc(got.length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-    if (!copy) return;
-    memcpy(copy, body.data, got.length);
-    heap_caps_free(sunJpeg);
-    sunJpeg = copy;
-    sunLength = got.length;
-    sunDay = day;
+fs::File fetchSun(FsStore& store, const char* target, Watchdog& watchdog) {
+    auto file = store.openCommitted(target);
+    if (file) return file;
+    if (&partialStore() != &store ||
+        downloadPublic(store, target, SdoUrl, SunImageCap, 20000, watchdog) != FetchOutcome::Complete)
+        return {};
+    return store.openCommitted(target);
 }
 
 bool showsSolar(uint8_t callState) {
@@ -223,21 +275,34 @@ void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshRe
         result.frameOk[2] = false;
         return;
     }
-    fetchSun(now, watchdog);
+    char target[32];
+    snprintf(target, sizeof target, "sdo-%" PRId64, int64_t(now) / 86400);
+    auto& store = partialStore();
+    auto jpeg = fetchSun(store, target, watchdog);
     local::SolarScreen screen;
     screen.callSign = installation.callSign;
     screen.latitude = installation.latitude;
     screen.longitude = installation.longitude;
     const uint32_t started = millis();
+    const bool haveJpeg = bool(jpeg);
     bool sun = false;
     {
         ScanScope activity(ScanActivity::Inflate);
         local::renderSolar(stagingFrame(cache), *solar, screen, now, [&](local::Frame f) {
-            return sun = sunJpeg && drawSunJpeg(sunJpeg, sunLength, f, watchdog);
+            return sun = haveJpeg && jpeg.size() <= SunImageCap && drawSunJpeg(jpeg, f, watchdog);
         });
     }
+    if (haveJpeg) {
+        jpeg.close();
+        if (sun) store.pruneCommitted("sdo-", target);
+        else store.removeCommitted(target);
+    }
     log("standalone render slot=solar sun=%d ms=%lu\n", sun, static_cast<unsigned long>(millis() - started));
-    if (publishStaged(2, info, currentIds, result, watchdog, cache)) solarDrawnAt = now;
+    if (!sun && (haveJpeg || currentIds[2][0])) {
+        keepSlot(2, info, currentIds, result);
+        return;
+    }
+    if (publishStaged(2, info, currentIds, result, watchdog, cache) && sun) solarDrawnAt = now;
 }
 
 // ---- art ---------------------------------------------------------------------
@@ -251,6 +316,17 @@ constexpr int StandaloneSpares = 2;
 constexpr int ReservedSpareSlot = 3 + StandaloneSpares;  // slot 5, "spare2"
 constexpr int ArtWant = 1 + StandaloneSpares;
 constexpr uint32_t ArtRetrySeconds = 3600;
+constexpr size_t ArtImageCap = 500 * 1024;
+
+// Keep the current piece and placements across refresh passes. The bytes and
+// their validator live in the partial store independently of this cursor.
+struct ArtBatch {
+    uint32_t day = 0;
+    int placed = 0;
+    uint32_t keys[ArtWant]{};
+    local::ArtCandidate pending;
+};
+ArtBatch artBatch;
 
 local::ArtState loadArtState() {
     local::ArtState s;
@@ -339,72 +415,110 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
         return;
 
     ArtPass pass;
-    const char* term = local::dayTerm(today, deviceId());
-    auto pool = std::unique_ptr<local::ArtCandidate[]>(new (std::nothrow) local::ArtCandidate[24]);
-    const int found = pool ? searchArt(term, pool.get(), 24, pass, watchdog) : 0;
-    int order[24];
-    const int ranked = local::pickCandidates(pool.get(), found, state.seen, local::daySeed(today, deviceId()), found, order);
-
+    if (artBatch.day != day || (artBatch.placed && !haveArt)) {
+        artBatch = {};
+        artBatch.day = day;
+    }
     static const int slots[ArtWant] = {0, 3, 4};
-    int placed = 0;
-    for (int i = 0; i < ranked && placed < ArtWant && cache.staging && pass.remainingMs(); ++i) {
-        const local::ArtCandidate& c = pool[size_t(order[i])];
+    bool pause = false;
+    const auto place = [&](const local::ArtCandidate& c) {
+        const uint32_t key = local::candidateKey(c);
+        if (std::find(artBatch.keys, artBatch.keys + artBatch.placed, key) != artBatch.keys + artBatch.placed)
+            return;
         const local::ArtCredit credit{c.title, c.artist, c.date, c.museum};
         const uint32_t started = millis();
-        // The cache body is the credit and the JPEG (VNA1): download straight
-        // into it behind the header, compose into staging, keep the body.
-        const size_t header = artBodyHeaderBytes(credit);
-        // Room for a whole image (up to 500 KB) beside the resampler's row band
-        // (<= ~200 KB); otherwise let the loop save queued frames first.
-        constexpr size_t ImageCap = 500 * 1024, Work = 224 * 1024;
-        size_t room = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
-        if (room < header + Work + ImageCap && cache.reclaimWireMemory) {
-            cache.reclaimWireMemory(header + Work + ImageCap);
-            room = heap_caps_get_largest_free_block(MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+        char target[48];
+        snprintf(target, sizeof target, "art-%s-%s", c.source, c.objectId);
+        auto& store = partialStore();
+        auto jpeg = store.openCommitted(target);
+        FetchOutcome outcome = FetchOutcome::Complete;
+        if (!jpeg) {
+            if (&partialStore() != &store) return;
+            outcome = downloadPublic(store, target, c.imageUrl, ArtImageCap,
+                                     std::min(pass.remainingMs(), uint32_t(45000)), watchdog);
+            if (outcome == FetchOutcome::Complete) jpeg = store.openCommitted(target);
         }
-        const size_t cap = std::min(ImageCap, room > header + Work + 64 * 1024 ? room - header - Work : size_t(0));
-        auto* bytes = cap ? static_cast<uint8_t*>(heap_caps_malloc(header + cap, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT))
-                          : nullptr;
-        if (!bytes) {
-            log("standalone art memory=short largest=%u\n", unsigned(room));
-            break;
+        if (outcome == FetchOutcome::Progress) {
+            artBatch.pending = c;
+            pause = true;
+        } else if (outcome == FetchOutcome::NoProgress && !artBatch.pending.imageUrl[0] && store.size(target) > 0) {
+            artBatch.pending = c;
         }
-        const HttpsResult got = pass.fetch(c.imageUrl, reinterpret_cast<char*>(bytes + header), cap, 45000, watchdog);
-        bool composed = false;
-        if (got.status == 200 && !got.truncated) {
-            if (const uint32_t remaining = pass.remainingMs()) {
-                ScanScope activity(ScanActivity::Inflate);
-                composed = composeArtJpeg(bytes + header, got.length, stagingFrame(cache), credit, watchdog, remaining);
+
+        const size_t length = jpeg ? jpeg.size() : 0;
+        jpeg.close();
+        FrameBody body;
+        const bool composed = local::finishArtPiece(pass.budget, outcome, [&] {
+            if (!length || length > ArtImageCap) {
+                if (length) store.removeCommitted(target);
+                return false;
             }
-        }
-        log("standalone art piece=%s:%s status=%d bytes=%u truncated=%d composed=%d ms=%lu\n", c.source, c.objectId,
-            got.status, unsigned(got.length), got.truncated, composed, static_cast<unsigned long>(millis() - started));
-        if (!composed) {
-            heap_caps_free(bytes);
-            continue;
-        }
-        writeArtBodyHeader(bytes, credit);
-        auto* shrunk = static_cast<uint8_t*>(heap_caps_realloc(bytes, header + got.length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
-        FrameBody body{std::shared_ptr<uint8_t>(shrunk ? shrunk : bytes, heap_caps_free), header + got.length};
-        const int slot = slots[placed];
+            // The same PSRAM allocation supplies both TJpgDec and VNA1.
+            const size_t header = artBodyHeaderBytes(credit);
+            constexpr size_t Work = 224 * 1024;  // the resampler's row band
+            const size_t needed = header + length + Work;
+            constexpr auto caps = MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT;
+            if (heap_caps_get_largest_free_block(caps) < needed && cache.reclaimWireMemory)
+                cache.reclaimWireMemory(needed);
+            auto* bytes = heap_caps_get_largest_free_block(caps) >= needed && pass.remainingMs()
+                ? static_cast<uint8_t*>(heap_caps_malloc(header + length, caps)) : nullptr;
+            if (!bytes) {
+                artBatch.pending = c;  // keep the committed file for the next pass
+                pause = true;
+                return false;
+            }
+            body = FrameBody{std::shared_ptr<uint8_t>(bytes, heap_caps_free), header + length};
+            if (!store.takeCommitted(target, bytes + header, length)) return false;
+            watchdog.feed();
+            ScanScope activity(ScanActivity::Inflate);
+            if (!composeArtJpeg(bytes + header, length, stagingFrame(cache), credit, watchdog, pass.remainingMs()))
+                return false;
+            writeArtBodyHeader(bytes, credit);
+            return true;
+        });
+        log("standalone art piece=%s:%s bytes=%u composed=%d ms=%lu\n", c.source, c.objectId,
+            unsigned(length), composed, static_cast<unsigned long>(millis() - started));
+        if (!composed || !pass.remainingMs()) return;
+        const int slot = slots[artBatch.placed];
         FrameInfo info{};
         wireId(body, info.id);
         info.size = body.size;
         info.encoding = FrameEncoding::Zlib;  // the cache loader recognizes VNA1 by its magic
         info.present = true;
-        if (!pass.remainingMs()) break;
         if (!strcmp(currentIds[slot], info.id) || cache.publish(slot, &info, body)) {
             (slot == 0 ? result.manifest.screens[0] : result.manifest.spares[slot - 3]) = info;
             strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
-            state.seen.add(local::candidateKey(c));
-            ++placed;
+            state.seen.add(key);
+            artBatch.keys[artBatch.placed++] = key;
         } else {
             result.frameFailed[slot] = true;
         }
+    };
+
+    uint32_t attempted = 0;
+    bool triedPending = false;
+    if (artBatch.pending.imageUrl[0]) {
+        const auto candidate = artBatch.pending;
+        artBatch.pending = {};
+        attempted = local::candidateKey(candidate);
+        triedPending = true;
+        place(candidate);
+    }
+    int found = 0;
+    if (artBatch.placed < ArtWant && !pause && pass.remainingMs()) {
+        const char* term = local::dayTerm(today, deviceId());
+        auto pool = std::unique_ptr<local::ArtCandidate[]>(new (std::nothrow) local::ArtCandidate[24]);
+        found = pool ? searchArt(term, pool.get(), 24, pass, watchdog) : 0;
+        int order[24];
+        const int ranked = local::pickCandidates(pool.get(), found, state.seen, local::daySeed(today, deviceId()), found, order);
+        for (int i = 0; i < ranked && artBatch.placed < ArtWant && !pause && pass.remainingMs(); ++i) {
+            const auto& candidate = pool[size_t(order[i])];
+            if (!triedPending || local::candidateKey(candidate) != attempted) place(candidate);
+        }
     }
 
-    if (placed == ArtWant) {
+    if (artBatch.placed == ArtWant) {
         state.day = day;
         state.failedAt = 0;
     } else {
@@ -412,7 +526,8 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
     }
     result.artState = state;
     result.artStateChanged = true;
-    log("standalone art day=%lu placed=%d of %d candidates\n", static_cast<unsigned long>(day), placed, found);
+    log("standalone art day=%lu placed=%d candidates=%d\n",
+        static_cast<unsigned long>(day), artBatch.placed, found);
 }
 
 }  // namespace
