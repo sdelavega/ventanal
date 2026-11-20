@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 # Copyright (C) 2026 Stephen de la Vega
 
-from http.client import HTTPConnection
+from http.client import HTTPConnection, HTTPMessage
 from threading import Thread
 import pytest
 from ventanal.serve import make_server
@@ -64,6 +64,7 @@ def test_disconnected_body_copy_is_quiet(server, monkeypatch, error):
     from io import BytesIO
     handler = object.__new__(server.RequestHandlerClass)
     handler.path = '/frames/art.vnf'
+    handler.headers = HTTPMessage()
     handler.wfile = BytesIO()
     monkeypatch.setattr(handler, 'send_response', lambda *a: None)
     monkeypatch.setattr(handler, 'send_header', lambda *a: None)

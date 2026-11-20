@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Stephen de la Vega
 """Verified firmware cache, per-device approvals, and GitHub release checks."""
 
-from contextlib import closing
+from contextlib import ExitStack, closing, contextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
@@ -12,6 +12,7 @@ import logging
 import re
 import secrets
 import sqlite3
+from tempfile import TemporaryFile
 from time import monotonic
 from urllib.parse import urljoin, urlsplit
 
@@ -201,23 +202,52 @@ class FirmwareStore:
             ).fetchone() is not None
 
     def image(self, name):
+        with self.open_image(name) as image:
+            if image is not None:
+                source, _ = image
+                return source.read()
+        return None
+
+    @contextmanager
+    def open_image(self, name):
+        """Yield a verified, seekable image and its signed SHA-256."""
         match = IMAGE_NAME.fullmatch(name)
         if match is None or not firmware_updates_enabled():
+            yield None
+            return
+        with ExitStack() as snapshot:
+            with closing(self.connect()) as db:
+                # Keep the metadata and blob in the same database snapshot.
+                db.execute("BEGIN")
+                image = self._snapshot_image(db, match.groups(), snapshot)
+            # A slow client must not hold the SQLite read lock or prevent pruning.
+            yield image
+
+    @staticmethod
+    def _snapshot_image(db, release, snapshot):
+        row = db.execute(
+            "SELECT rowid, metadata, signature FROM firmware_releases WHERE board=? AND version=?", release
+        ).fetchone()
+        if row is None:
             return None
-        with closing(self.connect()) as db:
-            row = db.execute(
-                "SELECT metadata, signature, image FROM firmware_releases WHERE board=? AND version=?", match.groups()
-            ).fetchone()
-            if row is None:
-                return None
-            try:
-                info = verify_release(row["metadata"].encode(), row["signature"], RELEASE_PUBLIC_KEY)
-            except ReleaseError:
-                return None
-            image = row["image"]
-            if (info.board, info.version) == match.groups() and info.matches_image(len(image), hashlib.sha256(image).digest()):
-                return image
+        try:
+            info = verify_release(row["metadata"].encode(), row["signature"], RELEASE_PUBLIC_KEY)
+        except ReleaseError:
             return None
+        if (info.board, info.version) != release:
+            return None
+        with db.blobopen("firmware_releases", "image", row["rowid"], readonly=True) as blob:
+            if len(blob) != info.size:
+                return None
+            source = snapshot.enter_context(TemporaryFile())
+            digest = hashlib.sha256()
+            while chunk := blob.read(65536):
+                digest.update(chunk)
+                source.write(chunk)
+        if not info.matches_image(source.tell(), digest.digest()):
+            return None
+        source.seek(0)
+        return source, info.sha256
 
     def boards(self, device):
         with closing(self.connect()) as db:

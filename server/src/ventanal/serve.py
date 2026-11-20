@@ -3,10 +3,10 @@
 
 """A read-only HTTP surface limited to published display assets."""
 
+from contextlib import ExitStack
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import IPv4Address, IPv6Address
 import logging
-from io import BytesIO
 import json
 import sqlite3
 import ssl
@@ -24,7 +24,37 @@ from ventanal.owner import SkipQueue, parse_skips
 MAX_TLS_CONNECTIONS = 32
 TLS_IDLE_TIMEOUT = 10
 DEVICE_PATH = re.compile(r'/devices/([a-z0-9-]{1,15})/')
+FRAME_ID_SUFFIX = re.compile(r'(?:^|-)([0-9a-f]{16})$')
+BYTE_RANGE = re.compile(r'bytes=([0-9]*)-([0-9]*)', re.IGNORECASE)
 log = logging.getLogger(__name__)
+
+
+def asset_range(headers, etag, total):
+    """Return an HTTP status, starting offset and response body length."""
+    ranges = headers.get_all('Range', [])
+    validators = headers.get_all('If-Range', [])
+    if len(ranges) != 1 or (validators and (len(validators) != 1 or validators[0].strip() != etag)):
+        return 200, 0, total
+    match = BYTE_RANGE.fullmatch(ranges[0].strip())
+    if not match or not any(match.groups()):
+        return 200, 0, total
+
+    def offset(digits):
+        # Larger values have the same effect on the response. Avoid converting
+        # arbitrarily long integers supplied by an HTTP client.
+        digits = digits.lstrip('0')
+        return total + 1 if len(digits) > len(str(total)) else int(digits or '0')
+
+    first, last = match.groups()
+    if first:
+        start = offset(first)
+        end = min(total - 1, offset(last)) if last else total - 1
+    else:
+        start = max(0, total - offset(last))
+        end = total - 1
+    if start > end:
+        return 416, 0, 0
+    return 206, start, end - start + 1
 
 
 def allowed_host(headers, names):
@@ -145,15 +175,17 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 if ui is None or (self.proof_key is None and ui.auth.mode != 'none'):
                     self.send_error(404)
                     return
-                try:
-                    image = ui.firmware.image(path.removeprefix('/firmware/'))
-                except sqlite3.Error:
-                    self.send_error(503)
-                    return
-                if image is None:
-                    self.send_error(404)
-                    return
-                self.send_asset(BytesIO(image), 'application/octet-stream', 'no-store')
+                with ExitStack() as stack:
+                    try:
+                        image = stack.enter_context(ui.firmware.open_image(path.removeprefix('/firmware/')))
+                    except (OSError, sqlite3.Error):
+                        self.send_error(503)
+                        return
+                    if image is None:
+                        self.send_error(404)
+                        return
+                    source, sha256 = image
+                    self.send_asset(source, 'application/octet-stream', 'no-store', f'"{sha256}"')
                 return
             if ui is not None and not re.fullmatch(r'/(?:manifest\.json|frames/.*|previews/.*|devices/[a-z0-9-]+(?:/(?:manifest\.json|frames/.*|previews/.*))?)', path):
                 ui.handle(self, path)
@@ -289,19 +321,33 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             kind = {'.json': 'application/json', '.png': 'image/png',
                     '.vnf': 'application/octet-stream', '.vnr': 'application/octet-stream'}[suffix]
             cache_control = 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable'
-            self.send_asset(source, kind, 'no-store' if self.proof_key is not None else cache_control)
+            etag = None
+            if suffix in ('.vnf', '.vnr'):
+                ident = FRAME_ID_SUFFIX.search(target.stem)
+                etag = f'"{ident[1] if ident else target.stem}"'
+            self.send_asset(source, kind, 'no-store' if self.proof_key is not None else cache_control, etag)
 
-        def send_asset(self, source, kind, cache_control):
+        def send_asset(self, source, kind, cache_control, etag=None):
             with source:
-                self.send_response(200)
+                total = source.seek(0, 2)
+                status, start, remaining = asset_range(self.headers, etag, total) if etag else (200, 0, total)
+                self.send_response(status)
                 self.send_header('Content-Type', kind)
-                self.send_header('Content-Length', str(source.seek(0, 2)))
+                self.send_header('Content-Length', str(remaining))
                 self.send_header('Cache-Control', cache_control)
+                if etag is not None:
+                    self.send_header('Accept-Ranges', 'bytes')
+                    self.send_header('ETag', etag)
+                if status == 206:
+                    self.send_header('Content-Range', f'bytes {start}-{start + remaining - 1}/{total}')
+                elif status == 416:
+                    self.send_header('Content-Range', f'bytes */{total}')
                 self.end_headers()
-                source.seek(0)
+                source.seek(start)
                 try:
-                    while chunk := source.read(65536):
+                    while remaining and (chunk := source.read(min(65536, remaining))):
                         self.wfile.write(chunk)
+                        remaining -= len(chunk)
                 except (ConnectionError, TimeoutError):
                     pass  # A disconnected display can retry on its next poll.
 
