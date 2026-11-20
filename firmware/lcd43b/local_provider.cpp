@@ -19,6 +19,7 @@
 #include "local/art_day.h"
 #include "local/render_solar.h"
 #include "local/render_weather.h"
+#include "local/solar_cadence.h"
 #include "local_media.h"
 #include "log.h"
 #include "public_transport.h"
@@ -203,10 +204,9 @@ void keepSlot(int slot, FrameInfo& info, const char currentIds[SCREEN_SLOTS][17]
 constexpr char SwpcBase[] = "https://services.swpc.noaa.gov/";
 constexpr char SdoUrl[] = "https://sdo.gsfc.nasa.gov/assets/img/latest/latest_512_0171.jpg";
 constexpr size_t SunImageCap = 512 * 1024;
-constexpr int64_t SolarSeconds = 3 * 3600;
 
-// RAM only: after a restart the screen is drawn again on the first pass.
-int64_t solarDrawnAt = 0;
+local::SolarCadence solarCadence;
+std::unique_ptr<local::LocalSolar> lastSolar;
 std::vector<std::string> lastSolarAlerts;
 
 bool solarProduct(const char* path, PsramBuffer& body, Watchdog& watchdog,
@@ -260,49 +260,86 @@ bool showsSolar(uint8_t callState) {
     return installation.callSign[0] && callState != uint8_t(CallState::Rejected);
 }
 
-// Space weather every three hours; otherwise the cached frame stays.
+// SWPC sets the data cadence. SDO can finish on a later refresh pass.
 void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                   const ResidentCache& cache) {
     FrameInfo& info = result.manifest.screens[2];
-    if (currentIds[2][0] && solarDrawnAt && int64_t(now) - solarDrawnAt < SolarSeconds) {
+    const uint32_t day = uint32_t(int64_t(now) / 86400);
+    const bool hasFrame = currentIds[2][0] != '\0';
+    const bool fetchDue = solarCadence.swpcDue(now);
+    if (!fetchDue && !solarCadence.needsFrame(hasFrame, day, true)) {
         keepSlot(2, info, currentIds, result);
         return;
     }
-    auto solar = std::make_unique<local::LocalSolar>();
-    if (!fetchSolar(*solar, watchdog) || !cache.staging) {
+    bool fetchFailed = false;
+    if (fetchDue) {
+        auto solar = std::make_unique<local::LocalSolar>();
+        if (fetchSolar(*solar, watchdog)) {
+            lastSolar = std::move(solar);
+            solarCadence.fetchedAt = now;
+        } else {
+            fetchFailed = true;
+        }
+    }
+    if (!cache.staging || !lastSolar) {
         keepSlot(2, info, currentIds, result);
         result.frameFailed[2] = true;
         result.frameOk[2] = false;
         return;
     }
+
     char target[32];
-    snprintf(target, sizeof target, "sdo-%" PRId64, int64_t(now) / 86400);
+    snprintf(target, sizeof target, "sdo-%" PRIu32, day);
     auto& store = partialStore();
     auto jpeg = fetchSun(store, target, watchdog);
+    auto& currentStore = partialStore();
+    if (&currentStore != &store) {
+        jpeg.close();
+        jpeg = currentStore.openCommitted(target);
+    }
+    const std::string previous = currentStore.retainPreviousCommitted("sdo-", day);
+    if (!solarCadence.needsFrame(hasFrame, day, bool(jpeg))) {
+        keepSlot(2, info, currentIds, result);
+        result.frameFailed[2] = fetchFailed;
+        if (fetchFailed) result.frameOk[2] = false;
+        return;
+    }
+
     local::SolarScreen screen;
     screen.callSign = installation.callSign;
     screen.latitude = installation.latitude;
     screen.longitude = installation.longitude;
     const uint32_t started = millis();
-    const bool haveJpeg = bool(jpeg);
-    bool sun = false;
+    auto sun = local::SolarSun::None;
+    const auto draw = [&](fs::File& file, const char* name, local::Frame frame) {
+        if (!file) return false;
+        const bool ok = file.size() <= SunImageCap && drawSunJpeg(file, frame, watchdog);
+        file.close();
+        if (!ok) currentStore.removeCommitted(name);
+        return ok;
+    };
     {
         ScanScope activity(ScanActivity::Inflate);
-        local::renderSolar(stagingFrame(cache), *solar, screen, now, [&](local::Frame f) {
-            return sun = haveJpeg && jpeg.size() <= SunImageCap && drawSunJpeg(jpeg, f, watchdog);
+        local::renderSolar(stagingFrame(cache), *lastSolar, screen, solarCadence.fetchedAt, [&](local::Frame f) {
+            sun = local::drawSolarSun([&] { return draw(jpeg, target, f); }, [&] {
+                if (previous.empty()) return false;
+                auto older = currentStore.openCommitted(previous.c_str());
+                return draw(older, previous.c_str(), f);
+            });
+            if (sun != local::SolarSun::None) return true;
+            const auto& r = local::SUN_RECT;
+            local::fillRect(f, r.x, r.y, r.x + r.w - 1, r.y + r.h - 1, local::colour::black);
+            return false;
         });
     }
-    if (haveJpeg) {
-        jpeg.close();
-        if (sun) store.pruneCommitted("sdo-", target);
-        else store.removeCommitted(target);
+    log("standalone render slot=solar sun=%d ms=%lu\n", sun != local::SolarSun::None,
+        static_cast<unsigned long>(millis() - started));
+    if (publishStaged(2, info, currentIds, result, watchdog, cache)) {
+        solarCadence.solarDrawnAt = now;
+        solarCadence.sunDrawnDay = sun == local::SolarSun::Today ? day : 0;
+        if (sun != local::SolarSun::Today)
+            log("standalone solar sun=%s\n", sun == local::SolarSun::Previous ? "previous" : "none");
     }
-    log("standalone render slot=solar sun=%d ms=%lu\n", sun, static_cast<unsigned long>(millis() - started));
-    if (!sun && (haveJpeg || currentIds[2][0])) {
-        keepSlot(2, info, currentIds, result);
-        return;
-    }
-    if (publishStaged(2, info, currentIds, result, watchdog, cache) && sun) solarDrawnAt = now;
 }
 
 // ---- art ---------------------------------------------------------------------
@@ -468,17 +505,27 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
                 return false;
             }
             body = FrameBody{std::shared_ptr<uint8_t>(bytes, heap_caps_free), header + length};
-            if (!store.takeCommitted(target, bytes + header, length)) return false;
+            if (!store.readCommitted(target, bytes + header, length)) {
+                store.removeCommitted(target);
+                return false;
+            }
             watchdog.feed();
             ScanScope activity(ScanActivity::Inflate);
-            if (!composeArtJpeg(bytes + header, length, stagingFrame(cache), credit, watchdog, pass.remainingMs()))
+            if (!composeArtJpeg(bytes + header, length, stagingFrame(cache), credit, watchdog, pass.remainingMs())) {
+                if (!pass.remainingMs()) {
+                    artBatch.pending = c;
+                    pause = true;
+                } else {
+                    store.removeCommitted(target);
+                }
                 return false;
+            }
             writeArtBodyHeader(bytes, credit);
             return true;
         });
         log("standalone art piece=%s:%s bytes=%u composed=%d ms=%lu\n", c.source, c.objectId,
             unsigned(length), composed, static_cast<unsigned long>(millis() - started));
-        if (!composed || !pass.remainingMs()) return;
+        if (!composed) return;
         const int slot = slots[artBatch.placed];
         FrameInfo info{};
         wireId(body, info.id);
@@ -486,12 +533,15 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
         info.encoding = FrameEncoding::Zlib;  // the cache loader recognizes VNA1 by its magic
         info.present = true;
         if (!strcmp(currentIds[slot], info.id) || cache.publish(slot, &info, body)) {
+            store.removeCommitted(target);
             (slot == 0 ? result.manifest.screens[0] : result.manifest.spares[slot - 3]) = info;
             strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
             state.seen.add(key);
             artBatch.keys[artBatch.placed++] = key;
         } else {
+            artBatch.pending = c;
+            pause = true;
             result.frameFailed[slot] = true;
         }
     };
@@ -571,7 +621,8 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
         m.screens[2].present = false;
         result.dropSlot[2] = true;
         if (currentIds[2][0]) cache.publish(2, nullptr, {});
-        solarDrawnAt = 0;
+        solarCadence = {};
+        lastSolar.reset();
     }
     result.manifestOk = true;
 

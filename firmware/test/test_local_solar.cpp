@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #include "../lcd43b/local/solar_data.h"
 #include "../lcd43b/local/render_solar.h"
+#include "../lcd43b/local/solar_cadence.h"
 #include <cassert>
 #include <cmath>
 #include <cstdio>
@@ -160,7 +161,56 @@ static void sdo_512_decodes_at_half() {
     puts("sdo_512_decodes_at_half ok");
 }
 
+static void solar_publishes_without_sun() {
+    constexpr int64_t now = 1704067200;
+    constexpr uint32_t day = now / 86400;
+    SolarCadence cadence;
+    assert(cadence.swpcDue(now));
+    assert(!cadence.needsFrame(true, day, true));  // the cached frame can outlive a reboot
+    cadence.fetchedAt = now;
+    assert(cadence.needsFrame(true, day, false));
+    assert(drawSolarSun([] { return false; }, [] { return false; }) == SolarSun::None);
+    cadence.solarDrawnAt = now;
+    assert(!cadence.needsFrame(true, day, false));
+    assert(!cadence.swpcDue(now + SolarCadence::Interval - 1));
+    assert(cadence.swpcDue(now + SolarCadence::Interval));
+    puts("solar_publishes_without_sun ok");
+}
+
+static void sun_completion_redraws_without_swpc_refetch() {
+    constexpr int64_t fetched = 1704067200;
+    constexpr uint32_t day = fetched / 86400;
+    SolarCadence cadence{fetched, fetched, 0};
+    const int64_t completed = fetched + 60;
+    assert(!cadence.swpcDue(completed));
+    assert(!cadence.needsFrame(true, day, false));
+    assert(cadence.needsFrame(true, day, true));
+    cadence.solarDrawnAt = completed;
+    cadence.sunDrawnDay = day;
+    assert(!cadence.needsFrame(true, day, true));
+    assert(cadence.swpcDue(fetched + SolarCadence::Interval));
+    puts("sun_completion_redraws_without_swpc_refetch ok");
+}
+
+static void previous_day_sun_used_until_today_completes() {
+    bool todayCommitted = false;
+    int previousDraws = 0;
+    const auto drawToday = [&] { return todayCommitted; };
+    const auto drawPrevious = [&] {
+        ++previousDraws;
+        return true;
+    };
+    assert(drawSolarSun(drawToday, drawPrevious) == SolarSun::Previous);
+    todayCommitted = true;
+    assert(drawSolarSun(drawToday, drawPrevious) == SolarSun::Today);
+    assert(previousDraws == 1);
+    puts("previous_day_sun_used_until_today_completes ok");
+}
+
 int main() {
+    solar_publishes_without_sun();
+    sun_completion_redraws_without_swpc_refetch();
+    previous_day_sun_used_until_today_completes();
     sdo_512_decodes_at_half();
     kp_skips_invalid_time_tags();
     solar_matches_server();

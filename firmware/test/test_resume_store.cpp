@@ -46,6 +46,10 @@ void fs_store_roundtrip() {
     files["/roundtrip/frame"] = {0};
     assert(store.commit("/frame"));
     assert(files.at("/roundtrip/frame") == std::vector<uint8_t>({'a', 'b', 'c'}));
+    uint8_t saved[sizeof(kBody)]{};
+    assert(store.readCommitted("frame", saved, sizeof(saved)));
+    assert(!std::memcmp(saved, kBody, sizeof(saved)));
+    assert(store.openCommitted("frame"));  // a compose or publish attempt can be retried
     assert(store.size("/frame") == -1);
     assert(!store.readMeta("/frame", meta));
 }
@@ -149,18 +153,24 @@ void sweep_needs_valid_time() {
 
 void prune_old_committed_sun_files() {
     FsStore store(LittleFS, "/sun");
-    for (const char* target : {"sdo-20775", "sdo-20776", "art-met-1"}) {
+    for (const char* target : {"sdo-9999", "sdo-20775", "sdo-20776", "art-met-1"}) {
         seed(store, target, kNow);
         assert(store.commit(target));
     }
     seed(store, "sdo-20777", kNow);
-    store.pruneCommitted("sdo-", "sdo-20776");
+    assert(store.retainPreviousCommitted("sdo-", 20777) == "sdo-20776");
+    assert(!store.openCommitted("sdo-9999"));
     assert(!store.openCommitted("sdo-20775"));
     auto sun = store.openCommitted("sdo-20776");
     assert(sun && sun.size() == sizeof(kBody));
     assert(store.openCommitted("art-met-1"));
     PartialMeta meta{};
     assert(store.size("sdo-20777") == sizeof(kBody) && store.readMeta("sdo-20777", meta));
+    assert(store.commit("sdo-20777"));
+    assert(store.retainPreviousCommitted("sdo-", 20777) == "sdo-20776");
+    assert(store.openCommitted("sdo-20777") && store.openCommitted("sdo-20776"));
+    assert(store.retainPreviousCommitted("sdo-", 20778) == "sdo-20777");
+    assert(!store.openCommitted("sdo-20776"));
 }
 }
 

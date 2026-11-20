@@ -52,6 +52,7 @@ public:
 
 private:
     bool ready() {
+        if (!client) return false;
         if (feed_) feed_();
         const uint32_t elapsed = millis() - started_;
         if (elapsed >= budget_) return false;

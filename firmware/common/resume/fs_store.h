@@ -23,12 +23,15 @@ public:
 
     // Read a verified staging file into the caller's buffer and retire it.
     bool takeCommitted(const char* target, uint8_t* bytes, size_t size);
+    bool readCommitted(const char* target, uint8_t* bytes, size_t size);
     fs::File openCommitted(const char* target);
     bool removeCommitted(const char* target);
-    void pruneCommitted(const char* prefix, const char* keep);
+    // Keep the newest committed day before today and return its target name.
+    std::string retainPreviousCommitted(const char* prefix, uint32_t today);
     void sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&));
 
 private:
+    bool readFile(const std::string& path, uint8_t* bytes, size_t size);
     std::string path(const char* target) const;
     bool ensureRoot();
     fs::File openRead(const std::string& path);

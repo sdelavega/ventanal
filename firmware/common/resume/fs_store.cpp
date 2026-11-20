@@ -3,6 +3,7 @@
 #include "fs_store.h"
 #include "resume.h"
 #include <cerrno>
+#include <cstdlib>
 #ifdef ARDUINO_ARCH_ESP32
 #include <fcntl.h>
 #include <unistd.h>
@@ -167,6 +168,17 @@ bool FsStore::sha256(const char* target, uint8_t out[32]) {
 bool FsStore::takeCommitted(const char* target, uint8_t* bytes, size_t size) {
     const auto base = path(target);
     if (base.empty()) return false;
+    const bool ok = readFile(base, bytes, size);
+    const bool removed = remove(base);
+    return (ok && removed) || fail();
+}
+
+bool FsStore::readCommitted(const char* target, uint8_t* bytes, size_t size) {
+    const auto base = path(target);
+    return !faulted_ && !base.empty() && (readFile(base, bytes, size) || fail());
+}
+
+bool FsStore::readFile(const std::string& base, uint8_t* bytes, size_t size) {
     auto file = openRead(base);
     bool ok = file && file.size() == size;
     while (ok && size) {
@@ -176,8 +188,7 @@ bool FsStore::takeCommitted(const char* target, uint8_t* bytes, size_t size) {
         size -= count;
     }
     file.close();
-    const bool removed = remove(base);
-    return (ok && removed) || fail();
+    return ok;
 }
 
 fs::File FsStore::openCommitted(const char* target) {
@@ -190,20 +201,34 @@ bool FsStore::removeCommitted(const char* target) {
     return !base.empty() && remove(base);
 }
 
-void FsStore::pruneCommitted(const char* prefix, const char* keep) {
-    if (faulted_) return;
+std::string FsStore::retainPreviousCommitted(const char* prefix, uint32_t today) {
+    if (faulted_) return {};
     auto directory = openRead(root_);
-    if (!directory || !directory.isDirectory()) return;
+    if (!directory || !directory.isDirectory()) return {};
+    const size_t prefixLength = std::strlen(prefix);
+    std::string previous;
+    unsigned long previousDay = 0;
     std::vector<std::string> retired;
     while (auto entry = directory.openNextFile()) {
         if (entry.isDirectory()) continue;
         const std::string name = entry.name();
-        if (name != keep && name.compare(0, std::strlen(prefix), prefix) == 0 && !path(name.c_str()).empty())
+        if (name.size() <= prefixLength || name.compare(0, prefixLength, prefix) != 0 ||
+            name.find_first_not_of("0123456789", prefixLength) != std::string::npos)
+            continue;
+        const unsigned long day = std::strtoul(name.c_str() + prefixLength, nullptr, 10);
+        if (day >= today) continue;
+        if (previous.empty() || day > previousDay) {
+            if (!previous.empty()) retired.push_back(previous);
+            previous = name;
+            previousDay = day;
+        } else {
             retired.push_back(name);
+        }
     }
     directory.close();
     for (const auto& name : retired)
         if (!removeCommitted(name.c_str())) break;
+    return previous;
 }
 
 void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)) {
