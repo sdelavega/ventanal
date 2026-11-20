@@ -8,6 +8,7 @@
 #pragma once
 
 #include "art_sources.h"
+#include "art_state.h"
 #include "standalone_seasons.h"
 #include "weather_data.h"
 #include <cstdint>
@@ -46,20 +47,19 @@ inline uint32_t candidateKey(const ArtCandidate& c) {
     return fnv1a(c.objectId, fnv1a(":", fnv1a(c.source)));
 }
 
-struct SeenRing {
-    uint32_t keys[64]{};
-    uint8_t next = 0, count = 0;
-    bool contains(uint32_t key) const {
-        for (int i = 0; i < count; ++i)
-            if (keys[i] == key) return true;
-        return false;
+// An art pass shares this budget across searches and image downloads.
+class ArtPassBudget {
+public:
+    static constexpr uint32_t limitMs = 4 * 60 * 1000;
+
+    uint32_t remainingMs(uint32_t elapsedMs) const {
+        return failures_ < 2 && elapsedMs < limitMs ? limitMs - elapsedMs : 0;
     }
-    void add(uint32_t key) {
-        if (contains(key)) return;
-        keys[next] = key;
-        next = uint8_t((next + 1) % 64);
-        if (count < 64) ++count;
-    }
+    bool keepGoing(uint32_t elapsedMs) const { return remainingMs(elapsedMs) != 0; }
+    void note(int status) { failures_ = status == -1 ? failures_ + 1 : 0; }
+
+private:
+    int failures_ = 0;
 };
 
 // Up to `want` candidate indices in a seeded order: unseen pieces first, then

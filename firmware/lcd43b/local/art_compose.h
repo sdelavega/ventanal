@@ -106,11 +106,16 @@ public:
         // Rows one band of source rows can touch, plus the rows still open.
         bandRows_ = int(int64_t(blockRows + 2) * dest.h / crop.h) + 4;
         nextRow_ = 0;
+        bandY_ = -1;
         return sums_.allocate(size_t(bandRows_) * size_t(dest.w));
     }
 
     // One block: w x h RGB888 pixels at (x, y) of the source.
     void block(int x, int y, int w, int h, const uint8_t* rgb) {
+        if (y > bandY_) {
+            flushBefore(y);
+            bandY_ = y;
+        }
         for (int row = 0; row < h; ++row) {
             const int sy = y + row;
             if (sy < 0 || sy >= int(rowFirst_.size) || rowFirst_[size_t(sy)] < 0) continue;
@@ -132,7 +137,6 @@ public:
                 }
             }
         }
-        if (x + w >= sourceWidth_) flushBefore(y + h);  // a band of source rows is complete
     }
 
     void finish() { flushBefore(1 << 30); }
@@ -161,7 +165,7 @@ private:
 
     Frame frame_{nullptr};
     ArtRect dest_, crop_;
-    int sourceWidth_ = 0, bandRows_ = 0, nextRow_ = 0;
+    int sourceWidth_ = 0, bandRows_ = 0, nextRow_ = 0, bandY_ = -1;
     Buffer<int16_t> rowFirst_, rowLast_, colFirst_, colLast_;
     Buffer<int> rowEnd_;
     Buffer<Sum> sums_;

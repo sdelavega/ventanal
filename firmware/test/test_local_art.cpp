@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "../lcd43b/local/art_day.h"
+#include "../lcd43b/local/art_compose.h"
 #include <cassert>
 #include <cstdio>
 #include <cstring>
@@ -158,7 +159,48 @@ static void no_repeat_within_seen_ring() {
     assert(full.count == 64 && !full.contains(0) && full.contains(99));
 }
 
+static void art_pass_budget() {
+    ArtPassBudget budget;
+    assert(budget.keepGoing(0));
+    budget.note(-1);   // search fails
+    assert(budget.keepGoing(1000));
+    budget.note(503);  // an HTTP response resets the transport failure streak
+    budget.note(-1);   // the next search fails
+    assert(budget.keepGoing(2000));
+    budget.note(-1);   // an image download fails too
+    assert(!budget.keepGoing(3000));
+
+    ArtPassBudget timed;
+    assert(timed.remainingMs(ArtPassBudget::limitMs - 1) == 1);
+    assert(!timed.keepGoing(ArtPassBudget::limitMs));
+    assert(!timed.keepGoing(ArtPassBudget::limitMs + 1));
+    puts("art pass budget: consecutive transport failures and four-minute deadline passed");
+}
+
+static void resampler_flushes_short_block_bands() {
+    constexpr int height = 32;
+    std::vector<uint16_t> pixels(size_t(FRAME_WIDTH) * height);
+    ArtResampler resampler;
+    assert(resampler.begin({pixels.data(), 0, height}, {0, 0, 2, height}, {0, 0, 5, height}, 5, height, 2));
+
+    for (int y = 0; y < height; y += 2) {
+        uint8_t block[2 * 2 * 3] = {};
+        for (int row = 0; row < 2; ++row)
+            for (int col = 0; col < 2; ++col) block[(row * 2 + col) * 3] = uint8_t(8 * ((y + row) % 31 + 1));
+        resampler.block(0, y, 2, 2, block);
+        resampler.block(2, y, 2, 2, block);  // ends one pixel before the assumed width
+    }
+    resampler.finish();
+    for (int y = 0; y < height; ++y) {
+        const uint16_t want = rgb565(uint32_t(8 * (y % 31 + 1)) << 16);
+        assert(pixels[size_t(y * FRAME_WIDTH)] == want && pixels[size_t(y * FRAME_WIDTH + 1)] == want);
+    }
+    puts("art resampler: every row rendered with short right-edge blocks");
+}
+
 int main() {
+    art_pass_budget();
+    resampler_flushes_short_block_bands();
     seasons_from_the_example();
     day_pick_is_deterministic();
     no_repeat_within_seen_ring();

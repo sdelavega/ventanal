@@ -12,4 +12,7 @@ namespace lcd {
 void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                      const ResidentCache& cache);
 
+// Persists staged standalone art state on the display loop.
+bool saveArtState(const local::ArtState& state);
+
 }  // namespace lcd

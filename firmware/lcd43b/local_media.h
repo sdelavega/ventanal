@@ -20,7 +20,7 @@ bool deflateFrame(const uint8_t* frame, FrameBody& body, Watchdog& watchdog);
 // Composes an art frame (pixels of `f`) from a baseline JPEG with the
 // server's layout and credit; false for a progressive or damaged JPEG.
 bool composeArtJpeg(const uint8_t* jpeg, size_t length, local::Frame f, const local::ArtCredit& credit,
-                    Watchdog& watchdog);
+                    Watchdog& watchdog, uint32_t budgetMs = UINT32_MAX);
 
 // Draws the SDO image (a baseline JPEG) into local::SUN_RECT of `f`, cropped
 // like the server's crop_sun() and decoded at the smallest scale that still

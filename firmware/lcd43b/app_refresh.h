@@ -86,6 +86,8 @@ struct PendingFrame {
     const lcd::FrameBody* body;
     size_t requestedBytes = 0;
     int releaseSlot = -1;
+    lcd::ArtFrame* art = nullptr;
+    int artCount = 0;
 };
 PendingFrame pendingFrame;
 SemaphoreHandle_t frameStaged;       // worker -> loop: decoded frame ready
@@ -98,6 +100,12 @@ bool stageResidentFrame(int slot, const lcd::FrameInfo* info, const lcd::FrameBo
     xSemaphoreGive(frameStaged);
     xSemaphoreTake(frameCopied, portMAX_DELAY);
     return frameAccepted;
+}
+
+void stageArtFrames(lcd::ArtFrame* frames, int count) {
+    pendingFrame = {-1, nullptr, nullptr, 0, -1, frames, count};
+    xSemaphoreGive(frameStaged);
+    xSemaphoreTake(frameCopied, portMAX_DELAY);
 }
 
 void requestWireMemory(size_t bytes) {
@@ -124,8 +132,62 @@ uint8_t* clearOverrideSave() {
     return retired;
 }
 
+// Consume the decoded frame and hand its retired buffer back to the caller.
+void commitResidentFrame(const PendingFrame& frame, uint8_t*& pixels) {
+    uint8_t* retired = nullptr;
+    if (frame.info) {
+        std::swap(residentFrames[frame.slot], pixels);
+        if (pixels && pixels == overrideFrame) {
+            ownOverrideFrame = true;
+            pixels = nullptr;
+        } else {
+            retired = pixels;
+        }
+    }
+    auto& id = state.cachedIds[frame.slot];
+    const char* nextId = frame.info ? frame.info->id : "";
+    const bool changed = strcmp(id, nextId) != 0;
+    if (mounted && changed) {
+        auto& save = deferredFrames[frame.slot];
+        if (save.replace(nextId, *frame.body, millis())) {
+            lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
+                     unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
+        }
+    }
+    strcpy(id, nextId);
+    uint8_t* oldOverride = nullptr;
+    if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
+        owner.mainChanged(id);
+        oldOverride = clearOverrideSave();
+    }
+    if ((changed || panel.references(framePixels(retired))) &&
+        !settingsPage.active && screenSlot(screenIndex) == frame.slot)
+        show(screenIndex);
+    retirePixels(framePixels(retired));
+    retirePixels(framePixels(oldOverride));
+    free(oldOverride);
+}
+
 void applyResidentFrame() {
     const auto frame = pendingFrame;
+    if (frame.art) {
+        // The worker uses the existing scratch for the final changed slot
+        // when it can. Recycle any retired buffer into scratch if needed.
+        for (int i = 0; i < frame.artCount; ++i) {
+            auto& art = frame.art[i];
+            if (!art.pixels) continue;  // same id
+            if (art.pixels == refreshCache.staging) {
+                commitResidentFrame({art.slot, &art.info, &art.body}, refreshCache.staging);
+                art.pixels = nullptr;
+            } else {
+                commitResidentFrame({art.slot, &art.info, &art.body}, art.pixels);
+            }
+        }
+        for (int i = 0; !refreshCache.staging && i < frame.artCount; ++i)
+            std::swap(refreshCache.staging, frame.art[i].pixels);
+        xSemaphoreGive(frameCopied);
+        return;
+    }
     if (frame.slot < 0 && frame.releaseSlot >= 0) {
         // Lend a spare's frame memory to the worker (standalone art). Never the
         // spare on screen or a pinned override; an empty id makes the slot read
@@ -150,43 +212,15 @@ void applyResidentFrame() {
         xSemaphoreGive(frameCopied);
         return;
     }
-    uint8_t* retired = nullptr;
-    if (frame.info) {
-        const bool pinnedSpare = residentFrames[frame.slot] && residentFrames[frame.slot] == overrideFrame;
-        auto* replacement = pinnedSpare ? static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES)) : nullptr;
-        if (pinnedSpare && !replacement) {
-            frameAccepted = false;
-            xSemaphoreGive(frameCopied);
-            return;
-        }
-        std::swap(residentFrames[frame.slot], refreshCache.staging);
-        if (pinnedSpare) {
-            ownOverrideFrame = true;
-            refreshCache.staging = replacement;
-        } else retired = refreshCache.staging;
+    const bool pinned = frame.info && residentFrames[frame.slot] && residentFrames[frame.slot] == overrideFrame;
+    auto* replacement = pinned ? static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES)) : nullptr;
+    if (pinned && !replacement) {
+        frameAccepted = false;
+        xSemaphoreGive(frameCopied);
+        return;
     }
-    auto& id = state.cachedIds[frame.slot];
-    const char* nextId = frame.info ? frame.info->id : "";
-    const bool changed = strcmp(id, nextId) != 0;
-    if (mounted && changed) {
-        auto& save = deferredFrames[frame.slot];
-        if (save.replace(nextId, *frame.body, millis())) {
-            lcd::log("cache queued slot=%s bytes=%u free_psram=%u\n", lcd::SLOT_NAMES[frame.slot],
-                     unsigned(frame.body->size), unsigned(ESP.getFreePsram()));
-        }
-    }
-    strcpy(id, nextId);
-    uint8_t* oldOverride = nullptr;
-    if (frame.slot == 0 && strcmp(owner.mainId, id) != 0) {
-        owner.mainChanged(id);
-        oldOverride = clearOverrideSave();
-    }
-    if ((changed || panel.references(framePixels(retired))) &&
-        !settingsPage.active && screenSlot(screenIndex) == frame.slot)
-        show(screenIndex);
-    retirePixels(framePixels(retired));
-    retirePixels(framePixels(oldOverride));
-    free(oldOverride);
+    commitResidentFrame(frame, refreshCache.staging);
+    if (replacement) refreshCache.staging = replacement;
     if (!refreshCache.staging) {  // the frame went into a released slot: a new scratch buffer
         refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
         lcd::log("cache staging realloc ok=%d\n", refreshCache.staging != nullptr);
@@ -427,7 +461,10 @@ void applyFinishedRefresh() {
     {
         const bool ackUpdate = refreshStaging.manifestOk && refreshOtaReport[0] && !staleRollback;
         ScanoutSavePause pause(!LitNvsWrites && (writesMetadata || writesOwner || ackUpdate ||
-                                                writesCallState || githubChecked || githubCheckFailed));
+                                                writesCallState || refreshStaging.artStateChanged ||
+                                                githubChecked || githubCheckFailed));
+        if (refreshStaging.artStateChanged && !lcd::saveArtState(refreshStaging.artState))
+            lcd::log("standalone error=art-save\n");
         if (githubChecked) {
             applyGithubCheck();
             if (!checkQueued) updateNotice = "";

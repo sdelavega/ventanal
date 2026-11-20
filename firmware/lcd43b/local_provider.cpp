@@ -102,9 +102,9 @@ void wireId(const FrameBody& body, char (&id)[17]) {
 
 constexpr uint8_t VNR1[HEADER_BYTES] = {'V', 'N', 'R', '1', 0x20, 0x03, 0xE0, 0x01};
 
-local::Frame stagingFrame(const ResidentCache& cache) {
-    memcpy(cache.staging, VNR1, HEADER_BYTES);
-    return local::Frame{reinterpret_cast<uint16_t*>(cache.staging + HEADER_BYTES)};
+local::Frame drawingFrame(uint8_t* pixels) {
+    memcpy(pixels, VNR1, HEADER_BYTES);
+    return local::Frame{reinterpret_cast<uint16_t*>(pixels + HEADER_BYTES)};
 }
 
 // The staging buffer holds a finished frame: compress it and hand it over.
@@ -232,7 +232,7 @@ void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshRe
     bool sun = false;
     {
         ScanScope activity(ScanActivity::Inflate);
-        local::renderSolar(stagingFrame(cache), *solar, screen, now, [&](local::Frame f) {
+        local::renderSolar(drawingFrame(cache.staging), *solar, screen, now, [&](local::Frame f) {
             return sun = sunJpeg && drawSunJpeg(sunJpeg, sunLength, f, watchdog);
         });
     }
@@ -252,14 +252,8 @@ constexpr int ReservedSpareSlot = 3 + StandaloneSpares;  // slot 5, "spare2"
 constexpr int ArtWant = 1 + StandaloneSpares;
 constexpr uint32_t ArtRetrySeconds = 3600;
 
-struct ArtState {
-    uint32_t day = 0;          // YYYYMMDD of the set on screen
-    uint32_t failedAt = 0;     // epoch of the last failed attempt
-    local::SeenRing seen;
-};
-
-ArtState loadArtState() {
-    ArtState s;
+local::ArtState loadArtState() {
+    local::ArtState s;
     Preferences prefs;
     if (prefs.begin(LocalNamespace, true)) {
         s.day = prefs.getUInt("artday", 0);
@@ -268,15 +262,6 @@ ArtState loadArtState() {
         prefs.end();
     }
     return s;
-}
-
-void saveArtState(const ArtState& s) {
-    Preferences prefs;
-    if (!prefs.begin(LocalNamespace, false)) return;
-    prefs.putUInt("artday", s.day);
-    prefs.putUInt("artfail", s.failedAt);
-    prefs.putBytes("seen", &s.seen, sizeof s.seen);
-    prefs.end();
 }
 
 const char* deviceId() {
@@ -289,23 +274,40 @@ const char* deviceId() {
     return id;
 }
 
-int searchArt(const char* term, local::ArtCandidate* pool, int max, Watchdog& watchdog) {
+struct ArtPass {
+    uint32_t started = millis();
+    local::ArtPassBudget budget;
+
+    uint32_t remainingMs() const { return budget.remainingMs(millis() - started); }
+
+    HttpsResult fetch(const char* url, char* bytes, size_t cap, uint32_t timeout, Watchdog& watchdog) {
+        const uint32_t remaining = remainingMs();
+        if (!remaining) return {};
+        fetchWatchdog = &watchdog;
+        const HttpsResult got = httpsGet(url, bytes, cap, std::min(remaining, timeout), feedFetch);
+        budget.note(got.status);
+        return got;
+    }
+};
+
+int searchArt(const char* term, local::ArtCandidate* pool, int max, ArtPass& pass, Watchdog& watchdog) {
     PsramBuffer body(96 * 1024);
     if (!body.data) return 0;
     char url[320];
     int n = 0;
     local::clevelandSearchUrl(term, 12, url, sizeof url);
-    HttpsResult got = get(url, body, watchdog);
+    HttpsResult got = pass.fetch(url, body.data, body.cap, 20000, watchdog);
     const int cleveland = got.status == 200 && !got.truncated ? local::parseClevelandSearch(body.data, pool, max) : -1;
     if (cleveland > 0) n += cleveland;
+    if (!pass.remainingMs()) return n;
     local::metSearchUrl(term, 10, url, sizeof url);
-    got = get(url, body, watchdog);
+    got = pass.fetch(url, body.data, body.cap, 20000, watchdog);
     uint32_t ids[10];
     const int found = got.status == 200 && !got.truncated ? local::parseMetSearchIds(body.data, ids, 10) : 0;
     int met = 0;
-    for (int i = 0; i < found && i < 6 && n < max; ++i) {  // at most six object lookups
+    for (int i = 0; i < found && i < 6 && n < max && pass.remainingMs(); ++i) {  // at most six object lookups
         local::metObjectUrl(ids[i], url, sizeof url);
-        got = get(url, body, watchdog);
+        got = pass.fetch(url, body.data, body.cap, 20000, watchdog);
         if (got.status == 200 && !got.truncated && local::parseMetObject(body.data, pool[n])) {
             ++n;
             ++met;
@@ -326,7 +328,7 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
     today.month = uint8_t(local.tm_mon + 1);
     today.day = uint8_t(local.tm_mday);
     const uint32_t day = uint32_t(today.year) * 10000 + today.month * 100 + today.day;
-    ArtState state = loadArtState();
+    local::ArtState state = loadArtState();
 #ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
     static bool forced = false;  // diagnostic runs: a new set on the first pass after boot
     state.failedAt = 0;
@@ -337,16 +339,24 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
     if ((state.day == day && haveArt) || (state.failedAt && uint32_t(now) - state.failedAt < ArtRetrySeconds))
         return -1;
 
+    ArtPass pass;
     const char* term = local::dayTerm(today, deviceId());
     auto pool = std::unique_ptr<local::ArtCandidate[]>(new (std::nothrow) local::ArtCandidate[24]);
-    if (!pool) return -1;
-    const int found = searchArt(term, pool.get(), 24, watchdog);
+    const int found = pool ? searchArt(term, pool.get(), 24, pass, watchdog) : 0;
     int order[24];
     const int ranked = local::pickCandidates(pool.get(), found, state.seen, local::daySeed(today, deviceId()), found, order);
 
     static const int slots[ArtWant] = {0, 3, 4};
+    ArtFrame frames[ArtWant];
+    uint32_t keys[ArtWant];
     int placed = 0;
-    for (int i = 0; i < ranked && placed < ArtWant && cache.staging; ++i) {
+    // Empty spares have no old art to preserve. Reuse their PSRAM for the
+    // pending set, especially on first boot.
+    if (ranked >= ArtWant && cache.releaseFrame) {
+        for (int i = 1; i < ArtWant && pass.remainingMs(); ++i)
+            if (!currentIds[slots[i]][0]) cache.releaseFrame(slots[i]);
+    }
+    for (int i = 0; i < ranked && placed < ArtWant && pass.remainingMs(); ++i) {
         const local::ArtCandidate& c = pool[size_t(order[i])];
         const local::ArtCredit credit{c.title, c.artist, c.date, c.museum};
         const uint32_t started = millis();
@@ -368,50 +378,84 @@ int refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResul
             log("standalone art memory=short largest=%u\n", unsigned(room));
             break;
         }
-        fetchWatchdog = &watchdog;
-        const HttpsResult got = httpsGet(c.imageUrl, reinterpret_cast<char*>(bytes + header), cap, 45000, feedFetch);
-        bool composed = false;
-        if (got.status == 200 && !got.truncated) {
-            ScanScope activity(ScanActivity::Inflate);  // a full-frame write, like inflating one
-            composed = composeArtJpeg(bytes + header, got.length, stagingFrame(cache), credit, watchdog);
-        }
-        log("standalone art piece=%s:%s status=%d bytes=%u truncated=%d composed=%d ms=%lu\n", c.source, c.objectId,
-            got.status, unsigned(got.length), got.truncated, composed, static_cast<unsigned long>(millis() - started));
-        if (!composed) {
+        const HttpsResult got = pass.fetch(c.imageUrl, reinterpret_cast<char*>(bytes + header), cap, 45000, watchdog);
+        log("standalone art piece=%s:%s status=%d bytes=%u truncated=%d ms=%lu\n", c.source, c.objectId,
+            got.status, unsigned(got.length), got.truncated, static_cast<unsigned long>(millis() - started));
+        if (got.status != 200 || got.truncated || !pass.remainingMs()) {
             heap_caps_free(bytes);
             continue;
         }
         writeArtBodyHeader(bytes, credit);
         auto* shrunk = static_cast<uint8_t*>(heap_caps_realloc(bytes, header + got.length, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT));
         FrameBody body{std::shared_ptr<uint8_t>(shrunk ? shrunk : bytes, heap_caps_free), header + got.length};
-        const int slot = slots[placed];
-        FrameInfo& info = slot == 0 ? result.manifest.screens[0] : result.manifest.spares[slot - 3];
-        wireId(body, info.id);
-        info.size = body.size;
-        info.encoding = FrameEncoding::Zlib;  // not a raw frame (the loader tells VNA1 by its magic)
-        info.present = true;
-        if (!strcmp(currentIds[slot], info.id) || cache.publish(slot, &info, body)) {
-            strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
-            result.frameOk[slot] = true;
-            state.seen.add(local::candidateKey(c));
-            ++placed;
+        auto& frame = frames[placed];
+        frame.slot = slots[placed];
+        wireId(body, frame.info.id);
+        if (strcmp(currentIds[frame.slot], frame.info.id)) {
+            // Keep the old set resident until all three pieces are ready.
+            // Two temporary decoded frames suffice: the last uses scratch.
+            if (placed < ArtWant - 1 && !frame.pixels) {
+                if (cache.reclaimWireMemory) cache.reclaimWireMemory(FRAME_BYTES);
+                frame.pixels = static_cast<uint8_t*>(ps_malloc(FRAME_BYTES));
+                if (!frame.pixels) break;
+            }
+            uint8_t* pixels = frame.pixels ? frame.pixels : cache.staging;
+            bool composed = false;
+            if (const uint32_t remaining = pass.remainingMs()) {
+                ScanScope activity(ScanActivity::Inflate);
+                composed = composeArtJpeg(body.bytes.get() + header, got.length, drawingFrame(pixels), credit,
+                                          watchdog, remaining);
+            }
+            log("standalone art composed=%d\n", composed);
+            if (!composed) continue;
+            frame.pixels = pixels;
         } else {
-            result.frameFailed[slot] = true;
+            heap_caps_free(frame.pixels);
+            frame.pixels = nullptr;
         }
+        frame.info.present = true;
+        frame.info.size = body.size;
+        frame.info.encoding = FrameEncoding::Zlib;  // the cache loader recognizes VNA1 by its magic
+        frame.body = std::move(body);
+        keys[placed++] = local::candidateKey(c);
     }
 
-    if (placed) {
+    const bool complete = placed == ArtWant && pass.remainingMs() && cache.publishArt;
+    if (complete) {
+        cache.publishArt(frames, ArtWant);
+        for (int i = 0; i < ArtWant; ++i) {
+            const auto& frame = frames[i];
+            FrameInfo& info = frame.slot == 0 ? result.manifest.screens[0] : result.manifest.spares[frame.slot - 3];
+            info = frame.info;
+            strlcpy(result.frameIds[frame.slot], info.id, sizeof result.frameIds[frame.slot]);
+            result.frameOk[frame.slot] = true;
+            state.seen.add(keys[i]);
+        }
         state.day = day;
         state.failedAt = 0;
     } else {
-        state.failedAt = uint32_t(now);
+        state.failedAt = uint32_t(time(nullptr));
     }
-    saveArtState(state);
-    log("standalone art day=%lu placed=%d of %d candidates\n", static_cast<unsigned long>(day), placed, found);
-    return placed;
+    for (const auto& frame : frames)
+        if (frame.pixels != cache.staging) heap_caps_free(frame.pixels);
+    result.artState = state;
+    result.artStateChanged = true;
+    log("standalone art day=%lu prepared=%d of %d candidates published=%d\n",
+        static_cast<unsigned long>(day), placed, found, complete);
+    return complete ? ArtWant : 0;
 }
 
 }  // namespace
+
+bool saveArtState(const local::ArtState& s) {
+    Preferences prefs;
+    if (!prefs.begin(LocalNamespace, false)) return false;
+    const bool saved = prefs.putUInt("artfail", s.failedAt) == sizeof s.failedAt
+        && prefs.putBytes("seen", &s.seen, sizeof s.seen) == sizeof s.seen
+        && prefs.putUInt("artday", s.day) == sizeof s.day;
+    prefs.end();
+    return saved;
+}
 
 void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                      const ResidentCache& cache) {
@@ -468,7 +512,7 @@ void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& res
                 const uint32_t started = millis();
                 {
                     ScanScope activity(ScanActivity::Inflate);
-                    local::renderWeather(stagingFrame(cache), *weather, lastAlerts, lastAlertCount, screen, now);
+                    local::renderWeather(drawingFrame(cache.staging), *weather, lastAlerts, lastAlertCount, screen, now);
                 }
                 log("standalone render slot=weather ms=%lu\n", static_cast<unsigned long>(millis() - started));
                 publishStaged(1, m.screens[1], currentIds, result, watchdog, cache);

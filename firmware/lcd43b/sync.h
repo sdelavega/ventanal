@@ -20,6 +20,7 @@
 #include "frame.h"
 #include "deferred_save.h"
 #include "log.h"
+#include "local/art_state.h"
 #include "manifest.h"
 #include "persist.h"
 #include "scanout_diag.h"
@@ -31,6 +32,14 @@ namespace lcd {
 // spare0..2).
 inline const char* const SLOT_NAMES[SCREEN_SLOTS] = {
     "art", "weather", "solar", "spare0", "spare1", "spare2"};
+
+struct ArtFrame {
+    int slot = 0;
+    FrameInfo info;
+    FrameBody body;
+    // Publication consumes the pixels and returns a retired buffer (or null).
+    uint8_t* pixels = nullptr;
+};
 
 struct ResidentCache {
     uint8_t* staging = nullptr; // decoded scratch, reused after each hand-off
@@ -47,6 +56,8 @@ struct ResidentCache {
     // about to be replaced) so its PSRAM can be used meanwhile. Refused for a
     // spare on screen or pinned; a released slot reads as empty until filled.
     bool (*releaseFrame)(int slot) = nullptr;
+    // Publish a complete, decoded standalone art set in a single loop hand-off.
+    void (*publishArt)(ArtFrame* frames, int count) = nullptr;
 };
 
 // Budgets (ms). The transfer budget bounds each stalled frame download;
@@ -96,6 +107,8 @@ struct RefreshResult {
     // Standalone FCC check staged for the loop, which owns installation writes.
     uint32_t callCheckedAt = 0;
     uint8_t callState = 0;
+    bool artStateChanged = false;
+    local::ArtState artState;
 };
 
 // True when the manifest arrived but at least one frame it required this
