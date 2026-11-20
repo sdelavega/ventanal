@@ -9,7 +9,7 @@
 // tested against the server's own parse of the same fixtures.
 #pragma once
 
-#include <ArduinoJson.h>
+#include "json_memory.h"
 #include <cctype>
 #include <cstdlib>
 #include <cstdint>
@@ -134,7 +134,7 @@ inline int parseAicSearch(const char* json, ArtCandidate* out, int max) {
     JsonDocument filter;
     for (const char* key : {"id", "title", "artist_title", "date_display", "image_id", "thumbnail", "is_public_domain"})
         filter["data"][0][key] = true;
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json, DeserializationOption::Filter(filter)) || !doc["data"].is<JsonArrayConst>())
         return -1;
     int n = 0;
@@ -168,7 +168,7 @@ inline int parseClevelandSearch(const char* json, ArtCandidate* out, int max) {
     filter["data"][0]["share_license_status"] = true;
     filter["data"][0]["creators"][0]["description"] = true;
     filter["data"][0]["images"]["web"] = true;
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json, DeserializationOption::Filter(filter)) || !doc["data"].is<JsonArrayConst>())
         return -1;
     int n = 0;
@@ -194,7 +194,7 @@ inline int parseClevelandSearch(const char* json, ArtCandidate* out, int max) {
 }
 
 inline int parseMetSearchIds(const char* json, uint32_t* ids, int max) {
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json)) return -1;
     int n = 0;
     for (JsonVariantConst id : doc["objectIDs"].as<JsonArrayConst>()) {
@@ -211,7 +211,7 @@ inline bool parseMetObject(const char* json, ArtCandidate& c) {
     for (const char* key : {"objectID", "isPublicDomain", "primaryImage", "primaryImageSmall", "classification",
                             "title", "artistDisplayName", "objectDate"})
         filter[key] = true;
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json, DeserializationOption::Filter(filter))) return false;
     char classification[64];
     art_detail::cleanCopy(classification, doc["classification"] | "");

@@ -10,7 +10,7 @@
 #pragma once
 
 #include "weather_data.h"
-#include <ArduinoJson.h>
+#include "json_memory.h"
 #include <algorithm>
 #include <cctype>
 #include <cmath>
@@ -23,7 +23,7 @@
 namespace lcd::local {
 
 struct KpReading {
-    char timeTag[24]{};  // "2026-11-19 21:00:00.000"
+    char timeTag[24]{};  // "2026-11-19T21:00:00"
     float kp = 0;
 };
 
@@ -192,10 +192,16 @@ inline bool parseDailyIndices(const char* text, float& sfi, int& ssn) {
 
 // noaa-planetary-k-index.json: dict rows (or a header row and lists).
 inline bool parseKp(const char* json, LocalSolar& s) {
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json) || !doc.is<JsonArrayConst>()) return false;
     JsonArrayConst rows = doc.as<JsonArrayConst>();
     std::vector<std::pair<std::string, std::pair<double, int>>> readings;
+    const auto addReading = [&](JsonVariantConst stamp, JsonVariantConst kp, JsonVariantConst a) {
+        const char* tag = stamp | "";
+        LocalClock clock;
+        if (detail::parseClock(tag, clock))
+            readings.push_back({tag, {solar_detail::numberOf(kp), int(solar_detail::numberOf(a))}});
+    };
     if (rows.size() && rows[0].is<JsonArrayConst>()) {
         JsonArrayConst header = rows[0];
         int tag = -1, kp = -1, a = -1, i = 0;
@@ -213,11 +219,11 @@ inline bool parseKp(const char* json, LocalSolar& s) {
                 first = false;
                 continue;
             }
-            readings.push_back({r[tag] | "", {solar_detail::numberOf(r[kp]), int(solar_detail::numberOf(r[a]))}});
+            addReading(r[tag], r[kp], r[a]);
         }
     } else {
         for (JsonVariantConst r : rows)
-            readings.push_back({r["time_tag"] | "", {solar_detail::numberOf(r["Kp"]), int(solar_detail::numberOf(r["a_running"]))}});
+            addReading(r["time_tag"], r["Kp"], r["a_running"]);
     }
     if (readings.empty()) return false;
     std::stable_sort(readings.begin(), readings.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
@@ -264,7 +270,7 @@ inline bool parseXray(const char* json, char (&out)[12]) {
     filter[0]["time_tag"] = true;
     filter[0]["flux"] = true;
     filter[0]["energy"] = true;
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     const DeserializationError error = deserializeJson(doc, json, DeserializationOption::Filter(filter));
     if ((error && error != DeserializationError::IncompleteInput) || !doc.is<JsonArrayConst>()) return false;
     std::string bestTag;
@@ -319,7 +325,7 @@ inline void parseForecastKp(const char* text, float (&maxima)[3]) {
 
 // noaa-scales.json: "0" (now) to "3".
 inline bool parseScales(const char* json, LocalSolar& s) {
-    JsonDocument doc;
+    JsonDocument doc = localJsonDocument();
     if (!json || deserializeJson(doc, json) || !doc.is<JsonObjectConst>()) return false;
     for (int i = 0; i < 4; ++i) {
         JsonObjectConst day = doc[std::to_string(i)];
@@ -416,29 +422,32 @@ inline std::vector<WatchDay> watchDays(const std::string& m) {
 
 }  // namespace solar_detail
 
-struct AlertRow {
-    std::string productId, issue, message;
-};
-
-// active_alerts(): the latest product of each kind only; warnings until they
-// expire, watches with forecast days from today, alerts for 6 h (continued
-// alerts 36 h). Sorted with electron notices last.
-inline std::vector<std::string> activeAlerts(const std::vector<AlertRow>& rows, int64_t now) {
+// The latest product of each kind only. Keep references into the filtered
+// document and copy just the message currently being interpreted.
+inline bool parseActiveAlerts(const char* json, int64_t now, std::vector<std::string>& alerts) {
     using namespace solar_detail;
-    std::vector<const AlertRow*> sorted;
-    for (const AlertRow& r : rows) sorted.push_back(&r);
-    std::stable_sort(sorted.begin(), sorted.end(), [](const AlertRow* a, const AlertRow* b) { return a->issue < b->issue; });
-    std::vector<std::pair<std::string, const AlertRow*>> latest;  // in first-seen order, like a dict
-    for (const AlertRow* r : sorted) {
-        auto it = std::find_if(latest.begin(), latest.end(), [&](const auto& p) { return p.first == r->productId; });
-        if (it == latest.end()) latest.push_back({r->productId, r});
-        else it->second = r;
+    JsonDocument filter;
+    filter[0]["product_id"] = true;
+    filter[0]["issue_datetime"] = true;
+    filter[0]["message"] = true;
+    if (filter.overflowed()) return false;
+    JsonDocument doc = localJsonDocument();
+    if (!json || deserializeJson(doc, json, DeserializationOption::Filter(filter))
+        || !doc.is<JsonArrayConst>()) return false;
+    std::vector<JsonVariantConst> latest;
+    for (JsonVariantConst row : doc.as<JsonArrayConst>()) {
+        const char* id = row["product_id"] | "";
+        auto it = std::find_if(latest.begin(), latest.end(), [&](JsonVariantConst current) {
+            return strcmp(current["product_id"] | "", id) == 0;
+        });
+        if (it == latest.end()) latest.push_back(row);
+        else if (strcmp(row["issue_datetime"] | "", (*it)["issue_datetime"] | "") >= 0) *it = row;
     }
     const LocalDate today = civilFromDays(now / 86400);
     const int64_t todayDays = daysFromCivil(today.year, today.month, today.day);
     std::vector<std::string> result;
-    for (const auto& [id, row] : latest) {
-        const std::string& message = row->message;
+    for (JsonVariantConst row : latest) {
+        std::string message = row["message"] | "";
         if (upper(message).find("CANCEL") != std::string::npos) continue;
         std::string title;
         if (!alertTitle(message, title)) continue;
@@ -447,7 +456,7 @@ inline std::vector<std::string> activeAlerts(const std::vector<AlertRow>& rows, 
         if (alertEnd(message, expires)) {
             if (expires > now) result.push_back(title + " \xc2\xb7 UNTIL " + utcStamp(expires));
         } else if (startsWith(title, "WATCH:")) {
-            if (!issueEpoch(row->issue.c_str(), issue)) continue;
+            if (!issueEpoch(row["issue_datetime"] | "", issue)) continue;
             const LocalDate issued = civilFromDays(issue / 86400);
             std::vector<std::string> days;
             for (const WatchDay& w : watchDays(message)) {
@@ -468,7 +477,7 @@ inline std::vector<std::string> activeAlerts(const std::vector<AlertRow>& rows, 
                 result.push_back(title + " \xc2\xb7 " + joined);
             }
         } else if (title.find("ALERT:") != std::string::npos) {
-            if (!issueEpoch(row->issue.c_str(), issue)) continue;
+            if (!issueEpoch(row["issue_datetime"] | "", issue)) continue;
             const int64_t age = now - issue, limit = (startsWith(title, "CONTINUED") ? 36 : 6) * 3600;
             if (age >= 0 && age < limit) result.push_back(title + " \xc2\xb7 " + utcStamp(issue));
         }
@@ -478,15 +487,7 @@ inline std::vector<std::string> activeAlerts(const std::vector<AlertRow>& rows, 
     std::stable_sort(result.begin(), result.end(), [](const std::string& a, const std::string& b) {
         return (lower(a).find("electron") != std::string::npos) < (lower(b).find("electron") != std::string::npos);
     });
-    return result;
-}
-
-inline bool parseAlertRows(const char* json, std::vector<AlertRow>& rows) {
-    JsonDocument doc;
-    if (!json || deserializeJson(doc, json) || !doc.is<JsonArrayConst>()) return false;
-    rows.clear();
-    for (JsonVariantConst r : doc.as<JsonArrayConst>())
-        rows.push_back({r["product_id"] | "", r["issue_datetime"] | "", r["message"] | ""});
+    alerts = std::move(result);
     return true;
 }
 

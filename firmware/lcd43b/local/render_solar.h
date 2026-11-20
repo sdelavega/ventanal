@@ -208,7 +208,8 @@ void renderSolar(Frame f, const LocalSolar& s, const SolarScreen& screen, int64_
         const double kp = s.kp[i].kp;
         const double barHeight = std::max(2.0, std::min(9.0, std::max(0.0, kp)) / 9 * height);
         roundedRectTop(f, bx, y + height - barHeight, bx + 52, y + height, 2, kColourRgb(kp));
-        const std::string hour = std::string(s.kp[i].timeTag).substr(11, 2);
+        const char* tag = s.kp[i].timeTag;
+        const std::string hour = strlen(tag) >= 13 ? std::string(tag + 11, 2) : "";
         drawText(f, Antonio11, hour.c_str(), bx + 26, 365, colour::white, Anchor::MiddleBaseline);
     }
     const int threshold = int(y + height - 5.0 / 9 * height);  // 340.2: Pillow's line lands on row 340

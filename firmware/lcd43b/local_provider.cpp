@@ -181,9 +181,8 @@ bool fetchSolar(local::LocalSolar& s, Watchdog& watchdog) {
         && solarProduct("text/3-day-forecast.txt", body, watchdog);
     if (!ok) return false;
     local::parseForecastKp(body.data, s.kpMax);
-    std::vector<local::AlertRow> rows;
-    if (solarProduct("products/alerts.json", body, watchdog) && local::parseAlertRows(body.data, rows))
-        lastSolarAlerts = local::activeAlerts(rows, time(nullptr));  // otherwise the last good set
+    if (solarProduct("products/alerts.json", body, watchdog))
+        local::parseActiveAlerts(body.data, time(nullptr), lastSolarAlerts);  // on failure keep the previous set
     s.alerts = lastSolarAlerts;
     return true;
 }

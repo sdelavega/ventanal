@@ -32,9 +32,7 @@ static void solar_matches_server() {
     assert(parseXray(fixture("swpc-xray.json").c_str(), s.xray));
     parseForecastKp(fixture("swpc-forecast.txt").c_str(), s.kpMax);
     assert(parseScales(fixture("swpc-scales.json").c_str(), s));
-    std::vector<AlertRow> rows;
-    assert(parseAlertRows(fixture("swpc-alerts.json").c_str(), rows));
-    s.alerts = activeAlerts(rows, e["now_epoch"].as<int64_t>());
+    assert(parseActiveAlerts(fixture("swpc-alerts.json").c_str(), e["now_epoch"].as<int64_t>(), s.alerts));
 
     assert(near(s.sfi, e["sfi"].as<double>()) && s.ssn == e["ssn"].as<int>());
     assert(std::string(s.xray) == e["xray"].as<const char*>());
@@ -76,9 +74,8 @@ static void solar_matches_server() {
 static void alerts_match_server() {
     JsonDocument e;
     assert(!deserializeJson(e, fixture("expected-solar-alerts.json")));
-    std::vector<AlertRow> rows;
-    assert(parseAlertRows(fixture("swpc-alerts.json").c_str(), rows));
-    const std::vector<std::string> active = activeAlerts(rows, e["now_epoch"].as<int64_t>());
+    std::vector<std::string> active;
+    assert(parseActiveAlerts(fixture("swpc-alerts.json").c_str(), e["now_epoch"].as<int64_t>(), active));
     JsonArrayConst want = e["active"];
     assert(active.size() == want.size());
     for (size_t i = 0; i < active.size(); ++i) {
@@ -142,7 +139,19 @@ static void labels() {
     puts("labels ok");
 }
 
+static void kp_skips_invalid_time_tags() {
+    LocalSolar s{};
+    assert(parseKp(R"([{"Kp":9},{"time_tag":"short","Kp":8},
+        {"time_tag":"2026-11-12T25:00","Kp":7},{"time_tag":"2026-11-12T03:00:00","Kp":2}])", s));
+    assert(s.kpCount == 1 && s.k == 2 && !strcmp(s.kp[0].timeTag, "2026-11-12T03:00:00"));
+    assert(parseKp(R"([["time_tag","Kp","a_running"],[],["a",8,40],["2026-11-12T06:00",3,12]])", s));
+    assert(s.kpCount == 1 && s.k == 3 && s.a == 12);
+    assert(!parseKp(R"([{"time_tag":"short"},{"Kp":9}])", s));
+    puts("kp_skips_invalid_time_tags ok");
+}
+
 int main() {
+    kp_skips_invalid_time_tags();
     solar_matches_server();
     alerts_match_server();
     xray_tolerates_a_cut_off_file();

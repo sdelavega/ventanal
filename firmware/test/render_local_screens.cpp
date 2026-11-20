@@ -105,9 +105,7 @@ static void renderSolarCase(const std::string& dir, const char* name, const Imag
         exit(1);
     parseForecastKp(fixture("swpc-forecast.txt").c_str(), s.kpMax);
     const int64_t now = fixtureNow("expected-solar.json");
-    std::vector<AlertRow> rows;
-    if (!parseAlertRows(fixture("swpc-alerts.json").c_str(), rows)) exit(1);
-    s.alerts = activeAlerts(rows, now);
+    if (!parseActiveAlerts(fixture("swpc-alerts.json").c_str(), now, s.alerts)) exit(1);
     std::ifstream in(dir + "/" + name + "-alerts.json");
     std::stringstream text;
     text << in.rdbuf();
