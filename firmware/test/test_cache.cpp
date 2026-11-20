@@ -176,7 +176,7 @@ int main() {
     auto good = response;
     assert(!fetchFrame("http://test/frame", "/weather.vnf"));
     assert(files["/weather.vnf"] == good);
-    assert(files.at(partialPath).size() == 3 * chunkSize);
+    assert(!files.count(partialPath)); // The legacy 200 has no resumable identity.
     assert(WiFi.sleeping == WIFI_PS_MAX_MODEM && liveAllocations == 0);
     assert(lastUserAgent == "Ventanal/1.0.0");
     Inkplate d;

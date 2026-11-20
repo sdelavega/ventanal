@@ -53,7 +53,8 @@ std::string FsStore::path(const char* target) const {
     std::string name(target);
     if (name.empty() || name.front() == '.' || name.back() == '.' ||
         name.find_first_not_of("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-") != std::string::npos ||
-        hasSuffix(name, ".part") || hasSuffix(name, ".meta")) return {};
+        hasSuffix(name, ".part") || hasSuffix(name, ".meta") ||
+        hasSuffix(name, ".fail") || hasSuffix(name, ".temp")) return {};
     return root_ + '/' + name;
 }
 
@@ -85,6 +86,7 @@ bool FsStore::readMeta(const char* target, PartialMeta& meta) {
     const auto base = path(target);
     if (faulted_ || base.empty()) return false;
     auto file = openRead(base + ".meta");
+    if (!file && !ioError_) file = openRead(base + ".fail");
     if (!file) return false;
     const auto count = file.size();
     if (count != kPartialMetaV1Bytes && count != kPartialMetaBytes) return false;
@@ -97,13 +99,48 @@ bool FsStore::writeMeta(const char* target, const PartialMeta& meta) {
     const auto base = path(target);
     if (faulted_ || base.empty() || !ensureRoot()) return false;
     const auto bytes = encodePartialMeta(meta);
-    return writeSynced(fs_, base + ".meta", bytes.data(), bytes.size(), false) || fail();
+    if (ioError_)
+        return writeSynced(fs_, base + ".meta", bytes.data(), bytes.size(), false) || fail();
+
+    // Publish atomically so ENOSPC cannot damage the previous checkpoint.
+    const auto temporary = base + ".temp";
+    if (!writeSynced(fs_, temporary, bytes.data(), bytes.size(), false) ||
+        !fs_.rename(temporary.c_str(), (base + ".meta").c_str())) {
+        remove(temporary);
+        return false;
+    }
+    clearWriteFailure(base);
+    return true;
 }
 
 bool FsStore::append(const char* target, const uint8_t* bytes, size_t count) {
     const auto base = path(target);
     if (faulted_ || base.empty() || !ensureRoot()) return false;
     return writeSynced(fs_, base + ".part", bytes, count, true) || fail();
+}
+
+bool FsStore::keepAfterWriteFailure(const char* target, uint32_t have) {
+    const auto base = path(target);
+    // The removable store is identified by its I/O fallback handler.
+    if (ioError_ || base.empty()) return false;
+    const std::lock_guard<std::mutex> lock(checkpointMutex_);
+    const auto marker = base + ".fail";
+    const auto sidecar = base + ".meta";
+    if (failedCheckpoints_.count(base) || (!fs_.exists(sidecar.c_str()) && fs_.exists(marker.c_str())))
+        return false;
+
+    // A failed append may have written a tail. If truncation also fails, the
+    // sidecar still fences the tail out of the next download.
+    if (size(target) > have) truncate(target, have);
+    if (have && !fs_.rename(sidecar.c_str(), marker.c_str())) failedCheckpoints_.insert(base);
+    return true;
+}
+
+void FsStore::clearWriteFailure(const std::string& base) {
+    if (ioError_) return;
+    const std::lock_guard<std::mutex> lock(checkpointMutex_);
+    remove(base + ".fail");
+    failedCheckpoints_.erase(base);
 }
 
 bool FsStore::truncate(const char* target, uint32_t length) {
@@ -139,6 +176,7 @@ bool FsStore::commit(const char* target) {
         if (!fs_.rename(part.c_str(), base.c_str())) return fail();
     }
     remove(base + ".meta");
+    clearWriteFailure(base);
     return true;
 }
 
@@ -146,6 +184,8 @@ void FsStore::discard(const char* target) {
     const auto base = path(target);
     if (base.empty()) return;
     remove(base + ".meta");
+    clearWriteFailure(base);
+    if (!ioError_) remove(base + ".temp");
     remove(base + ".part");
 }
 
@@ -218,8 +258,13 @@ void FsStore::retainOtaTarget(const char* target) {
         const std::string name = entry.name();
         if (name.compare(0, 4, "ota-") != 0) continue;
         auto base = name;
-        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta")) base.resize(name.size() - 5);
-        if (base != target && !path(base.c_str()).empty()) retired.push_back(name);
+        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta") ||
+            hasSuffix(name, ".fail") || hasSuffix(name, ".temp")) base.resize(name.size() - 5);
+        if (base != target && !path(base.c_str()).empty()) {
+            retired.push_back(name);
+            const std::lock_guard<std::mutex> lock(checkpointMutex_);
+            failedCheckpoints_.erase(path(base.c_str()));
+        }
     }
     directory.close();
     for (const auto& name : retired)
@@ -269,14 +314,16 @@ void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)
     auto directory = openRead(root_);
     if (!directory || !directory.isDirectory()) return;
     std::vector<std::string> targets;
+    std::vector<std::string> temporaries;
     while (auto entry = directory.openNextFile()) {
         if (entry.isDirectory()) continue;
         const std::string name = entry.name();
-        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta")) {
+        if (!ioError_ && hasSuffix(name, ".temp")) temporaries.push_back(name);
+        if (hasSuffix(name, ".part") || hasSuffix(name, ".meta") || (!ioError_ && hasSuffix(name, ".fail")))
             targets.push_back(name.substr(0, name.size() - 5));
-        }
     }
     directory.close();
+    for (const auto& name : temporaries) remove(root_ + '/' + name);
     std::sort(targets.begin(), targets.end());
     targets.erase(std::unique(targets.begin(), targets.end()), targets.end());
     for (const auto& target : targets) {

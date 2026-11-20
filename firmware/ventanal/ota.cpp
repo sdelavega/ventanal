@@ -12,7 +12,6 @@
 #include <Update.h>
 #include <algorithm>
 #include <esp_ota_ops.h>
-#include <memory>
 
 #ifndef VENTANAL_OTA_GITHUB
 #define VENTANAL_OTA_GITHUB 0
@@ -125,38 +124,16 @@ bool checkOffer(const FirmwareOffer& offer, const esp_partition_t& target, Relea
                         target.size, release) == ReleaseVerdict::Ok;
 }
 
-template<class Read, class StillAllowed>
+template<class StillAllowed>
 OtaFailure writeImage(Preferences& prefs, const esp_partition_t& target,
-                      const ReleaseInfo& release, uint32_t started, Read read,
-                      StillAllowed stillAllowed) {
-    constexpr size_t blockSize = 4096;
-    std::unique_ptr<uint8_t[]> block(new(std::nothrow) uint8_t[blockSize]);
-    if (!block || !Update.begin(release.size, U_FLASH)) return OtaFailure::Write;
-
-    mbedtls_sha256_context hash;
-    mbedtls_sha256_init(&hash);
-    bool hashOk = mbedtls_sha256_starts(&hash, 0) == 0;
-    size_t written = 0;
-    OtaFailure failure = OtaFailure::None;
-    while (hashOk && written < release.size) {
-        const size_t limit = std::min(blockSize, size_t(release.size) - written);
-        const int got = read(block.get(), limit);
-        if (got <= 0 || size_t(got) > limit || millis() - started >= transferMs) {
-            failure = OtaFailure::Download;
-            break;
-        }
-        if (Update.write(block.get(), got) != size_t(got)) {
-            failure = OtaFailure::Write;
-            break;
-        }
-        hashOk = mbedtls_sha256_update(&hash, block.get(), got) == 0;
-        written += got;
-    }
-    uint8_t digest[32]{};
-    hashOk = hashOk && mbedtls_sha256_finish(&hash, digest) == 0;
-    mbedtls_sha256_free(&hash);
-    if (failure == OtaFailure::None && (!hashOk || !releaseImageMatches(release, written, digest)))
-        failure = OtaFailure::Digest;
+                      const ReleaseInfo& release, fs::File& file,
+                      StillAllowed stillAllowed, const HashFeed& feed) {
+    if (!Update.begin(release.size, U_FLASH)) return OtaFailure::Install;
+    auto failure = writeStagedImage(release, [&](uint8_t* bytes, size_t count) {
+        return file.read(bytes, count);
+    }, [&](uint8_t* bytes, size_t count) {
+        return Update.write(bytes, count) == count;
+    }, feed);
     if (failure == OtaFailure::None && !stillAllowed()) failure = OtaFailure::Schedule;
     if (failure != OtaFailure::None) {
         Update.abort();
@@ -183,7 +160,7 @@ OtaFailure writeImage(Preferences& prefs, const esp_partition_t& target,
     }
     // end() requires the exact byte count, checks the ESP image and selects
     // the new boot partition. The previous image remains the rollback target.
-    return Update.end() ? OtaFailure::None : OtaFailure::Write;
+    return Update.end() ? OtaFailure::None : OtaFailure::Install;
 }
 
 uint32_t otaClock() { return millis(); }
@@ -243,9 +220,7 @@ OtaFailure stageAndInstall(Preferences& prefs, const esp_partition_t& target,
 
     const auto failure = installStaged(store, release, feed, [&](fs::File& file) {
         if (millis() - started >= transferMs || !stillAllowed()) return OtaFailure::Schedule;
-        return writeImage(prefs, target, release, started, [&](uint8_t* bytes, size_t count) {
-            return file.read(bytes, count) == count ? int(count) : -1;
-        }, stillAllowed);
+        return writeImage(prefs, target, release, file, stillAllowed, feed);
     });
     installed = failure == OtaFailure::None;
     return failure;

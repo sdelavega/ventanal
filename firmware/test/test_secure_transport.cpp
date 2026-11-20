@@ -4,6 +4,7 @@
 #include "../ventanal/net.h"
 #include "../ventanal/battery.h"
 #include "../ventanal/cache.h"
+#include "../ventanal/http.h"
 #include <Inkplate.h>
 #include <cassert>
 #include <iostream>
@@ -15,6 +16,30 @@ std::string sign(JsonDocument& doc) {
     doc["sig"]=hmacHex(deviceKey(),canonicalJson(doc.as<JsonVariantConst>()));
     std::string result; serializeJson(doc,result); return result;
 }
+static void framed_transfer_finishes_without_close() {
+    constexpr char url[] = "https://test:8766/frames/ranged";
+    const ResumeSource source{url, "pinned", "", 6, false};
+    responseBody.clear();
+    for (const auto asset : {HostRangeTransport::Asset::Firmware, HostRangeTransport::Asset::Frame}) {
+        for (const bool shortBody : {false, true}) {
+            response = shortBody ? std::vector<uint8_t>{1, 2} : std::vector<uint8_t>{1, 2, 3};
+            advertisedSize = 3;
+            fakeGetResponse = [] {
+                fakeResponseHeaders["Content-Range"] = "bytes 0-2/6";
+                return 206;
+            };
+            holdConnection = !shortBody;
+            const auto started = millis();
+            HostRangeTransport transport(url, started, 60000, 6000, asset);
+            const bool complete = transport.get(source, 0, 2, "", [](const RangeResponse& headers) {
+                return headers.status == 206 && headers.total == 6;
+            }, [](const uint8_t*, size_t) { return true; });
+            assert(complete == !shortBody);
+            assert(transport.bytesRead() == response.size() && millis() - started < 50);
+        }
+    }
+}
+
 int main() {
     assert(securityConfigured());
     // Independent Python UTF-8 canonical-JSON/HMAC vector.
@@ -139,5 +164,6 @@ int main() {
     assert(fetchManifest(a,w) && manifestExtras.orderCount==4);
     assert(manifestExtras.order[3]==Screen::Extra0 && !strcmp(manifestExtras.names[0],"extra-test"));
     assert(!strcmp(manifestExtras.extraScreens[0].id,"8cc1cf86d93ff0d6"));
+    framed_transfer_finishes_without_close();
     std::cout << "secure transport: proofs, no HTTP downgrade, signed manifest tamper rejection and last-good frame hashes passed\n";
 }

@@ -347,6 +347,36 @@ void host_range_transport_parses_416() {
     assert(sawHeaders && !transport.malformed() && transport.bytesRead() == 0);
 }
 
+bool receiveFramed206(bool shortBody) {
+    resetFakes();
+    holdConnection = !shortBody;
+    fakeGetResponse = [] {
+        fakeResponseHeaders["Content-Range"] = "bytes 0-2/6";
+        return 206;
+    };
+    advertisedSize = 3;
+    response = shortBody ? std::vector<uint8_t>{1, 2} : std::vector<uint8_t>{1, 2, 3};
+    const std::string key;
+    CountingWatchdog watchdog;
+    lcd::HostRangeTransport transport("http://host", "/frames/art.vnr", key, watchdog, millis());
+    const ResumeSource source{"http://host/frames/art.vnr", "frame-id", "", 6, true};
+    size_t received = 0;
+    const uint32_t started = millis();
+    const bool complete = transport.get(source, 0, 2, "", [](const RangeResponse& headers) {
+        assert(headers.status == 206 && headers.total == 6);
+        return true;
+    }, [&](const uint8_t*, size_t count) {
+        received += count;
+        return true;
+    });
+    assert(received == response.size());
+    assert(millis() - started < 50);
+    return complete;
+}
+
+void framed_206_accepted_without_close() { assert(receiveFramed206(false)); }
+void short_206_still_rejected() { assert(!receiveFramed206(true)); }
+
 }  // namespace
 
 // The ESP32-S3 ROM is absent on the host. Supply the RGB888 MCU blocks it
@@ -371,6 +401,8 @@ int main() {
     host_frame_resumes_across_passes();
     host_frame_hash_mismatch_fails();
     host_range_transport_parses_416();
+    short_206_still_rejected();
+    framed_206_accepted_without_close();
     {   // Oversized response: the header advertises the frame size but the
         // body keeps sending. Reads never pass the frame end, the extra
         // bytes reject the download, and the buffer is untouched beyond it.
@@ -399,7 +431,7 @@ int main() {
         files["/art.vnr"] = previous;            // the cache entry to preserve
         response = frame;
         response.insert(response.end(), 4096, 0xAB);   // trailing packet...
-        advertisedSize = int(lcd::FRAME_BYTES);
+        advertisedSize = -1;                   // no Content-Length
         delayedFrom = frame.size();              // ...arrives after 300 ms
         delayedUntilMs = 300;
         CountingWatchdog watchdog;
@@ -418,12 +450,15 @@ int main() {
         Entry art = makeEntry("art", frame);
         files["/art.vnr"] = previous;
         response = frame;
-        advertisedSize = int(lcd::FRAME_BYTES);
         holdConnection = true;                 // no hang-up, no extra bytes
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
+        advertisedSize = -1;
         assert(!receiveFrame(art, buffer, watchdog, "close-timeout"));
         assert(files["/art.vnr"] == previous);  // previous cache preserved
+        advertisedSize = int(lcd::FRAME_BYTES);
+        assert(receiveFrame(art, buffer, watchdog));
+        assert(buffer == frame);
     }
     {   // A mid-stream disconnect rejects the partial body.
         resetFakes();

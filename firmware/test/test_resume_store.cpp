@@ -72,27 +72,70 @@ void fs_store_roundtrip() {
     assert(!store.readMeta("/frame", meta));
 }
 
-class WholeResponse : public RangeTransport {
-    bool get(const ResumeSource&, uint32_t, uint32_t, const char*,
+class NextRange : public RangeTransport {
+    bool get(const ResumeSource&, uint32_t start, uint32_t, const char*,
              const ResponseHeaders& headers, const ChunkSink& sink) override {
-        return headers({200, 0, 0, sizeof(kBody), "live"}) && sink(kBody, sizeof(kBody));
+        assert(start == sizeof(kBody));
+        return headers({206, start, 2 * sizeof(kBody) - 1, 2 * sizeof(kBody), "live"})
+            && sink(kBody, sizeof(kBody));
     }
 };
 
-void write_failure_abandons_partial() {
-    FsStore store(LittleFS, "/failure");
-    seed(store, "frame", kNow);
-    files["/failure/frame"] = {42};
-    writeLimit = 1;
-    assert(!store.append("frame", kBody, sizeof(kBody)));
-    WholeResponse transport;
-    ResumeSource source{kUrl, "live", nullptr, sizeof(kBody), false};
+void seedStorageFailure(FsStore& store) {
+    assert(store.append("frame", kBody, sizeof(kBody)));
+    auto meta = metaAt(kNow);
+    meta.total = 2 * sizeof(kBody);
+    assert(store.writeMeta("frame", meta));
+}
+
+FetchOutcome failStorageWrite(FsStore& store, size_t limit) {
+    NextRange transport;
+    const ResumeSource source{kUrl, "live", nullptr, 2 * sizeof(kBody), false};
     const auto now = []() -> uint32_t { return 0; };
-    assert(resumeFetch(transport, store, "frame", source, 1, now, kNow, nullptr) == FetchOutcome::Failed);
+    const char* reason = nullptr;
+    writeLimit = limit;
+    const auto result = resumeFetch(transport, store, "frame", source, 1, now, kNow, nullptr, &reason);
     writeLimit = SIZE_MAX;
-    assert(!LittleFS.exists("/failure/frame.part"));
-    assert(!LittleFS.exists("/failure/frame.meta"));
+    assert(reason && std::strcmp(reason, "storage") == 0);
+    return result;
+}
+
+void flash_full_keeps_verified_bytes() {
+    for (const size_t limit : {size_t(1), sizeof(kBody)}) {
+        FsStore store(LittleFS, "/failure");
+        seedStorageFailure(store);
+        assert(failStorageWrite(store, limit) == FetchOutcome::NoProgress);
+        PartialMeta meta{};
+        assert(store.readMeta("frame", meta) && meta.have == sizeof(kBody));
+        assert(store.size("frame") == sizeof(kBody));
+        store.discard("frame");
+    }
+}
+
+void second_storage_failure_abandons() {
+    FsStore store(LittleFS, "/failure");
+    seedStorageFailure(store);
+    files["/failure/frame"] = {42};
+    assert(failStorageWrite(store, 1) == FetchOutcome::NoProgress);
+    FsStore reopened(LittleFS, "/failure");
+    assert(failStorageWrite(reopened, sizeof(kBody)) == FetchOutcome::Failed);
+    PartialMeta meta{};
+    assert(!reopened.readMeta("frame", meta) && reopened.size("frame") == -1);
     assert(files.at("/failure/frame") == std::vector<uint8_t>({42}));
+}
+
+void sd_write_failure_still_abandons() {
+    static fs::FS sd;
+    setPartialSdFilesystem(sd);
+    selectPartialStore(true);
+    auto& store = partialStore();
+    seedStorageFailure(store);
+    sd.files["/partials/frame"] = {42};
+    assert(failStorageWrite(store, 1) == FetchOutcome::Failed);
+    assert(!sd.exists("/partials/frame.part") && !sd.exists("/partials/frame.meta"));
+    assert(sd.files.at("/partials/frame") == std::vector<uint8_t>({42}));
+    assert(partialsOnFlash());
+    Serial.output.clear();
 }
 
 void sd_gone_falls_back_to_flash() {
@@ -195,10 +238,12 @@ void prune_old_committed_sun_files() {
 int main() {
     ota_space_evicts_spares_only();
     fs_store_roundtrip();
-    write_failure_abandons_partial();
+    flash_full_keeps_verified_bytes();
+    second_storage_failure_abandons();
+    sd_write_failure_still_abandons();
     sd_gone_falls_back_to_flash();
     sweep_removes_old_and_orphaned();
     sweep_needs_valid_time();
     prune_old_committed_sun_files();
-    std::puts("resume store: 7 cases passed");
+    std::puts("resume store: 9 cases passed");
 }

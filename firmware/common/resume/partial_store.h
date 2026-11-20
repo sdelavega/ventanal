@@ -115,6 +115,8 @@ public:
     virtual bool writeMeta(const char* target, const PartialMeta&) = 0;
     // Successful append must persist bytes before writeMeta publishes the new offset.
     virtual bool append(const char* target, const uint8_t*, size_t) = 0;
+    // A store may retain the last published checkpoint after a failed write.
+    virtual bool keepAfterWriteFailure(const char*, uint32_t) { return false; }
     virtual bool truncate(const char* target, uint32_t size) = 0;
     // Report the size of <target>.part, never the committed target.
     virtual int64_t size(const char* target) = 0;

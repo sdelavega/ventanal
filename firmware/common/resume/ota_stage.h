@@ -59,11 +59,32 @@ inline OtaFailure verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInf
     for (size_t remaining = release.size; remaining;) {
         if (feed) feed();
         const size_t count = std::min(remaining, sizeof block);
-        if (!store.readExact(file, block, count)) return OtaFailure::Download;
+        if (!store.readExact(file, block, count)) return OtaFailure::Install;
         hash.update(block, count);
         remaining -= count;
     }
     return releaseImageMatches(release, file.size(), hash.digest())
+        ? OtaFailure::None : OtaFailure::Digest;
+}
+
+// The staged image has already verified. Recheck the bytes as they are
+// written so a storage fault during this second read cannot activate it.
+template<class Read, class Write>
+OtaFailure writeStagedImage(const ReleaseInfo& release, Read read, Write write, const HashFeed& feed) {
+    constexpr size_t blockSize = 4096;
+    std::unique_ptr<uint8_t[]> block(new (std::nothrow) uint8_t[blockSize]);
+    if (!block) return OtaFailure::Install;
+    Sha256 hash;
+    size_t written = 0;
+    while (written < release.size) {
+        if (feed) feed();
+        const size_t count = std::min(blockSize, size_t(release.size) - written);
+        if (read(block.get(), count) != count || !write(block.get(), count))
+            return OtaFailure::Install;
+        hash.update(block.get(), count);
+        written += count;
+    }
+    return releaseImageMatches(release, written, hash.digest())
         ? OtaFailure::None : OtaFailure::Digest;
 }
 
@@ -78,7 +99,7 @@ OtaFailure installStaged(FsStore& store, const ReleaseInfo& release, const HashF
     if (!file) return OtaFailure::Digest;
     auto failure = verifyOtaFile(store, file, release, feed);
     if (failure == OtaFailure::None)
-        failure = file.seek(0) ? write(file) : OtaFailure::Download;
+        failure = file.seek(0) ? write(file) : OtaFailure::Install;
     file.close();
     if (failure == OtaFailure::None || failure == OtaFailure::Digest)
         store.removeCommitted(target.c_str());

@@ -143,8 +143,11 @@ static HttpsResult getRange(const char* url, uint32_t start, uint32_t end, const
     HttpsResult result;
     out = {};
     if (start > end) return result;
-    char range[40];
-    snprintf(range, sizeof range, "bytes=%" PRIu32 "-%" PRIu32, start, end);
+    char range[40]{};
+    if (end != kWholeGet)
+        snprintf(range, sizeof range, "bytes=%" PRIu32 "-%" PRIu32, start, end);
+    else
+        ifRange = nullptr;
 
     RangeHeaders received;
     received.location = location;

@@ -61,8 +61,8 @@ constexpr uint32_t HTTP_TIMEOUT_MS = 10000;
 constexpr uint32_t TRANSFER_BUDGET_MS = 60000;
 constexpr uint32_t BODY_IDLE_MS = 6000;
 // Bounded completion check for the connection-close framing below: how long
-// a fully received frame waits for the server to hang up before the body
-// is treated as incomplete (fail closed).
+// a body without Content-Length waits for the server to hang up after the
+// expected bytes arrive.
 constexpr uint32_t FRAME_CLOSE_GRACE_MS = 1000;
 constexpr uint32_t WATCHDOG_TIMEOUT_MS = 30000;
 
@@ -159,8 +159,8 @@ struct FrameDownload {
 };
 
 // Receive and verify exactly the advertised wire bytes. The caller owns a
-// buffer at least info.size bytes long. Check connection close so even a
-// delayed packet beyond the advertised size rejects the response.
+// buffer at least info.size bytes long. Bodies without Content-Length
+// also require connection close.
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, uint8_t* buffer, Watchdog& watchdog,
                            uint32_t passStarted);

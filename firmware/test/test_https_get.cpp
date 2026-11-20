@@ -47,6 +47,11 @@ static void streaming_ranges() {
     assert(received.status == 200 && received.total == 32 && copied == 32);
 
     copied = 0;
+    fakeHttps = {32, 200, 32};
+    assert(transport.get(source, 0, kWholeGet, "", headers, sink));
+    assert(fakeRange.empty() && fakeIfRange.empty() && copied == 32);
+
+    copied = 0;
     fakeHttps = {0, 416, 0};
     fakeHttps.contentRange = "bytes */32776";
     assert(transport.get(source, 32776, 32776, modified, headers, sink));

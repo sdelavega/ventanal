@@ -2,6 +2,8 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 
+#include "../common/resume/resume.h"
+
 #include "build_config.h"
 #include "../common/release_key.h"
 #include "installation.h"
@@ -78,7 +80,7 @@ struct HostRequest {
                 || installation.deviceKey[0] || installation.pairing[0]) return false;
             if (!http.begin(plain, url)) return false;
         }
-        // The bounded body readers rely on connection-close framing.
+        // Responses without Content-Length use connection-close framing.
         http.setReuse(false);
         http.setTimeout(10000);
         http.setConnectTimeout(5000);
@@ -89,6 +91,7 @@ struct HostRequest {
     void setRange(uint32_t start, uint32_t end, const char* ifRange) {
         const char* headers[] = {"Content-Range", "ETag"};
         http.collectHeaders(headers, sizeof(headers) / sizeof(headers[0]));
+        if (end == kWholeGet) return;
         const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
         http.addHeader("Range", range.c_str());
         if (*ifRange) http.addHeader("If-Range", ("\"" + std::string(ifRange) + "\"").c_str());

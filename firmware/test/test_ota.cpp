@@ -128,6 +128,39 @@ void ota_install_failure_keeps_verified_stage() {
     assert(!f.store.openCommitted(target.c_str()));
 }
 
+void slow_install_write_not_timed_out() {
+    OtaFixture f;
+    f.complete();
+    const uint32_t started = fakeClock;
+    size_t blocks = 0, feeds = 0;
+    std::vector<uint8_t> installed;
+    const auto result = installStaged(f.store, f.release, {}, [&](fs::File& file) {
+        return writeStagedImage(f.release, [&](uint8_t* bytes, size_t count) {
+            return file.read(bytes, count);
+        }, [&](uint8_t* bytes, size_t count) {
+            delay(5000);
+            ++blocks;
+            installed.insert(installed.end(), bytes, bytes + count);
+            return true;
+        }, [&] { ++feeds; });
+    });
+    assert(result == OtaFailure::None && installed == f.body);
+    assert(fakeClock - started > 60000 && blocks > 0 && feeds == blocks);
+
+    f.complete();
+    const auto failed = installStaged(f.store, f.release, {}, [&](fs::File& file) {
+        return writeStagedImage(f.release, [&](uint8_t* bytes, size_t count) {
+            return file.read(bytes, count);
+        }, [](const uint8_t*, size_t) { return false; }, {});
+    });
+    assert(failed == OtaFailure::Install && f.store.openCommitted(otaStageTarget(f.release).c_str()));
+    OtaRecord record{};
+    setOtaFailure(record, failed, false);
+    char report[otaReportCapacity];
+    formatOtaReport(report, record);
+    assert(validOtaRecord(record) && !std::strcmp(report, "failed:install"));
+}
+
 void kept_stage_skips_rehash_before_install() {
     OtaFixture f;
     f.complete();
@@ -305,6 +338,7 @@ int main() {
     ota_install_requires_verified_partial();
     ota_install_failure_keeps_verified_stage();
     kept_stage_skips_rehash_before_install();
+    slow_install_write_not_timed_out();
     repeated_deferral_consumes_attempt();
     rotating_offer_path_does_not_reset_budget();
     deferral_counter_resets_on_new_offer();

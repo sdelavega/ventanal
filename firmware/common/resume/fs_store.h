@@ -4,9 +4,11 @@
 
 #include "partial_store.h"
 #include <FS.h>
+#include <mutex>
+#include <set>
 
 // Targets are file names under root, with an optional leading slash.
-// The .part and .meta suffixes and dot-prefixed names are reserved.
+// The .part, .meta, .fail and .temp suffixes and dot-prefixed names are reserved.
 class FsStore : public PartialStore {
 public:
     explicit FsStore(fs::FS& fs, const char* root = "/partials", void (*ioError)() = nullptr);
@@ -14,6 +16,7 @@ public:
     bool readMeta(const char* target, PartialMeta&) override;
     bool writeMeta(const char* target, const PartialMeta&) override;
     bool append(const char* target, const uint8_t*, size_t) override;
+    bool keepAfterWriteFailure(const char* target, uint32_t have) override;
     bool truncate(const char* target, uint32_t size) override;
     int64_t size(const char* target) override;
     // Commit stays on the same filesystem. Replacement on FAT is non-atomic.
@@ -41,11 +44,15 @@ private:
     fs::File openRead(const std::string& path);
     bool remove(const std::string& path);
     bool fail();
+    void clearWriteFailure(const std::string& base);
 
     fs::FS& fs_;
     std::string root_;
     void (*ioError_)();
     bool faulted_ = false;
+    // Used when flash cannot even rename the sidecar to record a strike.
+    std::mutex checkpointMutex_;
+    std::set<std::string> failedCheckpoints_;
 };
 
 bool probePartialStorage(fs::FS& fs);

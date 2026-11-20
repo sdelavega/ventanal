@@ -31,6 +31,7 @@ public:
     bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
              const ResponseHeaders& headers, const ChunkSink& sink) override {
         reason_ = nullptr;
+        malformed_ = false;
         status_ = 0;
         if (!remainingMs()) return interrupt("budget");
         HostRequest request;
@@ -92,7 +93,7 @@ public:
         if (!headers(response)) return false;
         if (response.status != 200 && response.status != 206) return true;
         if (!bodySize) return reject("size");
-        return readBody(http, bodySize, sink);
+        return readBody(http, bodySize, length >= 0, sink);
     }
 
 private:
@@ -118,7 +119,7 @@ private:
         return interrupt("budget");
     }
 
-    bool readBody(HTTPClient& http, size_t missing, const ChunkSink& sink) {
+    bool readBody(HTTPClient& http, size_t missing, bool framed, const ChunkSink& sink) {
         auto* stream = http.getStreamPtr();
         if (!stream) return interrupt("short-body");
         uint8_t packet[1024];
@@ -133,9 +134,10 @@ private:
                 if (count > 0) {
                     bytesRead_ += count;
                     missing -= count;
-                    // Keep the last bytes out of the partial until closure
-                    // proves the body had no delayed trailing bytes.
-                    if (!missing && !waitForClose(http, *stream)) return false;
+                    if (!missing) {
+                        if (framed && stream->available() > 0) return reject("excess");
+                        if (!framed && !waitForClose(http, *stream)) return false;
+                    }
                     if (!sink(packet, count)) return false;
                     if (!missing) return true;
                     lastProgress = millis();

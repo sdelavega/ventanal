@@ -29,7 +29,7 @@ struct FirmwareOffer {
 
 enum class OtaResult : uint8_t { None, Installing, Ok, RolledBack, Failed };
 enum class OtaFailure : uint8_t {
-    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted, Attempts, Deferred
+    None, Release, Path, Slot, Download, Write, Digest, Schedule, Interrupted, Attempts, Deferred, Install
 };
 struct OtaRecord {
     OtaResult result{};
@@ -39,7 +39,7 @@ struct OtaRecord {
 };
 
 inline bool validOtaRecord(const OtaRecord& record) {
-    if (record.result > OtaResult::Failed || record.failure > OtaFailure::Deferred
+    if (record.result > OtaResult::Failed || record.failure > OtaFailure::Install
         || !memchr(record.version, '\0', sizeof record.version)) return false;
     if (record.result == OtaResult::Installing || record.result == OtaResult::Ok
         || record.result == OtaResult::RolledBack)
@@ -85,7 +85,7 @@ inline void formatOtaReport(char (&out)[otaReportCapacity], const OtaRecord& rec
         case OtaResult::Failed: {
             constexpr const char* reasons[] = {
                 "unknown", "release", "path", "slot", "download", "write", "digest",
-                "schedule", "interrupted", "attempts", "deferred"
+                "schedule", "interrupted", "attempts", "deferred", "install"
             };
             const auto reason = static_cast<unsigned>(record.failure);
             const auto last = record.slot;

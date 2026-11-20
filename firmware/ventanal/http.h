@@ -40,6 +40,7 @@ public:
 
     bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
              const ResponseHeaders& headers, const ChunkSink& sink) override {
+        failure_ = nullptr;
         const auto elapsed = millis() - started_;
         if (elapsed >= budgetMs_) return false;
         TransportClient localClient;
@@ -55,13 +56,16 @@ public:
         http.setReuse(keepAlive);
         const char* names[] = {"Content-Range", "ETag"};
         http.collectHeaders(names, 2);
-        const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
-        http.addHeader("Range", range.c_str());
-        if (*ifRange) http.addHeader("If-Range", ifRange);
-        const bool complete = receive(http, source, headers, sink);
+        if (end != kWholeGet) {
+            const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
+            http.addHeader("Range", range.c_str());
+            if (*ifRange) http.addHeader("If-Range", ifRange);
+        }
+        bool framed = false;
+        const bool complete = receive(http, source, headers, sink, framed);
         // Closing after a timeout or rejected header prevents unread bytes
         // from carrying over to the next authenticated request.
-        http.setReuse(keepAlive && complete && (status_ == 200 || status_ == 206));
+        http.setReuse(keepAlive && complete && framed && (status_ == 200 || status_ == 206));
         http.end();
         return complete;
     }
@@ -72,7 +76,7 @@ private:
     bool reject(const char* reason) { failure_ = reason; return false; }
 
     bool receive(HTTPClient& http, const ResumeSource& source, const ResponseHeaders& headers,
-                 const ChunkSink& sink) {
+                 const ChunkSink& sink, bool& framed) {
         RangeResponse response{};
         status_ = response.status = http.GET();
         if (response.status <= 0 || response.status == 408 || response.status == 429 ||
@@ -87,16 +91,17 @@ private:
         memcpy(response.validator, tag.c_str(), tag.length());
 
         const int length = http.getSize();
+        framed = length >= 0;
         size_t bodySize = 0;
         if (response.status == 200) {
-            if (length != int(source.expectedSize)) return reject("size");
-            bodySize = response.total = length;
+            if (framed && length != int(source.expectedSize)) return reject("size");
+            bodySize = response.total = source.expectedSize;
         } else if (response.status == 206 || response.status == 416) {
             const auto range = http.header("Content-Range");
             if (!resume_detail::parseContentRange(range.c_str(), response)) return reject("range");
             if (response.status == 206) {
                 bodySize = response.end - response.start + 1;
-                if (bodySize > kResumeChunk || length != int(bodySize)) return reject("size");
+                if (bodySize > kResumeChunk || (framed && length != int(bodySize))) return reject("size");
             }
         }
 
@@ -108,10 +113,6 @@ private:
         uint32_t last = millis();
         while (!budgetExpired() && millis() - last < idleMs_) {
             const int available = stream->available();
-            // For frame requests Content-Length identifies the body boundary
-            // even when the server keeps the connection open.
-            if (!bodySize && asset_ == Asset::Frame)
-                return available <= 0 ? true : reject("excess");
             if (available > 0) {
                 if (!bodySize) return reject("excess");
                 auto limit = std::min({size_t(available), bodySize, sizeof block});
@@ -122,6 +123,8 @@ private:
                 if (budgetExpired()) return false;
                 bodySize -= count;
                 if (!sink(block, count) || aborted()) return false;
+                if (!bodySize && framed)
+                    return stream->available() > 0 ? reject("excess") : true;
                 last = millis();
                 continue;
             }

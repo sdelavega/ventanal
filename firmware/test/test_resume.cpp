@@ -251,14 +251,32 @@ void interrupted_whole_body_resumes() {
     }
 }
 
+void no_validator_falls_back_to_whole_get() {
+    Fixture f;
+    f.source = {kUrl, "", "", 0, true};
+    ScriptedTransport transport({{0, 32767, "", 206, ""}, {0, UINT32_MAX, "", 200, ""}});
+    assert(f.fetch(transport) == FetchOutcome::Complete);
+    f.checkCommit(transport);
+}
+
+void no_validator_incomplete_not_kept() {
+    Fixture f;
+    f.source = {kUrl, "", "", 0, true};
+    ScriptedTransport transport({{0, 32767, "", 206, ""},
+                                 {0, UINT32_MAX, "", 200, "", UINT32_MAX, 2 * kResumeChunk}});
+    assert(f.fetch(transport) == FetchOutcome::NoProgress);
+    PartialMeta meta{};
+    assert(!f.store.readMeta(kTarget, meta));
+    assert(f.store.size(kTarget) == -1 && !f.store.committed(kTarget));
+}
+
 void interrupted_whole_body_without_identity_restarts() {
     Fixture f;
     f.source = {kUrl, "", "", 0, true};
     ScriptedTransport first({{0, 32767, "", 200, "", UINT32_MAX, 2 * kResumeChunk + 100}});
-    assert(f.fetch(first) == FetchOutcome::Progress);
+    assert(f.fetch(first) == FetchOutcome::NoProgress);
     PartialMeta meta{};
-    assert(f.store.readMeta(kTarget, meta) && meta.have == 2 * kResumeChunk && !*meta.validator);
-    assert(f.store.size(kTarget) == meta.have);
+    assert(!f.store.readMeta(kTarget, meta) && f.store.size(kTarget) == -1);
 
     ScriptedTransport second({{0, 32767, "", 200, "", UINT32_MAX, UINT32_MAX, true}});
     second.body.front() ^= 0xff;
@@ -338,9 +356,11 @@ int main() {
     whole_body_streams_in_chunks();
     interrupted_whole_body_resumes();
     interrupted_whole_body_without_identity_restarts();
+    no_validator_falls_back_to_whole_get();
+    no_validator_incomplete_not_kept();
     torn_partial_resumes_at_sidecar();
     sha_mismatch_discards();
     no_response_is_no_progress();
     complete_partial_416_verifies();
-    std::puts("test_resume: 12 tests passed");
+    std::puts("test_resume: 14 tests passed");
 }

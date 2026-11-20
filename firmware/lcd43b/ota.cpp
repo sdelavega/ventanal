@@ -16,8 +16,6 @@
 #include <esp_http_client.h>
 #include <esp_ota_ops.h>
 #include <esp_timer.h>
-#include <mbedtls/sha256.h>
-#include <memory>
 #include <sdkconfig.h>
 
 #if !CONFIG_BOOTLOADER_APP_ROLLBACK_ENABLE
@@ -116,46 +114,22 @@ OtaFailure reserveAttempt(Preferences& prefs, UpdateSource source, const char* v
     return OtaFailure::None;
 }
 
-template<class Read, class Complete>
 OtaFailure writeImage(const esp_partition_t* spare, const ReleaseInfo& release,
-                      uint32_t started, Read read, Complete complete) {
-    constexpr size_t blockSize = 4096;
-    std::unique_ptr<uint8_t[]> block(new(std::nothrow) uint8_t[blockSize]);
+                      fs::File& file, const HashFeed& feed) {
     esp_ota_handle_t writer;
-    if (!block || esp_ota_begin(spare, OTA_WITH_SEQUENTIAL_WRITES, &writer) != ESP_OK)
-        return OtaFailure::Write;
+    if (esp_ota_begin(spare, OTA_WITH_SEQUENTIAL_WRITES, &writer) != ESP_OK)
+        return OtaFailure::Install;
 
-    mbedtls_sha256_context hash;
-    mbedtls_sha256_init(&hash);
-    bool hashing = mbedtls_sha256_starts(&hash, 0) == 0;
-    size_t written = 0;
-    OtaFailure failure = OtaFailure::None;
-    while (hashing && written < release.size) {
-        const size_t limit = std::min(blockSize, size_t(release.size) - written);
-        const int size = read(block.get(), limit);
-        if (size <= 0 || size_t(size) > limit || millis() - started >= transferMs) {
-            failure = OtaFailure::Download;
-            break;
-        }
-        if (esp_ota_write(writer, block.get(), size) != ESP_OK) {
-            failure = OtaFailure::Write;
-            break;
-        }
-        written += size;
-        hashing = mbedtls_sha256_update(&hash, block.get(), size) == 0;
-    }
-    uint8_t digest[32]{};
-    hashing = hashing && mbedtls_sha256_finish(&hash, digest) == 0;
-    mbedtls_sha256_free(&hash);
-    if (failure == OtaFailure::None && (!hashing || !releaseImageMatches(release, written, digest)))
-        failure = OtaFailure::Digest;
-    if (failure == OtaFailure::None && !complete()) failure = OtaFailure::Download;
-    if (failure != OtaFailure::None) {
+    const auto failure = writeStagedImage(release, [&](uint8_t* bytes, size_t count) {
+        return file.read(bytes, count);
+    }, [&](const uint8_t* bytes, size_t count) {
+        return esp_ota_write(writer, bytes, count) == ESP_OK;
+    }, feed);
+    if (failure != OtaFailure::None || file.size() != release.size) {
         esp_ota_abort(writer);
-        return failure;
+        return failure != OtaFailure::None ? failure : OtaFailure::Digest;
     }
-    if (esp_ota_end(writer) != ESP_OK) return OtaFailure::Write;
-    return OtaFailure::None;
+    return esp_ota_end(writer) == ESP_OK ? OtaFailure::None : OtaFailure::Install;
 }
 
 #ifdef VENTANAL_LCD_OTA_BASE_URL
@@ -508,12 +482,9 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
             record.result = OtaResult::Installing;
             record.slot = spare->subtype;
             if (!saveJournal(prefs, journal)) return OtaFailure::Write;
-            const auto result = writeImage(spare, release, millis(), [&](uint8_t* bytes, size_t count) {
-                watchdog.feed();
-                return file.read(bytes, count) == count ? int(count) : -1;
-            }, [&] { return file.size() == release.size; });
+            const auto result = writeImage(spare, release, file, [&] { watchdog.feed(); });
             if (result != OtaFailure::None) return result;
-            return esp_ota_set_boot_partition(spare) == ESP_OK ? OtaFailure::None : OtaFailure::Write;
+            return esp_ota_set_boot_partition(spare) == ESP_OK ? OtaFailure::None : OtaFailure::Install;
         });
     }
     if (failure != OtaFailure::None) {
