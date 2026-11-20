@@ -26,21 +26,29 @@ bool wifiConnect(uint32_t timeoutMs) {
     return connected;
 }
 
-bool syncTime() {
+time_t seedRtcTime() {
     // RTC stores UTC. Library epoch helpers use the process TZ internally.
     // Temporarily select UTC so DST transitions never make the RTC ambiguous.
     setenv("TZ", "UTC0", 1);
     tzset();
+    time_t seeded = 0;
     if (display.rtc.isSet()) {
         const time_t epoch = display.rtc.getEpoch();
         if (epoch >= 1704067200) {
             timeval tv{epoch, 0};
-            settimeofday(&tv, nullptr);
-            Serial.printf("time seeded=rtc\n");
+            if (settimeofday(&tv, nullptr) == 0) {
+                seeded = epoch;
+                Serial.printf("time seeded=rtc\n");
+            }
         }
     }
     setenv("TZ", installation.timezone, 1);
     tzset();
+    return seeded;
+}
+
+bool syncTime() {
+    seedRtcTime();
     if (WiFi.status() != WL_CONNECTED) return false;
     configTzTime(installation.timezone, "pool.ntp.org", "time.nist.gov");
     const uint32_t start = millis();

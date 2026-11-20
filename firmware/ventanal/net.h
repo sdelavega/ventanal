@@ -5,7 +5,9 @@
 #include "ota.h"
 #include "../common/release_key.h"
 #include <cstdio>
+#include <ctime>
 bool wifiConnect(uint32_t timeoutMs = 15000);
+time_t seedRtcTime();
 bool syncTime();
 struct ScreenInfo { char id[17]; char url[96]; ReadoutRect readout; };
 bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient = nullptr);

@@ -19,7 +19,7 @@ public:
     static constexpr uint8_t ADDR_WR_IO = 0x38;   // IO0-7 output levels
     static constexpr uint8_t ADDR_RD_IO = 0x26;   // IO0-7 inputs
     // Board wiring: EXIO1 = GT911 reset, EXIO2 = backlight enable,
-    // EXIO3 = LCD reset, EXIO4 = TF card select (stays deselected).
+    // EXIO3 = LCD reset, EXIO4 = TF card DAT3 / SPI select.
     static constexpr uint8_t TP_RST = 1u << 1;
     static constexpr uint8_t DISP = 1u << 2;
     static constexpr uint8_t LCD_RST = 1u << 3;
@@ -44,6 +44,8 @@ public:
     // asserted drives the reset line low.
     bool setTouchReset(bool asserted) { return setBit(TP_RST, !asserted); }
     bool setLcdReset(bool asserted) { return setBit(LCD_RST, !asserted); }
+
+    bool setSdSelected(bool selected) { return setBit(SD_CS, !selected); }
 
     // Current backlight state as last written.
     bool backlightOn() const { return outputs_ & DISP; }

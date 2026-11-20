@@ -23,4 +23,8 @@ constexpr int BACKLIGHT_PWM_CHANNEL = -1;
 constexpr bool RTC_PCF85063 = true;
 constexpr int RTC_I2C_ADDRESS = 0x51;
 constexpr int RTC_INT_GPIO = 6;
+// TF slot in 1-bit mode. DAT3 / SPI CS is on the CH422G.
+constexpr int SD_CLK_GPIO = 12;
+constexpr int SD_CMD_GPIO = 11;
+constexpr int SD_D0_GPIO = 13;
 }  // namespace lcd

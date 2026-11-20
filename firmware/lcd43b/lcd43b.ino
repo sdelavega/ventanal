@@ -48,6 +48,8 @@
 #include "ota.h"
 
 #include "ch422g.h"
+#include "sd_card.h"
+#include "../common/resume/storage.h"
 #include "frame.h"
 #include "inflate.h"
 #include "gesture.h"
@@ -147,7 +149,8 @@ void setup() {
              CONFIG_ESP32S3_DATA_CACHE_LINE_SIZE);
     Wire.begin(8, 9);   // SDA=GPIO8, SCL=GPIO9, shared by expander and touch
     Wire.setClock(400000);
-    if (!expander.begin()) lcd::log("error=ch422g-begin\n");
+    const bool expanderReady = expander.begin();
+    if (!expanderReady) lcd::log("error=ch422g-begin\n");
     backlightRefresh();  // panel not started yet: the owner reports Off
     allocateLocalPages();
     installationReady = lcd::initializeInstallation(pendingUpdate);
@@ -211,6 +214,7 @@ void setup() {
         lcd::log("touch gt911 address=0x%02x cycles=%d\n", touch.address(),
                  int(touch.cycles()));
     }
+    selectPartialStore(expanderReady && mountSdCard());
 #ifdef VENTANAL_LCD_DIAG_TOUCH
     touchBootDiag();
 #endif
@@ -233,7 +237,8 @@ void setup() {
         return;
     }
     sntp_set_time_sync_notification_cb(onNtpSync);
-    seedRtc(); // after GT911 reset sequence; never reconfigure the shared bus
+    const time_t rtcEpoch = seedRtc(); // after GT911 reset on the shared bus
+    sweepPartials(rtcEpoch, [](const PartialMeta&) { return true; });
     loadResidentCache();
     WiFi.persistent(false);
     refreshWatchdog.arm();

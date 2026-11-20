@@ -24,14 +24,19 @@ bool renderClock(uint16_t* pixels) {
     drawnMinute=now/60;
     return valid;
 }
-void seedRtc() {
+time_t seedRtc() {
     if constexpr(lcd::RTC_PCF85063) {
         tm utc{};
         if(lcd::readRtc(Wire,utc)) {
-            timeval value{lcd::rtcEpoch(utc),0}; settimeofday(&value,nullptr);
-            lcd::log("rtc seed=valid utc=1\n");
-        } else lcd::log("rtc seed=skipped invalid-or-OS\n");
+            timeval value{lcd::rtcEpoch(utc),0};
+            if (settimeofday(&value,nullptr)==0) {
+                lcd::log("rtc seed=valid utc=1\n");
+                return value.tv_sec;
+            }
+        }
+        lcd::log("rtc seed=skipped invalid-or-OS\n");
     }
+    return 0;
 }
 void saveRtcAfterNtp() {
     if constexpr(lcd::RTC_PCF85063) {

@@ -16,6 +16,8 @@
 #include <Wire.h>
 #ifndef VENTANAL_HOST_TEST
 #include <system/inkplateSemaphore.h>
+#include "sd_card.h"
+#include "../common/resume/storage.h"
 #endif
 #include <driver/rtc_io.h>
 #include <driver/gpio.h>
@@ -418,6 +420,9 @@ void update(Preferences& prefs, State& state, ScreenInfo& cached,
 }
 }
 void sleepHardware(uint32_t seconds, bool allowWake) {
+#ifndef VENTANAL_HOST_TEST
+    unmountSdCard();
+#endif
 #if VENTANAL_STATELOSTTEST
     if(seconds) seconds=10;
 #endif
@@ -810,6 +815,10 @@ void setup() {
         state.owner.cursor=-1;
     }
     if(!mounted) Serial.println("error=cache-mount");
+#ifndef VENTANAL_HOST_TEST
+    selectPartialStore(mountSdCard());
+    sweepPartials(seedRtcTime(), [](const PartialMeta&) { return true; });
+#endif
 #if VENTANAL_ERASE_CACHE
     if(mounted) {
         LittleFS.remove("/art.vnf"); LittleFS.remove("/weather.vnf"); LittleFS.remove("/solar.vnf");
