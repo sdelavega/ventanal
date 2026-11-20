@@ -6,7 +6,7 @@ ARDUINOJSON ?= $(firstword $(wildcard ../ventanal/.pio/libdeps/*/ArduinoJson/src
 SODIUM_CFLAGS ?= $(shell pkg-config --cflags libsodium 2>/dev/null)
 SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 JPEG_CFLAGS ?= $(shell pkg-config --cflags libjpeg 2>/dev/null)
-JPEG_LIBS ?= $(shell pkg-config --libs libjpeg 2>/dev/null || echo -ljpeg)
+JPEG_LIBS ?= $(shell pkg-config --libs libjpeg 2>/dev/null)
 CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
@@ -280,7 +280,11 @@ build/miniz_tinfl.o: $(MINIZ_DIR)/miniz_tinfl.c $(wildcard $(MINIZ_DIR)/*.h) Mak
 	mkdir -p build
 	$(CC) $(CPPFLAGS) $(CFLAGS) -std=c99 -fsanitize=address -c $< -o $@
 
-build/test_lcd43b_sync: test_lcd43b_sync.cpp fake_tjpgd.cpp fakes/rom/tjpgd.h ../lcd43b/host_jpeg.cpp ../lcd43b/frame_stream.h ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) $(wildcard ../common/resume/*.h) ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o Makefile
+.PHONY: check-libjpeg
+check-libjpeg:
+	@pkg-config --exists libjpeg || { echo "libjpeg not found by pkg-config" >&2; exit 1; }
+
+build/test_lcd43b_sync: test_lcd43b_sync.cpp fake_tjpgd.cpp fakes/rom/tjpgd.h ../lcd43b/host_jpeg.cpp ../lcd43b/frame_stream.h ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) $(wildcard ../common/resume/*.h) ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o Makefile | check-libjpeg
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
 

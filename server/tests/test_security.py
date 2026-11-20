@@ -44,6 +44,17 @@ def test_cross_language_request_proof(tmp_path):
     assert proof(key, lcd['path'], lcd['counter'], lcd['method'])['Authorization'] == 'Ventanal ' + lcd['mac']
 
 
+def test_legacy_proof_rejected_for_non_get_with_fresh_counter(tmp_path):
+    security = Security(tmp_path)
+    security.enable(['127.0.0.1'])
+    key = security.key
+    path, counter, method = '/manifest.json', 1, 'POST'
+    mac = hmac.new(key, f'{method}{path}{counter}'.encode(), hashlib.sha256).hexdigest()
+    assert not security.accept(method, path, {'Authorization': 'Ventanal ' + mac,
+                                              'X-Ventanal-Counter': str(counter)})
+    assert security.accept(method, path, proof(key, path, counter, method))
+
+
 def test_cross_language_signed_lcd_manifest():
     fixture = Path(__file__).parents[2] / 'firmware/test/fixtures/lcd43b-signed-manifest.json'
     manifest = json.loads(fixture.read_bytes())

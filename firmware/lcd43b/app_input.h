@@ -179,7 +179,7 @@ void handleGesture(Gesture gesture, int x, int y) {
                 ownOverrideFrame = false;
                 const auto& save = deferredFrames[slot];
                 const bool queued = save.pending && save.body.available();
-                overrideSource = queued ? -1 : slot;
+                overrideSource = slot;
                 deferredOverride.replace(owner.overrideArt.id, queued ? save.body : lcd::FrameBody{}, millis());
             }
             if(strlen(skipped)==16 && strlen(lcd::selectedArtId(owner))==16

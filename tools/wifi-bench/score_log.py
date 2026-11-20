@@ -14,7 +14,9 @@ REFRESH = re.compile(r"^refresh fetch=\d+ ok=\d+ offline=\d+ failed=\d+(?:\s|$)"
 STANDALONE = re.compile(r"^standalone frame slot=(weather|solar)\s+id=\S+")
 ART = re.compile(r"^cache queued slot=(?:art|spare0|spare1)(?:\s|$)")
 FRAME = re.compile(r"^cache persist slot=\S+\s+id=\S+.*?\sok=1(?:\s|$)")
-RESUME = re.compile(r"^resume target=\S+\s+from=(\d+)\s+total=\d+(?:\s|$)")
+RESUME = re.compile(r"^resume target=(\S+)\s+from=(\d+)\s+total=(\d+)(?:\s|$)")
+RESUME_DONE = re.compile(r"^resume done target=(\S+)\s+bytes=(\d+)(?:\s|$)")
+FRAME_RESULT = re.compile(r"^frame slot=(\S+)\s+outcome=(\S+).*?\sgot=(\d+)\s+have=(\d+)\s+total=(\d+)(?:\s|$)")
 
 
 def score(lines):
@@ -33,6 +35,7 @@ def score(lines):
     previous_end = None
     last_clock = None
     day_offset = 0
+    pending = {}
     for line in lines:
         line = line.strip()
         timestamp = TIMESTAMP.match(line)
@@ -68,8 +71,25 @@ def score(lines):
         elif FRAME.match(line):
             completed["frames"] += 1
         elif match := RESUME.match(line):
-            result["resumes"] += 1
-            result["resume_bytes_skipped"] += int(match[1])
+            pending[match[1]] = (int(match[2]), int(match[3]), False)
+        elif match := RESUME_DONE.match(line):
+            target, size = match[1], int(match[2])
+            if target in pending:
+                offset, total, _ = pending[target]
+                if size == total:
+                    if target.startswith("frame-"):
+                        pending[target] = (offset, total, True)
+                    else:
+                        result["resumes"] += 1
+                        result["resume_bytes_skipped"] += offset
+                        del pending[target]
+        elif match := FRAME_RESULT.match(line):
+            target = "frame-" + match[1]
+            if target in pending:
+                offset, total, done = pending.pop(target)
+                if done and match[2] == "complete" and int(match[5]) == total and int(match[3]) == total - offset and int(match[4]) == total:
+                    result["resumes"] += 1
+                    result["resume_bytes_skipped"] += offset
 
     return result
 

@@ -16,6 +16,8 @@
 #include <cstdio>
 #include <cstring>
 
+class FsStore {};
+
 namespace {
 
 // The fake Preferences store is a global; start every scenario empty.
@@ -214,6 +216,17 @@ int main() {
         assert(save.replace("", {}, 500));
         assert(save.pending && save.queuedAt == 100 && !save.id[0] && !save.body.bytes);
         assert(save.ready(500) && !save.dueUnderPressure(500));
+    }
+    { // A fault after queueing must switch to the matching resident copy.
+        FsStore store;
+        lcd::FrameBody body;
+        body.file = std::make_shared<lcd::FrameFile>(store, "frame", "id");
+        assert(body.usable());
+        body.file->unavailable = true;
+        assert(!body.usable());
+        assert(lcd::overrideUsesResident(body, 3, "abc", "abc"));
+        assert(!lcd::overrideUsesResident(body, 3, "abc", "new"));
+        assert(!lcd::overrideUsesResident(body, -1, "abc", "abc"));
     }
     puts("lcd43b persist: quiet, publish shape, cache ids, offline boot in"
          " quiet hours passed");

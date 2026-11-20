@@ -38,6 +38,7 @@ struct ContentStaleness {
     bool due;
     bool checkpointDirty;
     bool checkpointLoaded;
+    bool legacyKeyRemoved;
 
     template<class Store>
     void restore(Store& prefs) {
@@ -80,6 +81,10 @@ struct ContentStaleness {
     void checkpoint(Store& prefs, uint32_t now) {
         const uint32_t stored[] = {overdueSince, now};
         if (prefs.putBytes("content-overdue", stored, sizeof stored) == sizeof stored) {
+            if (!legacyKeyRemoved) {
+                prefs.remove("content-epoch");
+                legacyKeyRemoved = true;
+            }
             checkpointEpoch = now;
             checkpointDirty = false;
         }

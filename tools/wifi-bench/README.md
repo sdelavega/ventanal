@@ -49,6 +49,6 @@ watchdog line.
 Each refresh-end line counts as one pass. The scorer measures from boot to
 the first refresh end and between consecutive refresh ends. It counts
 standalone weather and solar frames, art and spare-art queue entries, and
-successful host frame writes. A `resume target=` line adds one resume and
-its `from` offset to the skipped-byte total. The matching `resume done`
-line adds no second resume.
+successful host frame writes. A completed resume counts its `from` offset as
+skipped bytes. For host frames, the frame result must also confirm that the
+remaining bytes were transferred; a server that ignores Range does not count.

@@ -264,7 +264,7 @@ void applyResidentFrame() {
 bool pendingCacheSave(uint32_t now) {
     if (deferredOverride.ready(now)) return true;
     for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
-        if (slot != overrideSource && deferredFrames[slot].ready(now)) return true;
+        if ((slot != overrideSource || strcmp(persistedFrames[slot].id, deferredOverride.id)) && deferredFrames[slot].ready(now)) return true;
     return false;
 }
 
@@ -283,7 +283,7 @@ bool persistDeferred(bool memoryPressure) {
     lcd::DeferredSave* chosen = saveFrames && due(deferredOverride) ? &deferredOverride : nullptr;
     if (saveFrames && !chosen) {
         for (int i = 0; i < lcd::SCREEN_SLOTS; ++i) {
-            if (i == overrideSource || !due(deferredFrames[i])) continue;
+            if ((i == overrideSource && !strcmp(persistedFrames[i].id, deferredOverride.id)) || !due(deferredFrames[i])) continue;
             if (!chosen || now - deferredFrames[i].queuedAt > now - chosen->queuedAt) {
                 chosen = &deferredFrames[i];
                 slot = i;
@@ -309,11 +309,13 @@ bool persistDeferred(bool memoryPressure) {
         const size_t bytes = chosen->body.size;
         bool ok;
         if (slot < 0) {
-            if (chosen->body.available()) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
-            else {
+            if (chosen->body.usable()) ok = lcd::writeCachedFrame("/override.vnr", chosen->body);
+            else if (overrideSource >= 0 && overrideSource < lcd::SCREEN_SLOTS &&
+                     lcd::overrideUsesResident(chosen->body, overrideSource,
+                                               persistedFrames[overrideSource].id, chosen->id)) {
                 const String source = lcd::residentPath(overrideSource, persistedFrames[overrideSource].alternate);
                 ok = lcd::copyCachedFrame("/override.vnr", source.c_str());
-            }
+            } else ok = false; // Keep the save queued until its source can be recovered.
             if (ok) overrideSource = -1;
         } else {
             ok = lcd::persistCacheSlot(prefs, slot, persistedFrames[slot], *chosen);

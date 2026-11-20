@@ -18,6 +18,9 @@ struct CheckpointStore {
     uint32_t data[2]{};
     bool failWrite = false;
     size_t writes = 0;
+    bool oldKey = true;
+    size_t removes = 0;
+    bool remove(const char* key) { assert(!strcmp(key, "content-epoch")); ++removes; oldKey = false; return true; }
 
     size_t putBytes(const char*, const void* src, size_t size) {
         ++writes;
@@ -33,6 +36,21 @@ struct CheckpointStore {
         return size;
     }
 };
+
+void old_key_removed_after_successful_checkpoint() {
+    CheckpointStore store;
+    ventanal::ContentStaleness content{};
+    content.observe(epoch, true);
+    store.failWrite = true;
+    content.checkpoint(store, epoch);
+    assert(store.oldKey && store.removes == 0);
+    store.failWrite = false;
+    content.checkpoint(store, epoch);
+    assert(!store.oldKey && store.removes == 1);
+    content.observe(epoch + day, false);
+    content.checkpoint(store, epoch + day);
+    assert(store.removes == 1);
+}
 
 void art_daily_late_arrival_no_label() {
     ventanal::ContentStaleness content{};
@@ -168,6 +186,7 @@ int main() {
     art_daily_late_arrival_no_label();
     overdue_24h_shows_label();
     new_content_clears_overdue();
+    old_key_removed_after_successful_checkpoint();
     overdue_survives_reboot_via_checkpoint();
     manual_refresh_label_before_clock();
     checkpoint_retry_after_failed_write();

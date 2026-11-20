@@ -66,7 +66,12 @@ struct FrameBody {
     size_t size = 0;
     std::shared_ptr<FrameFile> file = {};
     bool available() const { return bytes || file; }
+    bool usable() const { return bytes || (file && !file->unavailable); }
 };
+
+inline bool overrideUsesResident(const FrameBody& body, int source, const char* residentId, const char* id) {
+    return !body.usable() && source >= 0 && residentId[0] && !strcmp(residentId, id);
+}
 
 struct DeferredSave {
     FrameBody body; // empty for a drop or an override sourced from disk

@@ -70,6 +70,21 @@ def test_counts_resume(tmp_path):
     assert report["resume_bytes_skipped"] == 1690
 
 
+def test_resume_ignored_range_and_incomplete(tmp_path):
+    _, report = score(tmp_path, """\
+12:00:00 resume target=frame-art from=100 total=1000
+12:00:01 resume done target=frame-art bytes=1000 ms=10
+12:00:02 frame slot=art outcome=complete reason=ok got=900 have=1000 total=1000 ms=10
+12:00:03 resume target=frame-weather from=200 total=1000
+12:00:04 resume done target=frame-weather bytes=1000 ms=10
+12:00:05 frame slot=weather outcome=complete reason=ok got=1000 have=1000 total=1000 ms=10
+12:00:06 resume target=frame-solar from=300 total=1000
+12:00:07 frame slot=solar outcome=no-progress reason=budget got=0 have=300 total=1000 ms=10
+""")
+    assert report["resumes"] == 1
+    assert report["resume_bytes_skipped"] == 100
+
+
 def test_reboot_and_watchdog_detected(tmp_path):
     code, report = score(tmp_path, """\
 12:00:00 ventanal lcd43b boot fw=1.1.0 app=ventanal slot=0
