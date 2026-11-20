@@ -16,7 +16,7 @@ public:
     bool append(const char* target, const uint8_t*, size_t) override;
     bool truncate(const char* target, uint32_t size) override;
     int64_t size(const char* target) override;
-    // Commit stays on the same filesystem. FAT requires an unused final name.
+    // Commit stays on the same filesystem. Replacement on FAT is non-atomic.
     bool commit(const char* target) override;
     void discard(const char* target) override;
     bool sha256(const char* target, uint8_t out[32]) override;

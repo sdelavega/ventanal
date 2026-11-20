@@ -7,9 +7,7 @@
 #include "../common/resume/storage.cpp"
 #include <SD_MMC.h>
 
-extern Ch422g expander;
-
-bool mountSdCard() {
+bool mountSdCard(Ch422g& expander) {
     // DAT3 is on CH422G EXIO4. Hold it high during CMD0 to enter native SD
     // mode, then use the three GPIO lines in 1-bit mode.
     if (!expander.setSdSelected(false) ||

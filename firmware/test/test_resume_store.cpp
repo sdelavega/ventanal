@@ -90,8 +90,9 @@ void sd_gone_falls_back_to_flash() {
     assert(!LittleFS.exists("/partials/sd-frame.part"));
     sd.replaceOnRename = false;
     sd.files["/partials/sd-frame"] = {42};
-    assert(!failedStore.commit("sd-frame"));
-    assert(sd.files.at("/partials/sd-frame") == std::vector<uint8_t>({42}));
+    assert(failedStore.commit("sd-frame"));
+    assert(sd.files.at("/partials/sd-frame") == std::vector<uint8_t>({'a', 'b', 'c'}));
+    assert(!sd.exists("/partials/sd-frame.part"));
     assert(&partialStore() == &failedStore);
     sd.offline = true;
     assert(failedStore.size("removed-card") == -1);

@@ -214,7 +214,7 @@ void setup() {
         lcd::log("touch gt911 address=0x%02x cycles=%d\n", touch.address(),
                  int(touch.cycles()));
     }
-    selectPartialStore(expanderReady && mountSdCard());
+    selectPartialStore(expanderReady && mountSdCard(expander));
 #ifdef VENTANAL_LCD_DIAG_TOUCH
     touchBootDiag();
 #endif

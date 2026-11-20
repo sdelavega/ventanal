@@ -2,4 +2,6 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 
-bool mountSdCard();
+class Ch422g;
+
+bool mountSdCard(Ch422g& expander);

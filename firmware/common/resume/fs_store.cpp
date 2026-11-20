@@ -126,10 +126,14 @@ int64_t FsStore::size(const char* target) {
 bool FsStore::commit(const char* target) {
     const auto base = path(target);
     if (faulted_ || base.empty()) return false;
+    const auto part = base + ".part";
     errno = 0;
-    if (!fs_.rename((base + ".part").c_str(), base.c_str())) {
-        // FAT refuses replacement. Preserve the previous final file.
-        return errno == EEXIST ? false : fail();
+    if (!fs_.rename(part.c_str(), base.c_str())) {
+        if (errno != EEXIST) return fail();
+        // FAT requires removing the old file first. The final path is absent
+        // between removal and rename, and stays absent if the retry fails.
+        if (!remove(base)) return false;
+        if (!fs_.rename(part.c_str(), base.c_str())) return fail();
     }
     remove(base + ".meta");
     return true;

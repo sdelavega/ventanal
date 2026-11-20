@@ -32,7 +32,10 @@ public:
 
     explicit operator bool() const { return files_ != nullptr; }
     const char* path() const { return filename_.c_str(); }
-    const char* name() const { return std::strrchr(path(), '/') + 1; }
+    const char* name() const {
+        const char* slash = std::strrchr(path(), '/');
+        return slash ? slash + 1 : path();
+    }
     bool isDirectory() const { return files_ && directory_; }
 
     File openNextFile() {
