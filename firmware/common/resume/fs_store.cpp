@@ -24,6 +24,14 @@ bool hasSuffix(const std::string& name, const char* suffix) {
     return true;
 }
 
+class WriteScope {
+public:
+    explicit WriteScope(void (*hook)(bool)) : hook_(hook) { if (hook_) hook_(true); }
+    ~WriteScope() { if (hook_) hook_(false); }
+private:
+    void (*hook_)(bool);
+};
+
 // The Arduino File API has no truncate and its flush/close discard errors.
 bool writeSynced(fs::FS& fs, const std::string& path, const uint8_t* data, size_t size, bool append) {
 #ifdef ARDUINO_ARCH_ESP32
@@ -67,7 +75,9 @@ bool FsStore::fail() {
 }
 
 bool FsStore::ensureRoot() {
-    return fs_.exists(root_.c_str()) || fs_.mkdir(root_.c_str()) || fail();
+    if (fs_.exists(root_.c_str())) return true;
+    WriteScope scope(writeHook_);
+    return fs_.mkdir(root_.c_str()) || fail();
 }
 
 fs::File FsStore::openRead(const std::string& path) {
@@ -78,8 +88,19 @@ fs::File FsStore::openRead(const std::string& path) {
 }
 
 bool FsStore::remove(const std::string& path) {
+    WriteScope scope(writeHook_);
     errno = 0;
     return fs_.remove(path.c_str()) || errno == ENOENT || fail();
+}
+
+bool FsStore::rename(const std::string& from, const std::string& to) {
+    WriteScope scope(writeHook_);
+    return fs_.rename(from.c_str(), to.c_str());
+}
+
+bool FsStore::write(const std::string& path, const uint8_t* bytes, size_t size, bool append) {
+    WriteScope scope(writeHook_);
+    return writeSynced(fs_, path, bytes, size, append);
 }
 
 bool FsStore::readMeta(const char* target, PartialMeta& meta) {
@@ -100,23 +121,27 @@ bool FsStore::writeMeta(const char* target, const PartialMeta& meta) {
     if (faulted_ || base.empty() || !ensureRoot()) return false;
     const auto bytes = encodePartialMeta(meta);
     if (ioError_)
-        return writeSynced(fs_, base + ".meta", bytes.data(), bytes.size(), false) || fail();
+        return write(base + ".meta", bytes.data(), bytes.size(), false) || fail();
 
     // Publish atomically so ENOSPC cannot damage the previous checkpoint.
     const auto temporary = base + ".temp";
-    if (!writeSynced(fs_, temporary, bytes.data(), bytes.size(), false) ||
-        !fs_.rename(temporary.c_str(), (base + ".meta").c_str())) {
+    if (!write(temporary, bytes.data(), bytes.size(), false) ||
+        !rename(temporary, base + ".meta")) {
         remove(temporary);
         return false;
     }
     clearWriteFailure(base);
+    {
+        const std::lock_guard<std::mutex> lock(checkpointMutex_);
+        emptyStrikes_.erase(base);
+    }
     return true;
 }
 
 bool FsStore::append(const char* target, const uint8_t* bytes, size_t count) {
     const auto base = path(target);
     if (faulted_ || base.empty() || !ensureRoot()) return false;
-    return writeSynced(fs_, base + ".part", bytes, count, true) || fail();
+    return write(base + ".part", bytes, count, true) || fail();
 }
 
 bool FsStore::keepAfterWriteFailure(const char* target, uint32_t have) {
@@ -126,13 +151,14 @@ bool FsStore::keepAfterWriteFailure(const char* target, uint32_t have) {
     const std::lock_guard<std::mutex> lock(checkpointMutex_);
     const auto marker = base + ".fail";
     const auto sidecar = base + ".meta";
-    if (failedCheckpoints_.count(base) || (!fs_.exists(sidecar.c_str()) && fs_.exists(marker.c_str())))
+    if (emptyStrikes_.count(base) || failedCheckpoints_.count(base) || (!fs_.exists(sidecar.c_str()) && fs_.exists(marker.c_str())))
         return false;
 
     // A failed append may have written a tail. If truncation also fails, the
     // sidecar still fences the tail out of the next download.
     if (size(target) > have) truncate(target, have);
-    if (have && !fs_.rename(sidecar.c_str(), marker.c_str())) failedCheckpoints_.insert(base);
+    if (!have) emptyStrikes_.insert(base);
+    else if (!rename(sidecar, marker)) failedCheckpoints_.insert(base);
     return true;
 }
 
@@ -148,6 +174,7 @@ bool FsStore::truncate(const char* target, uint32_t length) {
     if (current < 0 || current < length) return false;
     if (current == length) return true;
     const auto part = path(target) + ".part";
+    WriteScope scope(writeHook_);
 #ifdef ARDUINO_ARCH_ESP32
     const char* mount = fs_.mountpoint();
     return (mount && ::truncate((mount + part).c_str(), length) == 0) || fail();
@@ -168,12 +195,12 @@ bool FsStore::commit(const char* target) {
     if (faulted_ || base.empty()) return false;
     const auto part = base + ".part";
     errno = 0;
-    if (!fs_.rename(part.c_str(), base.c_str())) {
+    if (!rename(part, base)) {
         if (errno != EEXIST) return fail();
         // FAT requires removing the old file first. The final path is absent
         // between removal and rename, and stays absent if the retry fails.
         if (!remove(base)) return false;
-        if (!fs_.rename(part.c_str(), base.c_str())) return fail();
+        if (!rename(part, base)) return fail();
     }
     remove(base + ".meta");
     clearWriteFailure(base);
@@ -183,6 +210,19 @@ bool FsStore::commit(const char* target) {
 void FsStore::discard(const char* target) {
     const auto base = path(target);
     if (base.empty()) return;
+    {
+        const std::lock_guard<std::mutex> lock(checkpointMutex_);
+        emptyStrikes_.erase(base);
+    }
+    discardFiles(base);
+}
+
+void FsStore::resetPartial(const char* target) {
+    const auto base = path(target);
+    if (!base.empty()) discardFiles(base);
+}
+
+void FsStore::discardFiles(const std::string& base) {
     remove(base + ".meta");
     clearWriteFailure(base);
     if (!ioError_) remove(base + ".temp");
@@ -241,7 +281,7 @@ fs::File FsStore::openCommitted(const char* target) {
 
 bool FsStore::renameCommitted(const char* target, const char* destination) {
     const auto base = path(target);
-    return !faulted_ && !base.empty() && (fs_.rename(base.c_str(), destination) || fail());
+    return !faulted_ && !base.empty() && (rename(base, destination) || fail());
 }
 
 bool FsStore::readExact(fs::File& file, uint8_t* bytes, size_t count) {
@@ -264,6 +304,7 @@ void FsStore::retainOtaTarget(const char* target) {
             retired.push_back(name);
             const std::lock_guard<std::mutex> lock(checkpointMutex_);
             failedCheckpoints_.erase(path(base.c_str()));
+            emptyStrikes_.erase(path(base.c_str()));
         }
     }
     directory.close();
@@ -276,37 +317,46 @@ bool FsStore::removeCommitted(const char* target) {
     return !base.empty() && remove(base);
 }
 
-std::string FsStore::retainPreviousCommitted(const char* prefix, uint32_t today) {
-    if (faulted_) return {};
-    auto directory = openRead(root_);
-    if (!directory || !directory.isDirectory()) return {};
+std::string FsStore::previousCommitted(const char* prefix, uint32_t today) {
     const size_t prefixLength = std::strlen(prefix);
     std::string previous;
     unsigned long previousDay = 0;
-    std::vector<std::string> retired;
-    while (auto entry = directory.openNextFile()) {
-        if (entry.isDirectory()) continue;
-        const std::string name = entry.name();
+    for (const auto& entry : committedEntries()) {
+        const auto& name = entry.target;
         if (name.size() <= prefixLength || name.compare(0, prefixLength, prefix) != 0 ||
             name.find_first_not_of("0123456789", prefixLength) != std::string::npos)
             continue;
-        const unsigned long day = std::strtoul(name.c_str() + prefixLength, nullptr, 10);
-        if (day >= today) continue;
-        if (previous.empty() || day > previousDay) {
-            if (!previous.empty()) retired.push_back(previous);
-            previous = name;
-            previousDay = day;
-        } else {
-            retired.push_back(name);
-        }
+        const auto day = std::strtoul(name.c_str() + prefixLength, nullptr, 10);
+        if (day >= today || day <= previousDay) continue;
+        previous = name;
+        previousDay = day;
     }
-    directory.close();
-    for (const auto& name : retired)
-        if (!removeCommitted(name.c_str())) break;
     return previous;
 }
 
+std::vector<FsStore::CommittedEntry> FsStore::committedEntries() {
+    std::vector<CommittedEntry> entries;
+    if (faulted_) return entries;
+#ifdef ARDUINO_ARCH_ESP32
+    if (!fs_.mountpoint()) return entries;
+#endif
+    auto directory = openRead(root_);
+    if (!directory || !directory.isDirectory()) return entries;
+    while (auto entry = directory.openNextFile()) {
+        if (entry.isDirectory() || path(entry.name()).empty()) continue;
+        const auto modified = entry.getLastWrite();
+        entries.push_back({entry.name(), modified > 0 ? uint32_t(modified) : 0});
+    }
+    return entries;
+}
+
 void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)) {
+    sweep(epochNow, [=](const char*, const PartialMeta& meta) {
+        return !validatorLive || validatorLive(meta);
+    }, {});
+}
+
+void FsStore::sweep(uint32_t epochNow, const ValidatorLive& validatorLive, const TargetFilter& managed) {
     if (faulted_ || epochNow < resume_detail::kValidEpoch) return;
 #ifdef ARDUINO_ARCH_ESP32
     if (!fs_.mountpoint()) return;
@@ -318,6 +368,7 @@ void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)
     while (auto entry = directory.openNextFile()) {
         if (entry.isDirectory()) continue;
         const std::string name = entry.name();
+        if (managed && (name.size() <= 5 || !managed(name.substr(0, name.size() - 5).c_str()))) continue;
         if (!ioError_ && hasSuffix(name, ".temp")) temporaries.push_back(name);
         if (hasSuffix(name, ".part") || hasSuffix(name, ".meta") || (!ioError_ && hasSuffix(name, ".fail")))
             targets.push_back(name.substr(0, name.size() - 5));
@@ -332,7 +383,7 @@ void FsStore::sweep(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&)
         if (faulted_) break;
         const bool stale = meta.touchedAt >= resume_detail::kValidEpoch && meta.touchedAt <= epochNow &&
                            epochNow - meta.touchedAt >= kStaleSeconds;
-        if (!paired || stale || (validatorLive && !validatorLive(meta))) discard(target.c_str());
+        if (!paired || stale || (validatorLive && !validatorLive(target.c_str(), meta))) discard(target.c_str());
         if (faulted_) break;
     }
 }

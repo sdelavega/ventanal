@@ -3,6 +3,9 @@
 #pragma once
 
 #include "sync.h"
+#include <ctime>
+#include <string>
+#include <vector>
 
 namespace lcd {
 
@@ -11,6 +14,8 @@ namespace lcd {
 // refresh worker.
 void runLocalRefresh(const char currentIds[SCREEN_SLOTS][17], RefreshResult& result, Watchdog& watchdog,
                      const ResidentCache& cache);
+
+std::vector<std::string> wantedArtTargets(time_t now, const char* displayedArtId);
 
 // Persists staged standalone art state on the display loop.
 bool saveArtState(const local::ArtState& state);

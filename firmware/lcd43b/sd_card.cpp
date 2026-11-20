@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "sd_card.h"
+#include "scanout_diag.h"
 #include "board.h"
 #include "ch422g.h"
 #include "../common/resume/fs_store.cpp"
@@ -13,6 +14,7 @@ bool mountSdCard(Ch422g& expander) {
     if (!expander.setSdSelected(false) ||
         !SD_MMC.setPins(lcd::SD_CLK_GPIO, lcd::SD_CMD_GPIO, lcd::SD_D0_GPIO) ||
         !SD_MMC.begin("/sdcard", true, false)) return false;
+    lcd::ScanScope activity(lcd::ScanActivity::PartialStore);
     if (!probePartialStorage(SD_MMC)) {
         SD_MMC.end();
         return false;

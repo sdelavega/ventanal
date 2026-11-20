@@ -100,6 +100,32 @@ FetchOutcome failStorageWrite(FsStore& store, size_t limit) {
     return result;
 }
 
+class FirstRange : public RangeTransport {
+    bool get(const ResumeSource&, uint32_t start, uint32_t, const char*,
+             const ResponseHeaders& headers, const ChunkSink& sink) override {
+        assert(start == 0);
+        return headers({206, start, sizeof(kBody) - 1, sizeof(kBody), "live"})
+            && sink(kBody, sizeof(kBody));
+    }
+};
+
+void zero_byte_storage_failure_strikes() {
+    FakeFS fs;
+    FsStore store(fs);
+    FirstRange transport;
+    const ResumeSource source{kUrl, "live", nullptr, sizeof(kBody), false};
+    const auto now = []() -> uint32_t { return 0; };
+    writeLimit = 0;
+    for (auto expected : {FetchOutcome::NoProgress, FetchOutcome::Failed}) {
+        const char* reason = nullptr;
+        assert(resumeFetch(transport, store, "frame", source, 1, now, kNow, nullptr, &reason) == expected);
+        assert(reason && std::strcmp(reason, "storage") == 0);
+        assert(store.size("frame") <= 0);
+    }
+    writeLimit = SIZE_MAX;
+    assert(resumeFetch(transport, store, "frame", source, 1, now, kNow, nullptr) == FetchOutcome::Complete);
+}
+
 void flash_full_keeps_verified_bytes() {
     for (const size_t limit : {size_t(1), sizeof(kBody)}) {
         FsStore store(LittleFS, "/failure");
@@ -212,38 +238,39 @@ void sweep_needs_valid_time() {
     assert(store.size("orphan") == 3);
 }
 
-void prune_old_committed_sun_files() {
+void find_previous_committed_sun_without_pruning() {
     FsStore store(LittleFS, "/sun");
     for (const char* target : {"sdo-9999", "sdo-20775", "sdo-20776", "art-met-1"}) {
         seed(store, target, kNow);
         assert(store.commit(target));
     }
     seed(store, "sdo-20777", kNow);
-    assert(store.retainPreviousCommitted("sdo-", 20777) == "sdo-20776");
-    assert(!store.openCommitted("sdo-9999"));
-    assert(!store.openCommitted("sdo-20775"));
+    assert(store.previousCommitted("sdo-", 20777) == "sdo-20776");
+    assert(store.openCommitted("sdo-9999"));
+    assert(store.openCommitted("sdo-20775"));
     auto sun = store.openCommitted("sdo-20776");
     assert(sun && sun.size() == sizeof(kBody));
     assert(store.openCommitted("art-met-1"));
     PartialMeta meta{};
     assert(store.size("sdo-20777") == sizeof(kBody) && store.readMeta("sdo-20777", meta));
     assert(store.commit("sdo-20777"));
-    assert(store.retainPreviousCommitted("sdo-", 20777) == "sdo-20776");
+    assert(store.previousCommitted("sdo-", 20777) == "sdo-20776");
     assert(store.openCommitted("sdo-20777") && store.openCommitted("sdo-20776"));
-    assert(store.retainPreviousCommitted("sdo-", 20778) == "sdo-20777");
-    assert(!store.openCommitted("sdo-20776"));
+    assert(store.previousCommitted("sdo-", 20778) == "sdo-20777");
+    assert(store.openCommitted("sdo-20776"));
 }
 }
 
 int main() {
     ota_space_evicts_spares_only();
     fs_store_roundtrip();
+    zero_byte_storage_failure_strikes();
     flash_full_keeps_verified_bytes();
     second_storage_failure_abandons();
     sd_write_failure_still_abandons();
     sd_gone_falls_back_to_flash();
     sweep_removes_old_and_orphaned();
     sweep_needs_valid_time();
-    prune_old_committed_sun_files();
-    std::puts("resume store: 9 cases passed");
+    find_previous_committed_sun_without_pruning();
+    std::puts("resume store: 10 cases passed");
 }

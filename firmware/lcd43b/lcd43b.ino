@@ -46,6 +46,10 @@
 #include "build_config.h"
 #include "installation.h"
 #include "ota.h"
+#include "download_acceptance.h"
+#include "download_sweep.h"
+#include "../common/resume/ota_stage.h"
+#include <optional>
 
 #include "ch422g.h"
 #include "sd_card.h"
@@ -193,6 +197,7 @@ void setup() {
         // the persisted LOCAL quiet window in the configured zone, not UTC.
         lcd::configureTimezone();
         githubLastCheck = lcd::loadGithubCheck(prefs, githubOffer);
+        if (!updateBoot.pending) restoreAcceptedUpdate();
         if (lcd::standalone(lcd::installation))
             githubLastAutoFailure = lcd::loadGithubAutoFailure(prefs);
     }
@@ -215,6 +220,12 @@ void setup() {
         lcd::log("touch gt911 address=0x%02x cycles=%d\n", touch.address(),
                  int(touch.cycles()));
     }
+    setPartialStoreWriteHook([](bool active) {
+        // Partial-store operations are serialized by the refresh/install controller.
+        static std::optional<lcd::ScanScope> scope;
+        if (active) scope.emplace(lcd::ScanActivity::PartialStore);
+        else scope.reset();
+    });
     selectPartialStore(expanderReady && mountSdCard(expander));
 #ifdef VENTANAL_LCD_DIAG_TOUCH
     touchBootDiag();
@@ -239,7 +250,7 @@ void setup() {
     }
     sntp_set_time_sync_notification_cb(onNtpSync);
     const time_t rtcEpoch = seedRtc(); // after GT911 reset on the shared bus
-    sweepPartials(rtcEpoch, [](const PartialMeta&) { return true; });
+    sweepDownloads(ventanal::trustedEpoch(rtcEpoch), acceptedUpdate, nullptr, "", bootWatchdog);
     loadResidentCache();
     WiFi.persistent(false);
     refreshWatchdog.arm();
@@ -448,8 +459,7 @@ void loop() {
 #endif
 #endif
     const uint32_t interval=powerPollMs();
-    const bool networkIdle = !refreshBusy &&
-        (installQueued == lcd::UpdateSource::None || updateRetry.waiting());
+    const bool networkIdle = !refreshBusy && !installRequested;
     const bool refreshDue = wifiRetry.waiting()
         ? networkIdle && wifiRetry.due(millis())
         : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,

@@ -78,6 +78,15 @@ SemaphoreHandle_t refreshStaged;   // worker -> loop: result ready to copy
 SemaphoreHandle_t refreshCopied;   // loop -> worker: result applied
 bool refreshRequested = false;
 lcd::DeviceSettings refreshSettings; // copied before worker starts; immutable until it finishes
+lcd::AcceptedUpdate refreshAcceptedUpdate;
+lcd::UpdateSource refreshReadySource = lcd::UpdateSource::None;
+FetchOutcome stagedUpdateOutcome = FetchOutcome::NoProgress;
+OtaFailure stagedUpdateFailure = OtaFailure::None;
+bool countStagedUpdateFailure = false;
+lcd::SweepDay downloadSweepDay;
+lcd::SweepDay frameSweepDay;
+bool readyStageExpired = false;
+char sweepDisplayedArt[17]{};
 lcd::RefreshResult refreshStaging;   // worker writes, loop copies while parked
 char refreshIds[lcd::SCREEN_SLOTS][17]{};
 struct PendingFrame {
@@ -86,6 +95,8 @@ struct PendingFrame {
     const lcd::FrameBody* body;
     size_t requestedBytes = 0;
     int releaseSlot = -1;
+    bool evictSpare = false;
+    bool captureSweepContext = false;
 };
 PendingFrame pendingFrame;
 SemaphoreHandle_t frameStaged;       // worker -> loop: decoded frame ready
@@ -115,6 +126,19 @@ bool requestReleaseFrame(int slot) {
     return frameAccepted;
 }
 
+bool requestOtaSpareEviction() {
+    pendingFrame = {-1, nullptr, nullptr, 0, -1, true};
+    xSemaphoreGive(frameStaged);
+    xSemaphoreTake(frameCopied, portMAX_DELAY);
+    return frameAccepted;
+}
+
+void requestSweepContext() {
+    pendingFrame = {-1, nullptr, nullptr, 0, -1, false, true};
+    xSemaphoreGive(frameStaged);
+    xSemaphoreTake(frameCopied, portMAX_DELAY);
+}
+
 uint8_t* clearOverrideSave() {
     deferredOverride = {};
     overrideSource = -1;
@@ -126,6 +150,32 @@ uint8_t* clearOverrideSave() {
 
 void applyResidentFrame() {
     const auto frame = pendingFrame;
+    if (frame.captureSweepContext) {
+        refreshAcceptedUpdate = acceptedUpdate;
+        refreshReadySource = installQueued;
+        const int slot = screenSlot(screenIndex);
+        const char* artId = slot == 0 && owner.overrideArt.id[0] ? owner.overrideArt.id
+            : slot >= 0 ? state.cachedIds[slot] : "";
+        strlcpy(sweepDisplayedArt, artId, sizeof sweepDisplayedArt);
+        xSemaphoreGive(frameCopied);
+        return;
+    }
+    if (frame.evictSpare) {
+        frameAccepted = false;
+        lcd::ScanScope activity(lcd::ScanActivity::LittleFS);
+        for (int slot = lcd::SCREEN_SLOTS - lcd::SPARE_SLOTS;
+             slot < lcd::SCREEN_SLOTS && !frameAccepted; ++slot) {
+            if (slot == overrideSource || slot == screenSlot(screenIndex)) continue;
+            for (bool alternate : {false, true}) {
+                if (LittleFS.remove(lcd::residentPath(slot, alternate).c_str())) {
+                    frameAccepted = true;
+                    break;
+                }
+            }
+        }
+        xSemaphoreGive(frameCopied);
+        return;
+    }
     if (frame.slot < 0 && frame.releaseSlot >= 0) {
         // Lend a spare's frame memory to the worker (standalone art). Never the
         // spare on screen or a pinned override; an empty id makes the slot read
@@ -223,7 +273,7 @@ bool persistDeferred(bool memoryPressure) {
     };
     int slot = -1;
     const bool saveFrames = mounted && (!backlightState ||
-        (litFrameSaveAllowed(now) && (memoryPressure || !refreshBusy)));
+        (litFrameSaveAllowed(now) && (memoryPressure || !refreshBusy || refreshStagingUpdate)));
     lcd::DeferredSave* chosen = saveFrames && due(deferredOverride) ? &deferredOverride : nullptr;
     if (saveFrames && !chosen) {
         for (int i = 0; i < lcd::SCREEN_SLOTS; ++i) {
@@ -292,10 +342,93 @@ void reclaimCacheMemory(size_t bytes) {
     }
 }
 
+void resetUpdateDownload() {
+    updateRetry = {};
+    downloadStopped = installRequested = false;
+    installQueued = lcd::UpdateSource::None;
+}
+
+bool forgetAcceptedUpdate() {
+    ScanoutSavePause pause(!LitNvsWrites);
+    if (!lcd::clearAcceptedUpdate(prefs, acceptedUpdate)) {
+        updateNotice = "Could not save update choice";
+        return false;
+    }
+    resetUpdateDownload();
+    return true;
+}
+
+void reconcileUpdate(lcd::UpdateSource source, const lcd::UpdateOffer& current) {
+    if (acceptedUpdate.source != source) return;
+    const auto next = lcd::identifyUpdate(current, source);
+    if (lcd::matchesAcceptance(acceptedUpdate, next)) return;
+    ScanoutSavePause pause(!LitNvsWrites);
+    if (lcd::reconcileAcceptedUpdate(prefs, acceptedUpdate, next)) {
+        resetUpdateDownload();
+        updateNotice = "Offer changed. Select the current update.";
+    } else {
+        updateNotice = "Could not save update choice";
+        downloadStopped = true;
+        installRequested = false;
+        installQueued = lcd::UpdateSource::None;
+    }
+}
+
+void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
+                    const lcd::DeviceManifest* manifest, const char* displayedArtId,
+                    lcd::Watchdog& watchdog) {
+    if (now < resume_detail::kValidEpoch) return;
+    const bool daily = downloadSweepDay.due(now);
+    const bool standalone = lcd::standalone(lcd::installation);
+    const bool sweepFrames = (manifest || standalone) && frameSweepDay.due(now);
+    if (!daily && !sweepFrames) return;
+    lcd::DownloadSweep sweep;
+    if (daily) {
+        if (standalone)
+            sweep.art = lcd::wantedArtTargets(now, displayedArtId);
+        if (accepted.source != lcd::UpdateSource::None) {
+            sweep.otaTarget = otaStageTarget(accepted.image);
+            sweep.otaValidator = otaStageValidator(accepted.image);
+            sweep.otaCommittedMatches = [&](FsStore& store, const char* target) {
+                auto file = store.openCommitted(target);
+                return file && verifyOtaFile(store, file, accepted.image,
+                                          [&] { watchdog.feed(); }) == OtaFailure::None;
+            };
+        }
+    }
+    if (sweepFrames) {
+        const auto publishedFrame = [manifest](const char* target) -> const lcd::FrameInfo* {
+            if (!manifest) return nullptr;
+            for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot) {
+                if (strcmp(target + 6, lcd::SLOT_NAMES[slot])) continue;
+                if (slot >= 3 && slot - 3 >= manifest->spareCount) return nullptr;
+                const auto& frame = slot < 3 ? manifest->screens[slot] : manifest->spares[slot - 3];
+                return frame.present ? &frame : nullptr;
+            }
+            return nullptr;
+        };
+        sweep.frameLive = [publishedFrame](const char* target, const PartialMeta& meta) {
+            const auto* frame = publishedFrame(target);
+            return frame && frame->size == meta.total && !strcmp(frame->id, meta.validator);
+        };
+        sweep.frameCommittedWanted = [publishedFrame](const char* target) {
+            return publishedFrame(target) != nullptr;
+        };
+    }
+    forEachPartialStore([&](FsStore& store) {
+        watchdog.feed();
+        sweep.run(store, now, daily);
+    });
+}
+
 void refreshWorker(void*) {
     refreshWatchdog.subscribe();
     standaloneGithubAttempt = 0;
-    if (refreshCheckingUpdates) {
+    if (refreshStagingUpdate) {
+        stagedUpdateOutcome = lcd::stageUpdatePass(prefs, updateBoot, refreshAcceptedUpdate.offer,
+            refreshAcceptedUpdate.source, refreshWatchdog, requestOtaSpareEviction,
+            stagedUpdateFailure, countStagedUpdateFailure);
+    } else if (refreshCheckingUpdates) {
         githubStatus = lcd::checkGithub(githubLastCheck, githubStaging, refreshWatchdog);
     } else if (lcd::standalone(lcd::installation)) {
         lcd::runLocalRefresh(refreshIds, refreshStaging, refreshWatchdog, refreshCache);
@@ -313,6 +446,31 @@ void refreshWorker(void*) {
                         refreshStaging, refreshWatchdog, refreshSettings, refreshSkips,
                         refreshCache, refreshOtaReport, refreshOtaApproval);
     }
+    if (!refreshStagingUpdate && !refreshCheckingUpdates) {
+        requestSweepContext();
+        const auto epoch = ventanal::trustedEpoch(time(nullptr));
+        const bool standalone = lcd::standalone(lcd::installation);
+        const auto* manifest = refreshStaging.manifestOk && !standalone ? &refreshStaging.manifest : nullptr;
+        const auto source = refreshAcceptedUpdate.source;
+        const auto* current = source == lcd::UpdateSource::Host && manifest ? &refreshStaging.firmware
+            : source == lcd::UpdateSource::GitHub && standaloneGithubAttempt && githubStaging.checked
+                ? &githubStaging.offer : nullptr;
+        if (current) {
+            lcd::UpdateOffer offer;
+            if (!lcd::validateOffer(*current, source, offer) ||
+                !lcd::matchesAcceptance(refreshAcceptedUpdate, lcd::identifyUpdate(offer, source)))
+                refreshAcceptedUpdate = {};
+        }
+        sweepDownloads(epoch, refreshAcceptedUpdate, manifest, sweepDisplayedArt, refreshWatchdog);
+        if (refreshAcceptedUpdate.source != lcd::UpdateSource::None &&
+            refreshAcceptedUpdate.source == refreshReadySource) {
+            const auto target = otaStageTarget(refreshAcceptedUpdate.image);
+            readyStageExpired = true;
+            forEachPartialStore([&](FsStore& store) {
+                if (store.openCommitted(target.c_str())) readyStageExpired = false;
+            });
+        }
+    }
     refreshWatchdog.unsubscribe();
     xSemaphoreGive(refreshStaged);
     // Park until loop() has copied the result, so the staging buffer is
@@ -323,18 +481,24 @@ void refreshWorker(void*) {
 
 // Kick a refresh on the worker task; loop() keeps servicing touch and the
 // backlight while it runs. At most one worker may be in flight.
-bool startRefresh(bool redraw, bool check = false) {
+bool startRefresh(bool redraw, bool check = false, bool stageUpdate = false) {
     if (refreshBusy || setupActive || setupQueued) return false;
-    if (!refreshCache.staging) {  // a frame went into a lent slot and memory was short then
+    if (!check && !stageUpdate && !refreshCache.staging) {  // a frame went into a lent slot and memory was short then
         refreshCache.staging = static_cast<uint8_t*>(ps_malloc(lcd::FRAME_BYTES));
         lcd::log("cache staging retry ok=%d\n", refreshCache.staging != nullptr);
     }
     refreshCheckingUpdates = check;
-    if (!check) {
+    refreshStagingUpdate = stageUpdate;
+    if (stageUpdate) refreshAcceptedUpdate = acceptedUpdate;
+    readyStageExpired = false;
+    if (!check && !stageUpdate) {
         formatOtaReport(refreshOtaReport, updateBoot.journal.record);
         strlcpy(refreshOtaApproval, refreshOtaReport[0] ? updateBoot.journal.approval : "",
                 sizeof refreshOtaApproval);
         memcpy(refreshIds, state.cachedIds, sizeof refreshIds);
+        for (int slot = 0; slot < lcd::SCREEN_SLOTS; ++slot)
+            memcpy(refreshCache.persistedIds[slot], persistedFrames[slot].id,
+                   sizeof refreshCache.persistedIds[slot]);
 #ifdef VENTANAL_LCD_DIAG_PANEL
         refreshCache.forceDownloads = fetchCounter == 0;
 #ifdef VENTANAL_LCD_DIAG_F3
@@ -355,11 +519,11 @@ bool startRefresh(bool redraw, bool check = false) {
     const int workerCore = xPortGetCoreID();
     if (xTaskCreatePinnedToCore(refreshWorker, "ventanal-refresh", WORKER_STACK_BYTES,
                                 nullptr, 1, nullptr, workerCore) != pdPASS) {
-        refreshBusy = refreshCheckingUpdates = false;
+        refreshBusy = refreshCheckingUpdates = refreshStagingUpdate = false;
         lcd::log("refresh error=task-create\n");
         return false;
     }
-    if (!check) settingsRefreshPending=false;
+    if (!check && !stageUpdate) settingsRefreshPending=false;
     return true;
 }
 
@@ -367,11 +531,39 @@ bool startRefresh(bool redraw, bool check = false) {
 void applyGithubCheck() {
     githubLastCheck = githubStaging.checked;
     lcd::validateOffer(githubStaging.offer, lcd::UpdateSource::GitHub, githubOffer);
+    reconcileUpdate(lcd::UpdateSource::GitHub, githubOffer);
     if (!lcd::saveGithubCheck(prefs, githubStaging)) lcd::log("ota error=nvs-check\n");
 }
 
 // Apply a finished worker pass (single writer: loop()).
 void applyFinishedRefresh() {
+    if (refreshStagingUpdate) {
+        const auto completed = stagedUpdateOutcome;
+        if (acceptedUpdate.source != lcd::UpdateSource::None &&
+            lcd::matchesAcceptance(acceptedUpdate, refreshAcceptedUpdate)) {
+            if (completed == FetchOutcome::Complete) {
+                installQueued = acceptedUpdate.source;
+                updateNotice = "Ready to install. Tap Install.";
+            } else if (completed == FetchOutcome::Failed) {
+                ScanoutSavePause pause(!LitNvsWrites);
+                const auto failure = lcd::recordUpdateFailure(prefs, updateBoot, acceptedUpdate.offer,
+                    acceptedUpdate.source, stagedUpdateFailure, countStagedUpdateFailure);
+                downloadStopped = true;
+                updateNotice = failure == OtaFailure::Attempts
+                    ? "Attempt limit reached for this update" : "Download failed. Tap Download to retry.";
+                settingsRefreshPending = true;
+            } else {
+                if (completed == FetchOutcome::Progress) updateRetry = {};
+                updateRetry.finished(millis(), false);
+            }
+        }
+        xSemaphoreGive(refreshCopied);
+        refreshBusy = refreshStagingUpdate = false;
+        if (settingsPage.active && updatesPage) showSettings();
+        backlightRefresh();
+        return;
+    }
+
     if (refreshCheckingUpdates) {
         if (githubStaging.checked) {
             ScanoutSavePause pause(!LitNvsWrites);
@@ -432,10 +624,17 @@ void applyFinishedRefresh() {
     // fetched manifest can replace or withdraw it.
     if (refreshStaging.manifestOk)
         lcd::validateOffer(refreshStaging.firmware, lcd::UpdateSource::Host, hostOffer);
-    else if (installQueued != lcd::UpdateSource::Host)
+    else if (acceptedUpdate.source != lcd::UpdateSource::Host)
         hostOffer = {};
     const bool staleRollback = lcd::rolledBackOffer(updateBoot, hostOffer);
     if (staleRollback) hostOffer = {};
+    if (refreshStaging.manifestOk) reconcileUpdate(lcd::UpdateSource::Host, hostOffer);
+    if (readyStageExpired && installQueued != lcd::UpdateSource::None) {
+        installQueued = lcd::UpdateSource::None;
+        installRequested = false;
+        updateRetry = {};
+        updateNotice = "Downloading update...";
+    }
     const bool frameFailed = lcd::anyRequiredFrameFailed(refreshStaging);
     const bool incomplete = refreshStaging.framesPending || frameFailed;
     const uint32_t epochNow = ventanal::trustedEpoch(time(nullptr));
@@ -452,7 +651,6 @@ void applyFinishedRefresh() {
             lcd::log("standalone error=art-save\n");
         if (githubChecked) {
             applyGithubCheck();
-            if (!checkQueued) updateNotice = "";
         } else if (githubCheckFailed) {
             // Keep the cached offer and leave manual retries available.
             githubLastAutoFailure = standaloneGithubAttempt;

@@ -80,6 +80,8 @@ int main(int argc,char** argv) {
     drawUpdatePage(px.data()+1, "65535.65535.65535", "2.0.0", "Checked within the last week", false);
     assert(px.front()==0x1234 && px.back()==0x1234);
     assert(hitUpdates(660, 410, true, true, true, true) == UpdateHit::Cancel);
+    assert(hitUpdates(640, 130, true, true, true, true, UpdateSource::Host) == UpdateHit::HostInstall);
+    assert(hitUpdates(640, 235, true, true, true, true, UpdateSource::Host) == UpdateHit::None);
     assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < UPDATE_MENU.w - 10);
     assert(textWidth(ClockTime, "Update 65535.65535.65535 available") < HOST_INSTALL.x - 150);
     for (bool updates : {false, true}) {

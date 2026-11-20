@@ -92,7 +92,7 @@ bool startSetupPortal() {
 
 bool enterSetup(lcd::SetupReason why) {
     if (setupActive) return true;
-    if (refreshBusy || installQueued != lcd::UpdateSource::None) {
+    if (refreshBusy || installRequested) {
         setupQueued = true;  // the network is in use: start when it is free
         lcd::log("setup queued refresh_busy=%d\n", refreshBusy);
         return false;

@@ -12,4 +12,6 @@ bool partialsOnFlash();
 FsStore& partialStore();
 FsStore& flashPartialStore();
 void selectPartialStore(bool sdMounted);
+void setPartialStoreWriteHook(void (*hook)(bool));
+void forEachPartialStore(const std::function<void(FsStore&)>& visit);
 void sweepPartials(uint32_t epochNow, bool (*validatorLive)(const PartialMeta&));

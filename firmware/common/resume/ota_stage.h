@@ -51,6 +51,24 @@ inline std::string otaStageTarget(const ReleaseInfo& release) {
     return target;
 }
 
+inline std::string otaStageDigest(const ReleaseInfo& release) {
+    constexpr char hex[] = "0123456789abcdef";
+    char digest[65]{};
+    for (size_t i = 0; i < sizeof release.sha256; ++i) {
+        digest[2 * i] = hex[release.sha256[i] >> 4];
+        digest[2 * i + 1] = hex[release.sha256[i] & 15];
+    }
+    return digest;
+}
+
+inline std::string otaStageValidator(const ReleaseInfo& release) {
+    const auto digest = otaStageDigest(release);
+    char validator[sizeof(PartialMeta::validator)];
+    snprintf(validator, sizeof validator, "%s:%s:%" PRIu32,
+             otaStageTarget(release).c_str() + 4, digest.c_str(), release.size);
+    return validator;
+}
+
 inline OtaFailure verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInfo& release,
                                 const HashFeed& feed) {
     if (file.size() != release.size) return OtaFailure::Digest;
@@ -65,6 +83,16 @@ inline OtaFailure verifyOtaFile(FsStore& store, fs::File& file, const ReleaseInf
     }
     return releaseImageMatches(release, file.size(), hash.digest())
         ? OtaFailure::None : OtaFailure::Digest;
+}
+
+inline bool recoverOtaStage(FsStore& store, const ReleaseInfo& release, const HashFeed& feed) {
+    const auto target = otaStageTarget(release);
+    auto file = store.openCommitted(target.c_str());
+    if (!file) return false;
+    const bool matches = verifyOtaFile(store, file, release, feed) == OtaFailure::None;
+    file.close();
+    if (!matches) store.removeCommitted(target.c_str());
+    return matches;
 }
 
 // The staged image has already verified. Recheck the bytes as they are
@@ -128,35 +156,29 @@ OtaStage stageUpdate(RangeTransport& transport, const ReleaseInfo& release, uint
     store.retainOtaTarget(target);
     auto file = store.openCommitted(target);
     if (file) {
-        const bool sizeMatches = file.size() == release.size;
+        const bool matches = file.size() == release.size;
         file.close();
-        if (sizeMatches) return report(OtaStage::Complete, "ok", release.size);
+        if (matches) return report(OtaStage::Complete, "ok", release.size);
         store.removeCommitted(target);
     }
 
-    constexpr char hex[] = "0123456789abcdef";
-    char digest[65]{};
-    for (size_t i = 0; i < sizeof release.sha256; ++i) {
-        digest[2 * i] = hex[release.sha256[i] >> 4];
-        digest[2 * i + 1] = hex[release.sha256[i] & 15];
-    }
-    char validator[sizeof(PartialMeta::validator)];
-    snprintf(validator, sizeof validator, "%s:%s:%" PRIu32, target + 4, digest, release.size);
+    const auto validator = otaStageValidator(release);
+    const auto digest = otaStageDigest(release);
     PartialMeta meta{};
     const auto stored = store.size(target);
     uint32_t have = 0;
     if (stored > 0 && store.readMeta(target, meta) && meta.total == release.size &&
-        !strcmp(meta.validator, validator) && !strcmp(meta.url, url))
+        !strcmp(meta.validator, validator.c_str()) && !strcmp(meta.url, url))
         have = std::min<uint32_t>(stored, meta.have);
     else
-        store.discard(target);
+        store.resetPartial(target);
 
     if (!makeOtaSpace(release.size - have, freeBytes, evict)) {
         store.discard(target);
         return report(OtaStage::Failed, "space");
     }
 
-    const ResumeSource source{url, validator, digest, release.size, sendIfRange, true};
+    const ResumeSource source{url, validator.c_str(), digest.c_str(), release.size, sendIfRange, true};
     const char* reason = nullptr;
     const uint32_t elapsed = nowMs() - started;
     const auto outcome = resumeFetch(transport, store, target, source,

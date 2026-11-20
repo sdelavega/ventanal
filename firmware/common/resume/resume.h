@@ -135,7 +135,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
 
     PartialMeta meta{};
     const auto reset = [&] {
-        store.discard(target);
+        store.resetPartial(target);
         meta = {};
         std::strcpy(meta.url, source.url);
     };
@@ -149,7 +149,7 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
     bool canResume = true;
     const auto pause = [&] {
         if (!canResume) {
-            store.discard(target);
+            store.resetPartial(target);
             return FetchOutcome::NoProgress;
         }
         return progressed ? FetchOutcome::Progress : FetchOutcome::NoProgress;
@@ -158,7 +158,8 @@ inline FetchOutcome resumeFetch(RangeTransport& transport, PartialStore& store, 
         if (!store.keepAfterWriteFailure(target, canResume ? meta.have : 0))
             return fail("storage");
         if (failureReason) *failureReason = "storage";
-        return pause();
+        if (!canResume || !meta.have) store.resetPartial(target);
+        return progressed && canResume ? FetchOutcome::Progress : FetchOutcome::NoProgress;
     };
     const auto finish = [&] {
         if (const char* reason = verificationFailure(store, target, meta, digest, feed))

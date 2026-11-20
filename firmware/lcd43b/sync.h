@@ -50,6 +50,7 @@ struct ResidentCache {
     // about to be replaced) so its PSRAM can be used meanwhile. Refused for a
     // spare on screen or pinned; a released slot reads as empty until filled.
     bool (*releaseFrame)(int slot) = nullptr;
+    char persistedIds[SCREEN_SLOTS][17]{};
 };
 
 // Budgets (ms). The transfer budget is shared by all frame downloads in the pass;

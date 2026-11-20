@@ -36,22 +36,49 @@ void closeSettings(const char* reason) {
     lcd::log("settings close=%s return=%s\n",reason,lcd::SLOT_NAMES[screenSlot(screenIndex)]);
     show(screenIndex);
 }
-void queueInstall(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
+void acceptDownload(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
+    const auto next = lcd::identifyUpdate(offer, source);
+    if (next.source == lcd::UpdateSource::None) return;
+    {
+        ScanoutSavePause pause(!LitNvsWrites);
+        if (!lcd::matchesAcceptance(acceptedUpdate, next) && !lcd::saveAcceptedUpdate(prefs, next)) {
+            updateNotice = "Could not save update choice";
+            showSettings();
+            return;
+        }
+    }
+    acceptedUpdate = next;
+    downloadStopped = false;
     updateRetry = {};
-    queuedOffer = offer;
-    installQueued = source;
-    lcd::log("ota install=queued refresh_busy=%d\n", refreshBusy);
-    if (refreshBusy) showSettings();
+    updateNotice = "Downloading update...";
+    lcd::log("ota download=accepted refresh_busy=%d\n", refreshBusy);
+    showSettings();
+}
+
+void selectUpdate(lcd::UpdateSource source, const lcd::UpdateOffer& offer) {
+    if (installQueued == source) {
+        installRequested = true;
+        if (refreshBusy) {
+            updateNotice = "Waiting for refresh...";
+            showSettings();
+        }
+    } else {
+        acceptDownload(source, offer);
+    }
 }
 
 void settingsTap(int x,int y) {
     if (updatesPage) {
-        const bool busy = checkQueued || refreshCheckingUpdates || installQueued != lcd::UpdateSource::None;
-        const bool waiting = installQueued != lcd::UpdateSource::None;
-        switch (lcd::hitUpdates(x, y, hostOffer.version[0], githubOffer.version[0], busy, waiting)) {
+        const bool waiting = acceptedUpdate.source != lcd::UpdateSource::None;
+        const bool busy = checkQueued || refreshCheckingUpdates || refreshStagingUpdate ||
+            (waiting && !downloadStopped);
+        switch (lcd::hitUpdates(x, y, hostOffer.version[0], githubOffer.version[0], busy, waiting,
+                                installRequested ? lcd::UpdateSource::None : installQueued)) {
         case lcd::UpdateHit::Cancel:
-            installQueued = lcd::UpdateSource::None;
-            lcd::log("ota install=cancelled\n");
+            if (forgetAcceptedUpdate()) {
+                updateNotice = "";
+                lcd::log("ota download=cancelled\n");
+            }
             break;
         case lcd::UpdateHit::Later:
             updatesPage = false;
@@ -61,10 +88,10 @@ void settingsTap(int x,int y) {
             updateNotice = "Checking for updates...";
             break;
         case lcd::UpdateHit::HostInstall:
-            queueInstall(lcd::UpdateSource::Host, hostOffer);
+            selectUpdate(lcd::UpdateSource::Host, hostOffer);
             return;
         case lcd::UpdateHit::GithubInstall:
-            queueInstall(lcd::UpdateSource::GitHub, githubOffer);
+            selectUpdate(lcd::UpdateSource::GitHub, githubOffer);
             return;
         default:
             return;

@@ -298,7 +298,7 @@ void refreshSolar(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshRe
         jpeg.close();
         jpeg = currentStore.openCommitted(target);
     }
-    const std::string previous = currentStore.retainPreviousCommitted("sdo-", day);
+    const std::string previous = currentStore.previousCommitted("sdo-", day);
     if (!solarCadence.needsFrame(hasFrame, day, bool(jpeg))) {
         keepSlot(2, info, currentIds, result);
         result.framesPending = true;
@@ -363,9 +363,20 @@ struct ArtBatch {
     uint32_t day = 0;
     int placed = 0;
     uint32_t keys[ArtWant]{};
+    std::string targets[ArtWant];
     local::ArtCandidate pending;
 };
 ArtBatch artBatch;
+// The published wire IDs allow the sweep to identify art across a day change.
+struct PublishedArt {
+    char id[17]{};
+    std::string target;
+};
+PublishedArt publishedArt[ArtWant];
+
+uint32_t localArtDay(const tm& date) {
+    return uint32_t(date.tm_year + 1900) * 10000 + (date.tm_mon + 1) * 100 + date.tm_mday;
+}
 
 local::ArtState loadArtState() {
     local::ArtState s;
@@ -441,7 +452,7 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
     today.year = int16_t(local.tm_year + 1900);
     today.month = uint8_t(local.tm_mon + 1);
     today.day = uint8_t(local.tm_mday);
-    const uint32_t day = uint32_t(today.year) * 10000 + today.month * 100 + today.day;
+    const uint32_t day = localArtDay(local);
     local::ArtState state = loadArtState();
 #ifdef VENTANAL_LCD_DIAG_STANDALONE_SAMPLE
     static bool forced = false;  // diagnostic runs: a new set on the first pass after boot
@@ -460,6 +471,7 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
     }
     static const int slots[ArtWant] = {0, 3, 4};
     bool pause = false;
+    bool madeProgress = false;
     const auto place = [&](const local::ArtCandidate& c) {
         const uint32_t key = local::candidateKey(c);
         if (std::find(artBatch.keys, artBatch.keys + artBatch.placed, key) != artBatch.keys + artBatch.placed)
@@ -478,6 +490,7 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
             if (outcome == FetchOutcome::Complete) jpeg = store.openCommitted(target);
         }
         if (outcome == FetchOutcome::Progress) {
+            madeProgress = true;
             artBatch.pending = c;
             pause = true;
         } else if (outcome == FetchOutcome::NoProgress && !artBatch.pending.imageUrl[0] && store.size(target) > 0) {
@@ -540,7 +553,12 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
             strlcpy(result.frameIds[slot], info.id, sizeof result.frameIds[slot]);
             result.frameOk[slot] = true;
             state.seen.add(key);
+            auto& published = publishedArt[artBatch.placed];
+            std::strcpy(published.id, info.id);
+            published.target = target;
+            artBatch.targets[artBatch.placed] = target;
             artBatch.keys[artBatch.placed++] = key;
+            madeProgress = true;
         } else {
             artBatch.pending = c;
             pause = true;
@@ -570,12 +588,7 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
         }
     }
 
-    if (artBatch.placed == ArtWant) {
-        state.day = day;
-        state.failedAt = 0;
-    } else {
-        state.failedAt = uint32_t(time(nullptr));
-    }
+    state.finishPass(day, uint32_t(time(nullptr)), artBatch.placed == ArtWant, madeProgress);
     result.framesPending |= artBatch.placed < ArtWant;
     result.artState = state;
     result.artStateChanged = true;
@@ -584,6 +597,20 @@ void refreshArt(time_t now, const char currentIds[SCREEN_SLOTS][17], RefreshResu
 }
 
 }  // namespace
+
+std::vector<std::string> wantedArtTargets(time_t now, const char* displayedArtId) {
+    std::vector<std::string> targets;
+    tm date{};
+    if (localtime_r(&now, &date) && artBatch.day == localArtDay(date)) {
+        for (int i = 0; i < artBatch.placed; ++i) targets.push_back(artBatch.targets[i]);
+        const auto& pending = artBatch.pending;
+        if (pending.imageUrl[0])
+            targets.push_back(std::string("art-") + pending.source + "-" + pending.objectId);
+    }
+    for (const auto& art : publishedArt)
+        if (art.id[0] && !strcmp(art.id, displayedArtId)) targets.push_back(art.target);
+    return targets;
+}
 
 bool saveArtState(const local::ArtState& s) {
     Preferences prefs;

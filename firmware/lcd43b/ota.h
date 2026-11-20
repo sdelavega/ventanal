@@ -44,7 +44,6 @@ inline bool githubCheckDue(bool standalone, int64_t lastCheck, int64_t now) {
 }
 
 bool validateOffer(const FirmwareOffer& input, UpdateSource source, UpdateOffer& out);
-bool sameOffer(const UpdateOffer& a, const UpdateOffer& b);
 bool rolledBackOffer(const UpdateBoot& boot, const UpdateOffer& offer);
 bool mountUpdateCache(Preferences& prefs);
 UpdateBoot readUpdateBoot(Preferences& prefs);
@@ -55,10 +54,10 @@ bool confirmUpdate(Preferences& prefs, UpdateBoot& boot);
 [[noreturn]] void rollbackUpdate();
 
 FetchOutcome stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const UpdateOffer& offer,
-                             UpdateSource source, Watchdog& watchdog, int protectedSpare,
-                             OtaFailure& failure);
-void recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
-                         UpdateSource source, OtaFailure failure);
+                             UpdateSource source, Watchdog& watchdog, bool (*evictSpare)(),
+                             OtaFailure& failure, bool& countFailure);
+OtaFailure recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
+                         UpdateSource source, OtaFailure failure, bool countFailure);
 OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
                          UpdateSource source, Watchdog& watchdog);
 CheckResult checkGithub(int64_t last, GithubCheck& result, Watchdog& watchdog);

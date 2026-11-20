@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #include "ota.h"
+#include "download_acceptance.h"
 
 #include "../common/release.h"
 #include "../common/ota_github_transport.h"
@@ -127,7 +128,7 @@ OtaFailure writeImage(const esp_partition_t* spare, const ReleaseInfo& release,
     }, feed);
     if (failure != OtaFailure::None || file.size() != release.size) {
         esp_ota_abort(writer);
-        return failure != OtaFailure::None ? failure : OtaFailure::Digest;
+        return failure != OtaFailure::None ? failure : OtaFailure::Install;
     }
     return esp_ota_end(writer) == ESP_OK ? OtaFailure::None : OtaFailure::Install;
 }
@@ -251,9 +252,14 @@ bool validateOffer(const FirmwareOffer& input, UpdateSource source, UpdateOffer&
     return true;
 }
 
-bool sameOffer(const UpdateOffer& a, const UpdateOffer& b) {
-    return !strcmp(a.version, b.version) && !strcmp(a.signedOffer.approval, b.signedOffer.approval)
-        && !strcmp(a.signedOffer.signature, b.signedOffer.signature);
+AcceptedUpdate identifyUpdate(const UpdateOffer& offer, UpdateSource source) {
+    AcceptedUpdate accepted{};
+    if (source != UpdateSource::Host && source != UpdateSource::GitHub) return accepted;
+    if (!verifyOffer(offer.signedOffer, source, accepted.image, accepted.offer.version))
+        return {};
+    accepted.source = source;
+    accepted.offer.signedOffer = offer.signedOffer;
+    return accepted;
 }
 
 bool rolledBackOffer(const UpdateBoot& boot, const UpdateOffer& offer) {
@@ -369,8 +375,9 @@ bool confirmUpdate(Preferences& prefs, UpdateBoot& boot) {
 }
 
 OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const UpdateOffer& offer,
-                         UpdateSource source, Watchdog& watchdog, int protectedSpare,
-                         OtaFailure& failure) {
+                         UpdateSource source, Watchdog& watchdog, bool (*evictSpare)(),
+                         OtaFailure& failure, bool& countFailure) {
+    countFailure = false;
     failure = OtaFailure::Slot;
     if (boot.pending || !installSlot()) return logOtaStage(OtaStage::Failed, "slot", 0, 0, logStage);
     ReleaseInfo release{};
@@ -386,6 +393,12 @@ OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const Updat
     if (!reserveOtaAttempt(attempts, version, offer.signedOffer.approval))
         return logOtaStage(OtaStage::Failed, "attempts", 0, release.size, logStage);
 
+    bool recovered = false;
+    forEachPartialStore([&](FsStore& store) {
+        if (!recovered) recovered = recoverOtaStage(store, release, [&] { watchdog.feed(); });
+    });
+    if (recovered) return logOtaStage(OtaStage::Complete, "recovered", release.size, release.size, logStage);
+
     failure = OtaFailure::Download;
     DownloadPower radio;
     const auto started = otaClock();
@@ -393,19 +406,9 @@ OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const Updat
         return logOtaStage(OtaStage::NoProgress, "offline", 0, release.size, logStage);
     const bool flash = partialsOnFlash();
     auto& store = partialStore();
-    String paths[SPARE_SLOTS * 2];
-    const char* spares[SPARE_SLOTS * 2]{};
-    constexpr int firstSpare = SCREEN_SLOTS - SPARE_SLOTS;
-    for (int i = 0; flash && i < SPARE_SLOTS; ++i) {
-        const int slot = firstSpare + i;
-        if (slot == protectedSpare) continue;
-        for (int alt = 0; alt < 2; ++alt) {
-            const int index = i * 2 + alt;
-            paths[index] = residentPath(slot, alt);
-            spares[index] = paths[index].c_str();
-        }
-    }
-    auto evict = spareFrameEvictor(LittleFS, spares);
+    const auto evict = [&] {
+        return flash && partialsOnFlash() && evictSpare && evictSpare();
+    };
     otaWatchdog = &watchdog;
     const auto free = [&] { return &partialStore() == &store ? partialFreeBytes() : uint64_t{0}; };
     const auto elapsed = otaClock() - started;
@@ -437,14 +440,17 @@ OtaStage stageUpdatePass(Preferences& prefs, const UpdateBoot& boot, const Updat
     if (&partialStore() != &store) return OtaStage::NoProgress;
     if (outcome == OtaStage::Failed) {
         if (reason && (!strcmp(reason, "size") || !strcmp(reason, "hash"))) failure = OtaFailure::Digest;
-        const auto reservation = reserveAttempt(prefs, source, version, offer.signedOffer.approval);
-        if (reservation != OtaFailure::None) failure = reservation;
+        countFailure = true;
     }
     return outcome;
 }
 
-void recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
-                         UpdateSource source, OtaFailure failure) {
+OtaFailure recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
+                               UpdateSource source, OtaFailure failure, bool countFailure) {
+    if (countFailure) {
+        const auto reservation = reserveAttempt(prefs, source, offer.version, offer.signedOffer.approval);
+        if (reservation != OtaFailure::None) failure = reservation;
+    }
     UpdateJournal journal{};
     journal.source = source;
     snprintf(journal.record.version, sizeof journal.record.version, "%s", offer.version);
@@ -453,6 +459,7 @@ void recordUpdateFailure(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
     journal.record.failure = failure;
     saveJournal(prefs, journal);
     boot.journal = journal;
+    return failure;
 }
 
 OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer& offer,
@@ -471,8 +478,7 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
         }
     }
     if (failure == OtaFailure::None) {
-        auto& store = partialStore();
-        failure = installStaged(store, release, [&] { watchdog.feed(); }, [&](fs::File& file) {
+        const auto write = [&](fs::File& file) {
             // Retire old slot metadata only after the staged image verifies.
             esp_ota_img_states_t oldState;
             if (esp_ota_get_state_partition(spare, &oldState) != ESP_ERR_NOT_FOUND
@@ -485,6 +491,11 @@ OtaFailure installUpdate(Preferences& prefs, UpdateBoot& boot, const UpdateOffer
             const auto result = writeImage(spare, release, file, [&] { watchdog.feed(); });
             if (result != OtaFailure::None) return result;
             return esp_ota_set_boot_partition(spare) == ESP_OK ? OtaFailure::None : OtaFailure::Install;
+        };
+        failure = OtaFailure::Digest;
+        forEachPartialStore([&](FsStore& store) {
+            if (failure == OtaFailure::Digest)
+                failure = installStaged(store, release, [&] { watchdog.feed(); }, write);
         });
     }
     if (failure != OtaFailure::None) {

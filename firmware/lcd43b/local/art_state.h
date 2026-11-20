@@ -26,6 +26,11 @@ struct ArtState {
     uint32_t day = 0;          // YYYYMMDD of the set on screen
     uint32_t failedAt = 0;     // epoch of the last failed attempt
     SeenRing seen;
+
+    void finishPass(uint32_t today, uint32_t now, bool complete, bool madeProgress) {
+        if (complete) day = today;
+        failedAt = complete || madeProgress ? 0 : now;
+    }
 };
 
 }  // namespace lcd::local

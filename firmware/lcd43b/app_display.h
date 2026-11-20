@@ -106,12 +106,14 @@ bool showSettings(lcd::ReadoutRect damage) {
     snprintf(footer, sizeof footer, "VENTANAL · %s · WI-FI %s · v%s",
              lcd::installation.profile, WiFi.status() == WL_CONNECTED ? "OK" : "OFFLINE",
              lcd::FIRMWARE_VERSION);
-    const bool busy = checkQueued || refreshCheckingUpdates || installQueued != lcd::UpdateSource::None;
+    const bool waiting = acceptedUpdate.source != lcd::UpdateSource::None;
+    const bool busy = checkQueued || refreshCheckingUpdates || refreshStagingUpdate ||
+        (waiting && !downloadStopped);
     const int local = drawLocalScene([&](lcd::SettingsSurface pixels) {
         if (updatesPage) {
-            const bool waiting = installQueued != lcd::UpdateSource::None;
             lcd::drawUpdatePage(pixels, hostOffer.version, githubOffer.version,
-                                waiting && !updateRetry.waiting() ? "Waiting for refresh..." : updateNotice, busy, waiting);
+                                updateNotice, busy, waiting,
+                                installRequested ? lcd::UpdateSource::None : installQueued);
         } else {
             lcd::drawSettingsPage(pixels, settings, solarPublished(), settingsBatteryButton(), footer,
                                   CallState(lcd::installation.callState));

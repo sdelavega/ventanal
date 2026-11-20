@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include "ota.h"
 #include "../common/call_state.h"
 #include "settings.h"
 #include "overlay.h"
@@ -186,12 +187,11 @@ inline bool inUpdateControl(ReadoutRect r, int x, int y) {
 enum class UpdateHit { None, HostInstall, GithubInstall, Check, Later, Cancel };
 
 inline UpdateHit hitUpdates(int x, int y, bool host, bool github, bool busy,
-                            bool waiting = false) {
+                            bool waiting = false, UpdateSource ready = UpdateSource::None) {
     if (inUpdateControl(UPDATE_BACK, x, y)) return waiting ? UpdateHit::Cancel : UpdateHit::Later;
-    if (busy) return UpdateHit::None;
-    if (host && inUpdateControl(HOST_INSTALL, x, y)) return UpdateHit::HostInstall;
-    if (github && inUpdateControl(GITHUB_INSTALL, x, y)) return UpdateHit::GithubInstall;
-    if (inUpdateControl(GITHUB_CHECK, x, y)) return UpdateHit::Check;
+    if (host && (!busy || ready == UpdateSource::Host) && inUpdateControl(HOST_INSTALL, x, y)) return UpdateHit::HostInstall;
+    if (github && (!busy || ready == UpdateSource::GitHub) && inUpdateControl(GITHUB_INSTALL, x, y)) return UpdateHit::GithubInstall;
+    if (!busy && inUpdateControl(GITHUB_CHECK, x, y)) return UpdateHit::Check;
     return UpdateHit::None;
 }
 
@@ -208,7 +208,8 @@ inline void updateTitle(char (&label)[48], const char* version) {
 }
 
 inline void drawUpdatePage(SettingsSurface pixels, const char* host, const char* github,
-                           const char* status, bool busy, bool waiting = false) {
+                           const char* status, bool busy, bool waiting = false,
+                           UpdateSource ready = UpdateSource::None) {
     const auto gold = rgb565(255,170,0);
     const auto light = rgb565(153,150,186);
     drawSettingsChrome(pixels, false);
@@ -219,13 +220,15 @@ inline void drawUpdatePage(SettingsSurface pixels, const char* host, const char*
     if (host[0]) updateTitle(label, host);
     pixels.text(ClockTime, host[0] ? label : "No approved update",
              150, 150, gold);
-    if (host[0]) updateButton(pixels, HOST_INSTALL, "Install", !busy);
+    if (host[0]) updateButton(pixels, HOST_INSTALL, ready == UpdateSource::Host ? "Install" : "Download",
+                           !busy || ready == UpdateSource::Host);
 
     pixels.text(ArtDate, "GITHUB", 150, 215, light);
     if (github[0]) updateTitle(label, github);
     pixels.text(ClockTime, github[0] ? label : "No update offered",
              150, 247, gold);
-    if (github[0]) updateButton(pixels, GITHUB_INSTALL, "Install", !busy);
+    if (github[0]) updateButton(pixels, GITHUB_INSTALL, ready == UpdateSource::GitHub ? "Install" : "Download",
+                           !busy || ready == UpdateSource::GitHub);
 
     updateButton(pixels, GITHUB_CHECK, "Check for updates", !busy);
     pixels.text(ArtDate, status, 150, 399, light);

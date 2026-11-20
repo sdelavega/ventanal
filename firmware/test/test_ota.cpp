@@ -173,6 +173,16 @@ void kept_stage_skips_rehash_before_install() {
     }) == OtaFailure::None);
 }
 
+void recovered_stage_requires_matching_digest() {
+    OtaFixture f;
+    f.complete();
+    assert(recoverOtaStage(f.store, f.release, {}));
+    auto superseding = f.release;
+    superseding.sha256[0] ^= 1;
+    assert(!recoverOtaStage(f.store, superseding, {}));
+    assert(!f.store.openCommitted(otaStageTarget(f.release).c_str()));
+}
+
 void repeated_deferral_consumes_attempt() {
     OtaAttemptState state{};
     const char* approval = "0123456789abcdef";
@@ -338,6 +348,7 @@ int main() {
     ota_install_requires_verified_partial();
     ota_install_failure_keeps_verified_stage();
     kept_stage_skips_rehash_before_install();
+    recovered_stage_requires_matching_digest();
     slow_install_write_not_timed_out();
     repeated_deferral_consumes_attempt();
     rotating_offer_path_does_not_reset_budget();

@@ -345,6 +345,31 @@ FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                   "storage");
 }
 
+// Keep a valid committed body until normal cache publication accepts it.
+static FsStore* recoverFrameStage(const char* target, const FrameInfo* info, Watchdog& watchdog) {
+    FsStore* recovered = nullptr;
+    forEachPartialStore([&](FsStore& store) {
+        auto file = store.openCommitted(target);
+        if (!file) return;
+        bool valid = info && info->present && validWireSize(info->encoding, info->size) &&
+            file.size() == info->size && !strncmp(info->id, info->sha256, 16);
+        Sha256 hash;
+        uint8_t block[kPartialHashBlockBytes];
+        for (size_t remaining = file.size(); valid && remaining;) {
+            watchdog.feed();
+            const size_t count = std::min(remaining, sizeof block);
+            valid = store.readExact(file, block, count);
+            if (valid) hash.update(block, count);
+            remaining -= count;
+        }
+        file.close();
+        valid = valid && hexBytes(hash.digest(), 32) == info->sha256;
+        if (!valid || recovered) store.removeCommitted(target);
+        else recovered = &store;
+    });
+    return recovered;
+}
+
 void runRefresh(const char* hostUrl, const char* deviceId,
                 const char currentIds[SCREEN_SLOTS][17],
                 RefreshResult& result, Watchdog& watchdog,
@@ -376,15 +401,18 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
     // Get the small, frequently updated pages onto the display before art.
     const uint32_t passStarted = millis();
+    const bool trustedClock = time(nullptr) >= resume_detail::kValidEpoch;
     for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
         const FrameInfo* info = published[slot];
+        const auto target = std::string("frame-") + SLOT_NAMES[slot];
+        auto* recovered = trustedClock ? recoverFrameStage(target.c_str(), info, watchdog) : nullptr;
         if (!info || !info->present) {
             result.dropSlot[slot] = true;
             if (currentIds[slot][0]) cache.publish(slot, nullptr, {});
             continue;
         }
-        if (!visible[slot]) {
+        if (!visible[slot] && !recovered) {
             log("download slot=%s skipped=hidden\n", SLOT_NAMES[slot]);
             continue; // keep hidden cached frames and ids
         }
@@ -394,6 +422,10 @@ void runRefresh(const char* hostUrl, const char* deviceId,
 #endif
         const bool unchanged = !force && !strcmp(currentIds[slot], info->id);
         if (unchanged) {
+            // Publication queues a deferred save. Keep the recovery copy
+            // until the loop has committed the normal cache entry.
+            if (recovered && !strcmp(cache.persistedIds[slot], info->id))
+                recovered->removeCommitted(target.c_str());
             log("download slot=%s skipped=unchanged\n", SLOT_NAMES[slot]);
             strlcpy(result.frameIds[slot], info->id,
                     sizeof result.frameIds[slot]);
@@ -401,7 +433,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             continue;
         }
         uint8_t* bytes = nullptr;
-        if (millis() - passStarted < TRANSFER_BUDGET_MS && cache.staging && cache.allocated[slot]) {
+        if ((recovered || millis() - passStarted < TRANSFER_BUDGET_MS) && cache.staging && cache.allocated[slot]) {
             bytes = static_cast<uint8_t*>(ps_malloc(info->size));
             if (!bytes && cache.reclaimWireMemory) {
                 cache.reclaimWireMemory(info->size);
@@ -412,6 +444,14 @@ void runRefresh(const char* hostUrl, const char* deviceId,
         if (bytes) body = FrameBody{std::shared_ptr<uint8_t>(bytes, free), info->size};
         auto download = [&] {
             ScanScope activity(ScanActivity::Receive);
+            if (recovered) {
+                if (!bytes) return FrameDownload{FetchOutcome::NoProgress, "memory", 0, 0, 0, 0};
+                const bool loaded = recovered->readCommitted(target.c_str(), bytes, info->size) &&
+                    frameHashMatches(bytes, info->size, info->sha256, 64);
+                if (!loaded) recovered->removeCommitted(target.c_str());
+                return FrameDownload{loaded ? FetchOutcome::Complete : FetchOutcome::Failed,
+                                     loaded ? "recovered" : "storage", 0, 0, 0, 0};
+            }
             return receiveFrame(hostUrl, *info, SLOT_NAMES[slot], bytes, watchdog, passStarted);
         }();
         if (download.outcome == FetchOutcome::Complete) {
@@ -425,6 +465,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             log("inflate slot=%s bytes=%u ok=%d ms=%lu\n", SLOT_NAMES[slot],
                 unsigned(info->size), decoded, static_cast<unsigned long>(millis() - decodeStart));
             if (!decoded || !cache.publish(slot, info, body)) {
+                if (!decoded && recovered) recovered->removeCommitted(target.c_str());
                 download.outcome = FetchOutcome::Failed;
                 download.reason = decoded ? "publish" : "invalid-frame";
             }

@@ -123,6 +123,8 @@ public:
     // Atomically replace target with <target>.part and retire the sidecar.
     virtual bool commit(const char* target) = 0;
     virtual void discard(const char* target) = 0;
+    // Reset the payload for a fresh response without forgiving a zero-byte storage strike.
+    virtual void resetPartial(const char* target) { discard(target); }
     virtual bool sha256(const char* target, uint8_t out[32], const HashFeed& feed = {}) = 0;
     virtual ~PartialStore() = default;
 };

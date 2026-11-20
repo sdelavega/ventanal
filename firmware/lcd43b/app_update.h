@@ -53,41 +53,45 @@ bool showUpdating() {
     return true;
 }
 
+void restoreAcceptedUpdate() {
+    acceptedUpdate = lcd::loadAcceptedUpdate(prefs);
+    const auto source = acceptedUpdate.source;
+    if (source == lcd::UpdateSource::None) return;
+    const auto verified = lcd::identifyUpdate(acceptedUpdate.offer, source);
+    if (verified.source == lcd::UpdateSource::None ||
+        (source == lcd::UpdateSource::Host &&
+            (lcd::standalone(lcd::installation) || lcd::rolledBackOffer(updateBoot, verified.offer)))) {
+        if (!forgetAcceptedUpdate()) {
+            acceptedUpdate = {};
+            downloadStopped = true;
+        }
+        return;
+    }
+    // The cached GitHub check is authoritative for that source when available.
+    acceptedUpdate = verified;
+    if (source == lcd::UpdateSource::GitHub && githubLastCheck)
+        reconcileUpdate(source, githubOffer);
+    if (acceptedUpdate.source == lcd::UpdateSource::None || downloadStopped) return;
+    (source == lcd::UpdateSource::Host ? hostOffer : githubOffer) = verified.offer;
+    updateNotice = "Downloading update...";
+}
+
 void runQueuedUpdate() {
-    if (refreshBusy) return;
-    if (installQueued != lcd::UpdateSource::None) {
-        if (updateRetry.waiting() && !updateRetry.due(millis())) return;
+    if (refreshBusy || setupActive || (setupQueued && !installRequested)) return;
+
+    if (installRequested && installQueued != lcd::UpdateSource::None) {
         const auto source = installQueued;
-        installQueued = lcd::UpdateSource::None;
-        const auto& current = source == lcd::UpdateSource::Host ? hostOffer : githubOffer;
-        if (!current.version[0] || !lcd::sameOffer(current, queuedOffer)) {
-            updateNotice = "Offer changed. Select the current update.";
+        installRequested = false;
+        if (!showUpdating()) {
+            updateNotice = "Update screen unavailable";
         } else {
-            OtaFailure stagingFailure;
-            refreshWatchdog.subscribe();
-            const auto stage = lcd::stageUpdatePass(prefs, updateBoot, current, source, refreshWatchdog,
-                                                    overrideSource, stagingFailure);
-            refreshWatchdog.unsubscribe();
-            if (stage == FetchOutcome::Progress || stage == FetchOutcome::NoProgress) {
-                updateNotice = "Downloading update...";
-                if (stage == FetchOutcome::Progress) updateRetry = {};
-                updateRetry.finished(millis(), false);
-                installQueued = source;
-                if (settingsPage.active) showSettings();
-                return;
-            }
-            if (stage == FetchOutcome::Failed) {
-                lcd::recordUpdateFailure(prefs, updateBoot, current, source, stagingFailure);
-                updateNotice = stagingFailure == OtaFailure::Attempts
-                    ? "Attempt limit reached for this update" : "Download failed";
-                settingsRefreshPending = true;
-            } else if (!showUpdating()) {
-                updateNotice = "Update screen unavailable";
-            } else {
-                delay(1000);  // Leave the notice visible before blanking for the install.
-                HeldDark transfer(lcd::DarkReason::Update);
-                if (backlightKnown && !backlightState) {
-                    if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
+            delay(1000);  // Leave the notice visible before blanking for the install.
+            HeldDark transfer(lcd::DarkReason::Update);
+            if (backlightKnown && !backlightState) {
+                if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
+                if (lcd::clearAcceptedUpdate(prefs, acceptedUpdate)) {
+                    const auto& current = source == lcd::UpdateSource::Host ? hostOffer : githubOffer;
+                    installQueued = lcd::UpdateSource::None;
                     refreshWatchdog.subscribe();
                     const auto failure = lcd::installUpdate(prefs, updateBoot, current, source, refreshWatchdog);
                     refreshWatchdog.unsubscribe();
@@ -102,17 +106,17 @@ void runQueuedUpdate() {
                     updateNotice = failure == OtaFailure::Attempts
                         ? "Attempt limit reached for this update" : "Installation failed";
                 } else {
-                    updateNotice = "Could not blank the display";
+                    updateNotice = "Could not save update choice";
                 }
-                settingsRefreshPending = true;  // Deliver the failure at the next check-in.
-                powerSession.activity(millis());
+            } else {
+                updateNotice = "Could not blank the display";
             }
+            settingsRefreshPending = true;
+            powerSession.activity(millis());
         }
         updateScreenShowing = false;
         if (settingsPage.active) showSettings();
-        else {
-            show(screenIndex);
-        }
+        else show(screenIndex);
         panel.waitForPresent();
         backlightRefresh();
     } else if (checkQueued) {
@@ -121,5 +125,9 @@ void runQueuedUpdate() {
             updateNotice = "Update check could not start";
             if (settingsPage.active) showSettings();
         }
+    } else if (acceptedUpdate.source != lcd::UpdateSource::None && !downloadStopped &&
+               installQueued == lcd::UpdateSource::None &&
+               (!updateRetry.waiting() || updateRetry.due(millis()))) {
+        if (!startRefresh(false, false, true)) updateRetry.finished(millis(), false);
     }
 }

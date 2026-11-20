@@ -56,11 +56,12 @@ void refresh(const char* host, const char* device, const char ids[lcd::SCREEN_SL
              lcd::RefreshResult& result, CountingWatchdog& watchdog,
              const lcd::DeviceSettings& settings = {}, const char* skips = "",
              const char* ota = "", const char* approval = "",
-             void (*reclaim)(size_t) = nullptr) {
+             void (*reclaim)(size_t) = nullptr, const char (*persisted)[17] = nullptr) {
     std::vector<uint8_t> staging(lcd::FRAME_BYTES);
     lcd::ResidentCache cache;
     cache.staging = staging.data();
     cache.reclaimWireMemory = reclaim;
+    if (persisted) memcpy(cache.persistedIds, persisted, sizeof cache.persistedIds);
     std::fill_n(cache.allocated, lcd::SCREEN_SLOTS, true);
     cache.publish = [](int slot, const lcd::FrameInfo* info, const lcd::FrameBody& body) {
         if (info && slot == rejectStageSlot) return false;
@@ -397,7 +398,34 @@ bool lcd::decodeHostJpeg(const uint8_t* data, size_t size, uint8_t* frame, Watch
     return true;
 }
 
+void recover_committed_frames_against_manifest() {
+    resetFakes();
+    const auto artFrame = solidFrame(0xf800);
+    const auto weatherFrame = solidFrame(0x07e0);
+    const auto art = makeEntry("art", artFrame);
+    const auto weather = makeEntry("weather", weatherFrame);
+    responseBody = manifestBody(art, weather);
+    urlResponses["http://host/devices/lcd43b/manifest.json?board=lcd43b&fw=1.0.0&test_release_key=1"] =
+        {responseBody.begin(), responseBody.end()};
+    sizeFromResponse = true;
+    assert(LittleFS.exists("/partials") || LittleFS.mkdir("/partials"));
+    files["/partials/frame-art"] = artFrame;
+    files["/partials/frame-weather"] = artFrame; // right size, wrong hash
+    urlResponses["http://host" + weather.url] = weatherFrame;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    lcd::RefreshResult result;
+    CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && result.frameOk[0] && result.frameOk[1]);
+    assert(std::find(requestedUrls.begin(), requestedUrls.end(), "http://host" + art.url) == requestedUrls.end());
+    assert(files.count("/partials/frame-art") && !files.count("/partials/frame-weather"));
+    memcpy(ids, result.frameIds, sizeof ids);
+    refresh("http://host", "lcd43b", ids, result, watchdog, {}, "", "", "", nullptr, ids);
+    assert(result.frameOk[0] && !files.count("/partials/frame-art"));
+}
+
 int main() {
+    recover_committed_frames_against_manifest();
     host_frame_resumes_across_passes();
     host_frame_hash_mismatch_fails();
     host_range_transport_parses_416();

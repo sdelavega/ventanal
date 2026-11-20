@@ -53,6 +53,11 @@ void probeBusyInstall() {
 #else
     const bool ready = stressProfile == 2 && stressCycles == 90 && writeProbeCount == 60;
 #endif
+    if (phase == 2 && installQueued == lcd::UpdateSource::Host && !refreshBusy) {
+        selectUpdate(lcd::UpdateSource::Host, hostOffer);
+        ++phase;
+        return;
+    }
     if (phase >= 2 || !ready || strcmp(hostOffer.version, VENTANAL_LCD_DIAG_INSTALL_VERSION)
         || refreshBusy || !backlightState) return;
     if (phase == 0 && !startRefresh(true)) return;
@@ -60,13 +65,13 @@ void probeBusyInstall() {
     handleGesture(Gesture::Next, 500, 55);
     handleGesture(Gesture::Next, 650, 138);
     if (phase == 0) {
-        const bool waitingLit = refreshBusy && backlightState && installQueued == lcd::UpdateSource::Host;
+        const bool waitingLit = refreshBusy && backlightState && acceptedUpdate.source == lcd::UpdateSource::Host;
         handleGesture(Gesture::Next, 660, 411);
-        const bool cancelled = backlightState && installQueued == lcd::UpdateSource::None;
+        const bool cancelled = backlightState && acceptedUpdate.source == lcd::UpdateSource::None;
         lcd::log("diag ota waiting_lit=%d cancelled_lit=%d refresh_busy=%d\n",
                  waitingLit, cancelled, refreshBusy);
         if (!cancelled || !waitingLit) {
-            installQueued = lcd::UpdateSource::None;
+            forgetAcceptedUpdate();
             phase = 2;
         }
         closeSettings("diag");

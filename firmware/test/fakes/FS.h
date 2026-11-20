@@ -5,6 +5,8 @@
 #include "Arduino.h"
 #include <cerrno>
 #include <cstring>
+#include <ctime>
+#include <functional>
 #include <map>
 #include <set>
 #include <vector>
@@ -27,6 +29,10 @@ class File {
     std::string lastEntry_;
 
 public:
+    time_t modified = 0;
+    std::function<void()> beforeWrite;
+    time_t getLastWrite() const { return modified; }
+    std::map<std::string, time_t>* timestamps = nullptr;
     File() = default;
     File(Files& files, const char* path, bool directory = false)
         : files_(&files), filename_(path), directory_(directory) {}
@@ -46,7 +52,9 @@ public:
         for (; entry != files_->end() && entry->first.compare(0, prefix.size(), prefix) == 0; ++entry) {
             if (entry->first.find('/', prefix.size()) != std::string::npos) continue;
             lastEntry_ = entry->first;
-            return File(*files_, lastEntry_.c_str());
+            File file(*files_, lastEntry_.c_str());
+            if (timestamps && timestamps->count(lastEntry_)) file.modified = timestamps->at(lastEntry_);
+            return file;
         }
         return {};
     }
@@ -60,6 +68,7 @@ public:
         return count;
     }
     size_t write(const uint8_t* bytes, size_t count) {
+        if (beforeWrite) beforeWrite();
         if (failWrite) return 0;
         ++writeCalls;
         count = std::min(count, writeLimit);
@@ -76,6 +85,8 @@ public:
 class FS {
 public:
     Files files;
+    std::map<std::string, time_t> modified;
+    std::function<void()> beforeWrite;
     std::set<std::string> directories{"/"};
     bool offline = false;
     bool replaceOnRename = true;
@@ -84,10 +95,18 @@ public:
     bool exists(const String& path) { return exists(path.c_str()); }
     File open(const char* path, const char* mode = "r") {
         if (offline) { errno = EIO; return {}; }
-        if (directories.count(path)) return File(files, path, true);
+        if (directories.count(path)) {
+            File dir(files, path, true);
+            dir.timestamps = &modified;
+            return dir;
+        }
         if (*mode == 'w') files[path].clear();
         if (*mode == 'a') files.try_emplace(path);
-        if (files.count(path)) return File(files, path);
+        if (files.count(path)) {
+            File file(files, path);
+            file.beforeWrite = beforeWrite;
+            return file;
+        }
         errno = ENOENT;
         return {};
     }

@@ -19,7 +19,7 @@ struct ScanHealth {
     uint32_t maxVsyncGapUs = 0;
 };
 
-enum class ScanActivity : unsigned { Copy, Receive, Inflate, LittleFS, Nvs, Count };
+enum class ScanActivity : unsigned { Copy, Receive, Inflate, LittleFS, Nvs, PartialStore, Count };
 
 #ifdef VENTANAL_LCD_DIAG_PANEL
 inline std::atomic<uint32_t> scanActivity{0};
@@ -137,9 +137,9 @@ public:
         const auto seen = take(seen_);
         unsigned causes[unsigned(ScanActivity::Count)];
         for (unsigned i = 0; i < unsigned(ScanActivity::Count); ++i) causes[i] = take(lateByActivity_[i]);
-        log("bounce ms=%u span=%u fills=%u peak_us=%u budget_us=%u lit=%u dark=%u skips=%u active=%02x late_idle=%u copy=%u rx=%u inflate=%u fs=%u nvs=%u\n",
+        log("bounce ms=%u span=%u fills=%u peak_us=%u budget_us=%u lit=%u dark=%u skips=%u active=%02x late_idle=%u copy=%u rx=%u inflate=%u fs=%u nvs=%u partial=%u\n",
             unsigned(now), unsigned(window), fills, peak, unsigned(drainUs), lit, dark,
-            skipped, seen, idle, causes[0], causes[1], causes[2], causes[3], causes[4]);
+            skipped, seen, idle, causes[0], causes[1], causes[2], causes[3], causes[4], causes[5]);
         log("bounce sync ms=%u short_frames=%u restart_lit=%u restart_dark=%u overlap=%u phase_us=%u vblank_us=%u fifo=%u descriptor=%u injected=%u\n",
             unsigned(now), take(shortFrames_), take(litRestarts_), take(darkRestarts_),
             take(overlappingFills_), take(maxRestartPhase_), unsigned(blankUs),
