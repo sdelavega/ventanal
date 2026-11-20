@@ -160,6 +160,19 @@ void repeated_deferral_consumes_attempt() {
     assert(updateOtaAttemptState(state, "2.0.0", approval, true) == OtaFailure::Attempts);
 }
 
+void rotating_offer_path_does_not_reset_budget() {
+    OtaAttemptState state{};
+    const char* approval = "0123456789abcdef";
+    int attempts = 0;
+    for (const char* hint : {"2.0.0", "2.1.0", "2.2.0"}) {
+        assert(updateOtaAttemptState(state, hint, approval, false) == OtaFailure::None);
+        assert(state.attempts.count == ++attempts);
+    }
+    assert(state.attempts.count == otaAttemptLimit);
+    assert(updateOtaAttemptState(state, "2.3.0", approval, false) == OtaFailure::Attempts);
+    assert(!strcmp(state.attempts.version, "2.0.0"));
+}
+
 void deferral_counter_resets_on_new_offer() {
     OtaAttemptState state{};
     const char* approval = "0123456789abcdef";
@@ -170,9 +183,15 @@ void deferral_counter_resets_on_new_offer() {
     assert(updateOtaAttemptState(state, "2.0.0", newApproval, true) == OtaFailure::None);
     assert(state.deferrals == 1 && state.attempts.count == 0);
     assert(updateOtaAttemptState(state, "2.1.0", newApproval, true) == OtaFailure::None);
-    assert(state.deferrals == 1 && state.attempts.count == 0);
+    assert(state.deferrals == 2 && state.attempts.count == 0);
     assert(updateOtaAttemptState(state, "2.1.0", newApproval, false) == OtaFailure::None);
     assert(state.deferrals == 0 && state.attempts.count == 1);
+
+    assert(updateOtaAttemptState(state, "2.0.0", "", false) == OtaFailure::None);
+    assert(updateOtaAttemptState(state, "2.0.0", "", true) == OtaFailure::None);
+    assert(state.deferrals == 1 && state.attempts.count == 1);
+    assert(updateOtaAttemptState(state, "2.1.0", "", true) == OtaFailure::None);
+    assert(state.deferrals == 1 && state.attempts.count == 0);
 }
 
 void ota_install_deferred_when_window_short() {
@@ -287,6 +306,7 @@ int main() {
     ota_install_failure_keeps_verified_stage();
     kept_stage_skips_rehash_before_install();
     repeated_deferral_consumes_attempt();
+    rotating_offer_path_does_not_reset_budget();
     deferral_counter_resets_on_new_offer();
     ota_install_deferred_when_window_short();
     ota_stage_hash_feeds_watchdog();

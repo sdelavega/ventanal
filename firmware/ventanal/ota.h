@@ -27,10 +27,7 @@ struct OtaAttemptState {
 };
 
 inline bool scopeOtaAttemptState(OtaAttemptState& state, const char* version, const char* approval) {
-    if (!strcmp(state.attempts.version, version) && !strcmp(state.attempts.approval, approval))
-        return false;
-    scopeOtaAttempts(state.attempts, version, approval);
-    snprintf(state.attempts.version, sizeof state.attempts.version, "%s", version);
+    if (!scopeOtaAttempts(state.attempts, version, approval)) return false;
     state.deferrals = 0;
     return true;
 }

@@ -108,12 +108,13 @@ struct OtaAttempts {
     uint8_t count{};
 };
 
-inline void scopeOtaAttempts(OtaAttempts& attempts, const char* version, const char* approval) {
-    if (strcmp(attempts.approval, approval) || (!approval[0] && strcmp(attempts.version, version))) {
-        attempts = {};
-        snprintf(attempts.version, sizeof attempts.version, "%s", version);
-        snprintf(attempts.approval, sizeof attempts.approval, "%s", approval);
-    }
+inline bool scopeOtaAttempts(OtaAttempts& attempts, const char* version, const char* approval) {
+    if (!strcmp(attempts.approval, approval) && (approval[0] || !strcmp(attempts.version, version)))
+        return false;
+    attempts = {};
+    snprintf(attempts.version, sizeof attempts.version, "%s", version);
+    snprintf(attempts.approval, sizeof attempts.approval, "%s", approval);
+    return true;
 }
 
 inline bool reserveOtaAttempt(OtaAttempts& attempts, const char* version, const char* approval) {
