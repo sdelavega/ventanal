@@ -6,6 +6,7 @@
 #include <Inkplate.h>
 #include <cassert>
 #include "../ventanal/quiet.h"
+#include "../ventanal/security.h"
 #include <iostream>
 Inkplate display;
 const std::string screen = R"({"id":"0123456789abcdef","url":"/frames/weather-0123456789abcdef.vnf","size":960016,"readout":{"x":1236,"y":30,"w":334,"h":136,"style":"lcars"}})";
@@ -27,14 +28,14 @@ int main() {
     setBoardReport(95, "art", "0123456789abcdef");
     strcpy(manifestSkipQuery,"0123456789abcdef~fedcba9876543210");
     assert(fetchManifest(a,w));
-    assert(lastUrl.find("?bat=95&screen=art&frame=0123456789abcdef&fw=1.0.0&board=inkplate13spectra")!=std::string::npos);
+    assert(lastUrl.find("?bat=95&screen=art&frame=0123456789abcdef&fw=1.1.0&board=inkplate13spectra")!=std::string::npos);
     assert(lastUrl.find("&skips=0123456789abcdef~fedcba9876543210")!=std::string::npos);
     setBoardReport(0, "weather", "");
     manifestSkipQuery[0]=0;
     assert(fetchManifest(a,w));
-    assert(lastUrl.find("bat=0&screen=weather&fw=1.0.0")!=std::string::npos);
+    assert(lastUrl.find("bat=0&screen=weather&fw=1.1.0")!=std::string::npos);
     assert(lastUrl.find("frame=")==std::string::npos);
-    assert(lastUserAgent == "Ventanal/1.0.0");
+    assert(lastUserAgent == "Ventanal/1.1.0");
 
     OtaRecord result{OtaResult::RolledBack, OtaFailure::None, 0x11, "65535.65535.65535"};
     setBoardReport(50, "weather", "", 3800, result, "0123456789abcdef");
@@ -133,6 +134,34 @@ int main() {
         assert(!fetchManifest(a,w));
         assert(std::memcmp(&w,&previous,sizeof(w))==0);
     }
+    // Firmware 1.1.0 accepts zlib wire frames that carry the decoded SHA-256.
+    const std::string sha(64,'a');
+    const auto zlib=replace(replace(screen,"\"size\":960016",("\"size\":37001,\"encoding\":\"zlib\",\"sha256\":\""+sha+"\"").c_str()),
+                            ".vnf",".vnz");
+    manifest(art,zlib);
+    responseBody.insert(1,"\"spares\":["+replace(zlib,"weather-","spare0-")+"],"); advertisedSize=responseBody.size();
+    assert(fetchManifest(a,w) && !strcmp(w.url,"/frames/weather-0123456789abcdef.vnz"));
+    const auto* expected=expectedFrame((std::string(installation.host)+w.url).c_str());
+    assert(expected && expected->zlib && expected->wireSize==37001 && expected->sha==sha);
+    const auto* spare=expectedFrame((std::string(installation.host)+manifestExtras.spares[0].url).c_str());
+    assert(spare && spare->zlib && spare->wireSize==37001);
+    const auto* raw=expectedFrame((std::string(installation.host)+a.url).c_str());
+    assert(raw && !raw->zlib && !raw->wireSize);
+    previous=w;
+    for (const auto& bad : {
+        replace(zlib,"\"encoding\":\"zlib\"","\"encoding\":\"gzip\""),
+        replace(screen,"\"size\":960016","\"size\":960016,\"encoding\":\"raw\""),
+        replace(zlib,"\"size\":37001","\"size\":964113"),
+        replace(zlib,"\"size\":37001","\"size\":0"),
+        replace(zlib,"\"size\":37001","\"size\":-5"),
+        replace(zlib,sha.c_str(),"aaaa"),
+        replace(zlib,(",\"sha256\":\""+sha+"\"").c_str(),"")}) {
+        manifest(art,bad);
+        assert(!fetchManifest(a,w));
+        assert(std::memcmp(&w,&previous,sizeof(w))==0);
+    }
+    manifest(art,replace(zlib,"\"size\":37001","\"size\":964112"));
+    assert(fetchManifest(a,w));
     manifest(screen,screen);
     responseBody=replace(responseBody,"\"version\":1","\"version\":2");
     assert(!fetchManifest(a,w));

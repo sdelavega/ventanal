@@ -10,8 +10,10 @@
 #include <ctime>
 #include <esp_heap_caps.h>
 #include <memory>
+#include <string>
 #include <WiFi.h>
 #include <LittleFS.h>
+#include "../lcd43b/src/miniz/ventanal_tinfl.h"
 
 #ifndef VENTANAL_ABORT_AFTER_BYTES
 #define VENTANAL_ABORT_AFTER_BYTES 0
@@ -21,12 +23,23 @@ constexpr size_t frameSize = 960016;
 constexpr uint32_t frameIdleMs = 15000;
 constexpr char frameValidatorPrefix[] = "frame:";
 
+// A zlib frame resumes on the frame identity plus its wire size, never on
+// a raw partial of the same frame (or the reverse).
 std::string frameValidator(const ExpectedHash& frame) {
-    return frameValidatorPrefix + (frame.sha.empty() ? frame.id : frame.sha);
+    return frameValidatorPrefix + (frame.sha.empty() ? frame.id : frame.sha) +
+        (frame.zlib ? ":zlib:" + std::to_string(frame.wireSize) : std::string{});
 }
 
 std::string frameTarget(const char* path) {
     return std::string("frame-") + (path[0] == '/' ? path + 1 : path) + ".tmp";
+}
+
+// The staged zlib wire for a cache slot: /weather.vnf -> frame-weather.vnz.tmp.
+std::string wireTarget(const char* path) {
+    std::string name = path[0] == '/' ? path + 1 : path;
+    if (name.size() > 4 && name.compare(name.size() - 4, 4, ".vnf") == 0) name.back() = 'z';
+    else name += ".z";
+    return "frame-" + name + ".tmp";
 }
 
 uint32_t frameClock() { return millis(); }
@@ -85,6 +98,83 @@ bool copyToCache(FsStore& store, File& staged, const char* path, uint8_t* block)
     return ok;
 }
 
+using Inflater = std::unique_ptr<tinfl_decompressor, decltype(&heap_caps_free)>;
+
+// Inflate a whole zlib wire into out, checking the VNF1 header, every pixel
+// nibble, the exact decoded size and the manifest SHA-256 on the way. The
+// caller's 32 KiB download chunk is the LZ dictionary; input is read 1 KiB
+// at a time. Returns nullptr or the failure reason.
+const char* streamInflate(FsStore& store, File& wire, uint32_t wireSize, File& out,
+                          tinfl_decompressor& inflater, uint8_t* dictionary, const char* sha) {
+    static_assert(kResumeChunk == TINFL_LZ_DICT_SIZE, "the download chunk doubles as the dictionary");
+    tinfl_init(&inflater);
+    FrameHash digest;
+    uint8_t input[1024];
+    uint8_t header[16];
+    size_t produced = 0, consumed = 0, inputAt = 0, inputEnd = 0, dictionaryAt = 0;
+    for (;;) {
+        if (inputAt == inputEnd && consumed < wireSize) {
+            const size_t count = std::min(sizeof input, size_t(wireSize - consumed));
+            if (!store.readExact(wire, input, count)) return "storage";
+            consumed += count;
+            inputAt = 0;
+            inputEnd = count;
+        }
+        size_t inBytes = inputEnd - inputAt;
+        size_t outBytes = TINFL_LZ_DICT_SIZE - dictionaryAt;
+        const int flags = TINFL_FLAG_PARSE_ZLIB_HEADER | (consumed < wireSize ? TINFL_FLAG_HAS_MORE_INPUT : 0);
+        const auto status = tinfl_decompress(&inflater, input + inputAt, &inBytes, dictionary,
+                                             dictionary + dictionaryAt, &outBytes, flags);
+        inputAt += inBytes;
+        if (outBytes) {
+            if (outBytes > frameSize - produced) return "oversize";
+            const uint8_t* span = dictionary + dictionaryAt;
+            for (size_t i = 0; i < outBytes; ++i) {
+                const size_t at = produced + i;
+                if (at < sizeof header) {
+                    header[at] = span[i];
+                    if (at + 1 == sizeof header && !validFrameHeader(header, frameSize)) return "frame";
+                } else if ((span[i] >> 4) > 5 || (span[i] & 15) > 5) {
+                    return "frame";
+                }
+            }
+            digest.add(span, outBytes);
+            if (out.write(span, outBytes) != outBytes) return "storage";
+            produced += outBytes;
+            dictionaryAt = (dictionaryAt + outBytes) & (TINFL_LZ_DICT_SIZE - 1);
+        }
+        if (status == TINFL_STATUS_DONE) break;
+        if (status < 0) return "zlib";  // Includes a bad header or Adler-32.
+        if (status == TINFL_STATUS_NEEDS_MORE_INPUT && inputAt == inputEnd && consumed == wireSize)
+            return "zlib";
+    }
+    if (inputAt != inputEnd || consumed != wireSize) return "trailing";
+    if (produced != frameSize) return "size";
+    return strcasecmp(digest.finish().c_str(), sha) == 0 ? nullptr : "hash";
+}
+
+// Decode a committed wire into <path>.tmp on LittleFS and rename it over the
+// cached frame only after every check passed. The wire stays committed for
+// the caller to retire. Peak heap: the 32 KiB chunk plus one decompressor.
+const char* inflateFrame(FsStore& store, const char* target, uint32_t wireSize, const char* sha,
+                         const char* path, uint8_t* dictionary) {
+    File wire = store.openCommitted(target);
+    if (!wire) return "storage";
+    if (wire.size() != wireSize) { wire.close(); return "size"; }
+    Inflater inflater(static_cast<tinfl_decompressor*>(heap_caps_malloc(
+        sizeof(tinfl_decompressor), MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), heap_caps_free);
+    if (!inflater) { wire.close(); return "memory"; }
+    const auto temporary = std::string(path) + ".tmp";
+    File out = LittleFS.open(temporary.c_str(), "w");
+    const char* failure = out ? streamInflate(store, wire, wireSize, out, *inflater, dictionary, sha)
+                              : "storage";
+    wire.close();
+    if (out) { out.flush(); out.close(); }
+    if (!failure && !LittleFS.rename(temporary.c_str(), path)) failure = "storage";
+    if (failure) LittleFS.remove(temporary.c_str());
+    return failure;
+}
+
 bool promoteFrame(FsStore& store, bool flash, File& staged, const char* target,
                   const char* path, uint8_t* block) {
     if (flash) {
@@ -97,13 +187,44 @@ bool promoteFrame(FsStore& store, bool flash, File& staged, const char* target,
     return copied;
 }
 
+bool committedExists(FsStore& store, const std::string& target) {
+    File file = store.openCommitted(target.c_str());
+    const bool found = bool(file);
+    if (found) file.close();
+    return found;
+}
+
+// A wire committed before power was lost is inflated now, or dropped.
+bool recoverZlibFrame(FsStore& store, const char* path, const ExpectedHash& expected) {
+    const auto target = wireTarget(path);
+    if (!committedExists(store, target)) return false;
+    const char* failure = "manifest";
+    std::unique_ptr<uint8_t, decltype(&heap_caps_free)> block(nullptr, heap_caps_free);
+    if (hex64(expected.sha.c_str())) {
+        block = allocateFrameChunk();
+        failure = block ? inflateFrame(store, target.c_str(), expected.wireSize, expected.sha.c_str(),
+                                       path, block.get())
+                        : "memory";
+    }
+    if (failure && !strcmp(failure, "memory")) return false;  // Retry on a later wake.
+    store.removeCommitted(target.c_str());
+    if (failure) return false;
+    if (securityConfigured()) Serial.println("security frame-hash=verified");
+    return true;
+}
+
 bool recoverFrame(FsStore& store, bool flash, const char* path, const ScreenInfo* frame) {
     const auto target = frameTarget(path);
+    const auto* expected = frame && frame->id[0]
+        ? expectedFrame((String(installation.host) + frame->url).c_str()) : nullptr;
+    if (expected && expected->zlib) {
+        if (committedExists(store, target)) store.removeCommitted(target.c_str());
+        return recoverZlibFrame(store, path, *expected);
+    }
+    if (committedExists(store, wireTarget(path))) store.removeCommitted(wireTarget(path).c_str());
     auto staged = store.openCommitted(target.c_str());
     if (!staged) return false;
 
-    const auto* expected = frame && frame->id[0]
-        ? expectedFrame((String(installation.host) + frame->url).c_str()) : nullptr;
     if (!expected || !hex64(expected->sha.c_str()) ||
         !validate(staged, "", &store, expected->sha.c_str())) {
         staged.close();
@@ -162,7 +283,10 @@ bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
     const auto* expected = expectedFrame(url);
     const char* sha = expected ? expected->sha.c_str() : "";
     const char* legacyId = expected && !*sha ? expected->id.c_str() : "";
-    const std::string target = frameTarget(path);
+    // A zlib frame downloads its wire bytes; budgets and logs count those.
+    const bool zlib = expected && expected->zlib;
+    const uint32_t total = zlib ? expected->wireSize : frameSize;
+    const std::string target = zlib ? wireTarget(path) : frameTarget(path);
     HostRangeTransport transport(url, started, budgetMs, frameIdleMs,
                                  HostRangeTransport::Asset::Frame, VENTANAL_ABORT_AFTER_BYTES);
     auto& store = partialStore();
@@ -175,12 +299,15 @@ bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
             case FetchOutcome::Failed: break;
         }
         const auto have = std::max(int64_t{0}, store.size(target.c_str()));
-        Serial.printf("frame slot=%s outcome=%s reason=%s status=%d got=%u have=%u total=%u ms=%lu\n",
+        Serial.printf("frame slot=%s outcome=%s reason=%s status=%d got=%u have=%u total=%u ms=%lu%s\n",
                       path, name, reason, transport.status(), unsigned(transport.bytesRead()),
-                      unsigned(have), unsigned(frameSize), static_cast<unsigned long>(millis() - started));
+                      unsigned(have), unsigned(total), static_cast<unsigned long>(millis() - started),
+                      zlib ? " enc=zlib" : "");
         return outcome == FetchOutcome::Complete;
     };
-    if (securityConfigured() && !hex64(sha)) return result(FetchOutcome::Failed, "manifest");
+    // Nothing decoded is ever kept without the signed decoded-frame hash.
+    if ((securityConfigured() || zlib) && !hex64(sha)) return result(FetchOutcome::Failed, "manifest");
+    if (zlib && (total < 8 || total > maxZlibFrameBytes)) return result(FetchOutcome::Failed, "manifest");
 
     // Buffer a full checkpoint in internal RAM for flash and SD writes.
     auto block = allocateFrameChunk();
@@ -193,7 +320,8 @@ bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
         sourceUrl = "sha256:" + hash.finish();
     }
     const auto validator = expected ? frameValidator(*expected) : std::string{};
-    const ResumeSource source{sourceUrl.c_str(), validator.c_str(), sha, frameSize, true, true};
+    // The wire has no hash of its own: the decoded SHA-256 is checked after inflate.
+    const ResumeSource source{sourceUrl.c_str(), validator.c_str(), zlib ? "" : sha, total, true, true};
     const time_t epoch = time(nullptr);
     const char* reason = nullptr;
     const auto elapsed = millis() - started;
@@ -216,6 +344,15 @@ bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
             else reason = "interrupted";
         }
         return result(outcome, reason);
+    }
+
+    if (zlib) {
+        const char* failure = inflateFrame(store, target.c_str(), total, sha, path, block.get());
+        if (failure && !strcmp(failure, "memory")) return result(FetchOutcome::NoProgress, failure);
+        store.removeCommitted(target.c_str());  // Verified or not, the wire is spent.
+        if (failure && &partialStore() != &store) return result(FetchOutcome::NoProgress, "storage");
+        if (!failure && securityConfigured()) Serial.println("security frame-hash=verified");
+        return result(failure ? FetchOutcome::Failed : FetchOutcome::Complete, failure ? failure : "ok");
     }
 
     auto staged = store.openCommitted(target.c_str());

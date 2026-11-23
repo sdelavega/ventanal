@@ -12,7 +12,9 @@ inline bool rememberManifestFrames(JsonDocument& doc, bool requireHash) {
             if(requireHash) return false;
             sha="";
         }
-        hashes.push_back({entry["url"] | "",sha,entry["id"] | ""}); return true;
+        const bool zlib=!strcmp(entry["encoding"] | "","zlib");
+        hashes.push_back({entry["url"] | "",sha,entry["id"] | "",zlib,zlib ? entry["size"].as<uint32_t>() : 0});
+        return true;
     };
     for(JsonPairConst pair:doc["screens"].as<JsonObjectConst>()) if(!add(pair.value())) return false;
     for(JsonVariantConst entry:doc["spares"].as<JsonArrayConst>()) if(!add(entry)) return false;

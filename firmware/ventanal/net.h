@@ -17,8 +17,11 @@ inline ManifestExtras manifestExtras;
 inline char manifestSkipQuery[280]{};
 
 #ifndef VENTANAL_FIRMWARE_VERSION
-#define VENTANAL_FIRMWARE_VERSION "1.0.0"
+#define VENTANAL_FIRMWARE_VERSION "1.1.0"
 #endif
+// From 1.1.0 the host may send e-paper frames zlib-compressed. The largest
+// wire it may name is the 960016-byte frame stored in zlib blocks.
+inline constexpr uint32_t maxZlibFrameBytes = 960016 + 4096;
 inline constexpr char VENTANAL_BOARD_ID[] = "inkplate13spectra";
 inline char manifestBoardQuery[256]{};
 inline void setBoardReport(int pct, const char* screen, const char* frame, int millivolts=0,

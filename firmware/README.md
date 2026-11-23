@@ -158,7 +158,17 @@ Close and validate before LittleFS atomic rename; never unlink the old destinati
 A failed download, buffer allocation or rename leaves the previous frame intact.
 Wi-Fi power saving is disabled during each frame request and its exact previous
 mode is restored on every exit, including failure and diagnostic abort. All HTTP
-requests share the User-Agent `Ventanal/1.0.0`.
+requests share the User-Agent `Ventanal/<version>` (`Ventanal/1.1.0` by default).
+
+From firmware 1.1.0 the manifest request's `fw` lets the host send each frame
+zlib-compressed (`"encoding":"zlib"`, the wire `size`, and the decoded frame's
+`sha256`); older firmware still gets raw 960016-byte frames. The wire downloads
+into the partial store and resumes like a raw frame (validator: frame identity
+plus wire size). Once complete it is stream-inflated into `<path>.tmp` with the
+32 KiB download chunk as the dictionary plus one ~8 KiB `tinfl_decompressor`,
+checking the header, every colour index, the exact size and the SHA-256 before
+the rename. A corrupt, short, oversized or trailing stream discards the wire and
+keeps the previous frame. Frames cached by older firmware stay valid.
 Internal RAM avoids the flash driver's small PSRAM bounce copies, and stays off
 the 8 KiB task stack. Each frame log includes elapsed `ms` from allocation/request through validation
 and commit, plus read/write/check phase timings; the combined sketch download

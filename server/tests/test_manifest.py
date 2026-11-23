@@ -3,7 +3,9 @@
 
 from dataclasses import FrozenInstanceError
 from datetime import datetime, timedelta, timezone
+import hashlib
 import json
+import zlib
 
 import numpy as np
 from PIL import Image
@@ -53,8 +55,12 @@ def test_publish_exact_entry_and_assets(tmp_path):
         "rendered": "2026-11-15T14:30:00-05:00",
         "readout": {"x": 1020, "y": 0, "w": 580, "h": 104, "style": "shade"},
         "credit": CREDIT,
+        # Firmware >= 1.1.0 is served this variant; older boards never see it.
+        "zlib": {"url": f"/frames/art-{ident}.vnz", "size": len(zlib.compress(data, level=9)),
+                 "encoding": "zlib", "sha256": hashlib.sha256(data).hexdigest()},
     }
     assert (tmp_path / entry["url"].lstrip("/")).read_bytes() == data
+    assert zlib.decompress((tmp_path / entry["zlib"]["url"].lstrip("/")).read_bytes()) == data
     with Image.open(tmp_path / "previews" / f"art-{ident}.png") as preview:
         assert preview.format == "PNG"
         assert preview.size == (16, 12)
@@ -87,7 +93,10 @@ def test_publish_prunes(tmp_path):
                       Image.new("RGB", (16, 12)), NOW)
     entries = [publish_art(tmp_path, frame(i)) for i in range(6)]
     expected = {f"art-{entry['id']}.vnf" for entry in entries[-4:]}
-    assert {p.name for p in (tmp_path / "frames").glob("art-*")} == expected
+    assert {p.name for p in (tmp_path / "frames").glob("art-*.vnf")} == expected
+    assert {p.stem for p in (tmp_path / "frames").glob("art-*.vnz")} == {
+        p.removesuffix(".vnf") for p in expected
+    }
     assert {p.stem for p in (tmp_path / "previews").glob("art-*.png")} == {
         p.removesuffix(".vnf") for p in expected
     }

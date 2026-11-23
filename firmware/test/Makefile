@@ -139,17 +139,22 @@ test-epaper-wake: build/test_wake
 		./build/test_wake $$case || result=1; \
 	done; exit $$result
 
-EPAPER_CACHE_STORAGE := ../common/resume/fs_store.cpp ../common/resume/storage.cpp
+EPAPER_CACHE_STORAGE := ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/ventanal_tinfl.o
+
+# The e-paper firmware compiles the vendored tinfl as C++ (tinfl.cpp); so do the host tests.
+build/ventanal_tinfl.o: ../ventanal/tinfl.cpp $(wildcard ../lcd43b/src/miniz/*) Makefile
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) -std=c++17 -w -c ../ventanal/tinfl.cpp -o $@
 build/test_cache build/test_cache_abort build/test_secure_transport: $(EPAPER_CACHE_STORAGE)
 build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h ../ventanal/net.h $(wildcard ../common/resume/*.h)
 
 build/test_cache: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz -o $@
 
 build/test_cache_abort: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz -o $@
 
 build/test_net: test_net.cpp ../ventanal/quiet.h ../ventanal/net.cpp ../ventanal/net.h ../ventanal/config.example.h ../ventanal/http.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build

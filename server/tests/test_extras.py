@@ -435,6 +435,9 @@ def server_manifest_vector(root, monkeypatch):
         publish(cfg.output_dir, name, frame, readout, None, preview, now)
     tick_extras(cfg, now)
     m = read_manifest(cfg.output_dir)
+    # The vector is what a board without zlib support is served.
+    from ventanal.manifest import select_epaper_encoding
+    select_epaper_encoding(m, {})
     for entry in m["screens"].values():
         entry["sha256"] = hashlib.sha256(frame).hexdigest()
     return m

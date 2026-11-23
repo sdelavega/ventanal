@@ -300,13 +300,24 @@ class Security:
                        rf'/devices/{re.escape(profile)}/frames/[A-Za-z0-9_-]+\.vnr')
         for entry in [*result.get('screens',{}).values(),*result.get('spares',[])]:
             url=entry['url']
-            if not re.fullmatch(frame_route, url): raise ValueError('Invalid frame path')
+            # E-paper zlib wire files are signed by the hash of the decoded
+            # frame beside them, which is what the panel verifies and draws.
+            epaper_zlib = profile is None and entry.get('encoding') == 'zlib'
+            if epaper_zlib:
+                if not re.fullmatch(r'/frames/[A-Za-z0-9_-]+\.vnz', url): raise ValueError('Invalid frame path')
+                wire=root/url.lstrip('/')
+                if wire.resolve()!=wire or wire.stat().st_size!=entry['size']:
+                    raise ValueError('E-paper wire frame differs from its published size')
+                url=url[:-len('.vnz')]+'.vnf'
+            elif not re.fullmatch(frame_route, url): raise ValueError('Invalid frame path')
             path=root/url.lstrip('/')
             if path.resolve()!=path: raise ValueError('Invalid frame path')
             with path.open('rb') as f:
                 digest = hashlib.file_digest(f, 'sha256').hexdigest()
             if profile is not None and (entry['id'] != digest[:16] or entry['sha256'] != digest):
                 raise ValueError('LCD frame differs from its published hash')
+            if epaper_zlib and (entry['id'] != digest[:16] or entry.get('sha256') != digest):
+                raise ValueError('E-paper frame differs from its published hash')
             entry['sha256'] = digest
         with self.lock:
             if key is not None and self.pairing_identities().get(device) != self.key_identity(key):

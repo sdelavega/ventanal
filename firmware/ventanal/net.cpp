@@ -78,9 +78,16 @@ namespace {
 bool parseScreen(JsonVariantConst value, ScreenInfo& result) {
     const char* id = value["id"] | "";
     const char* url = value["url"] | "";
+    // Raw frames are exactly 960016 bytes. A zlib wire names its own size
+    // and must carry the decoded frame's SHA-256, which the download verifies.
+    const char* encoding = value["encoding"] | "";
+    const uint32_t size = value["size"].is<uint32_t>() ? value["size"].as<uint32_t>() : 0;
+    const bool zlib = !strcmp(encoding, "zlib");
+    if (!zlib && !value["encoding"].isNull()) return false;
+    if (zlib ? size < 8 || size > maxZlibFrameBytes || !hex64(value["sha256"] | "") : size != 960016)
+        return false;
     if (strlen(id) != 16 || strlen(url) >= sizeof(result.url) ||
-        strncmp(url, "/frames/", 8) != 0 || strstr(url, "..") ||
-        (value["size"] | 0) != 960016) return false;
+        strncmp(url, "/frames/", 8) != 0 || strstr(url, "..")) return false;
     for (unsigned i = 0; i < 16; ++i)
         if (!((id[i] >= '0' && id[i] <= '9') || (id[i] >= 'a' && id[i] <= 'f'))) return false;
     JsonVariantConst r = value["readout"];

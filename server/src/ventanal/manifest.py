@@ -9,6 +9,8 @@ import logging
 import json
 import os
 import re
+import hashlib
+import zlib
 from pathlib import Path
 from typing import Literal
 
@@ -61,6 +63,27 @@ def select_lcd_encoding(manifest: dict, report: dict) -> None:
         jpeg = entry.pop("jpeg", None)
         if jpeg_capable and jpeg is not None:
             entry.update(jpeg)
+
+
+EPAPER_ZLIB_FIRMWARE = (1, 1, 0)
+
+
+def select_epaper_encoding(manifest: dict, report: dict) -> None:
+    """Offer zlib e-paper frames only to firmware that can inflate them.
+
+    Older boards (no ``fw``, or one before 1.1.0) get exactly the legacy
+    entries. Run before signing: the signature covers the selected form.
+    """
+    capable = False
+    if report.get("board", "inkplate13spectra") == "inkplate13spectra":
+        try:
+            capable = version_tuple(report.get("fw")) >= EPAPER_ZLIB_FIRMWARE
+        except ValueError:
+            pass
+    for entry in _entries(manifest):
+        wire = entry.pop("zlib", None)
+        if capable and isinstance(wire, dict):
+            entry.update(wire)
 
 
 def encode_board_manifest(manifest, firmware=None, *, sign=None):
@@ -168,6 +191,15 @@ def publish(
     previews.mkdir(parents=True, exist_ok=True)
     frame_path = frames / f"{basename}.vnf"
     frame_path.write_bytes(data)
+    # Compress once per frame id; requests only choose which file to name.
+    wire = zlib.compress(data, level=9)
+    (frames / f"{basename}.vnz").write_bytes(wire)
+    entry["zlib"] = {
+        "url": f"/frames/{basename}.vnz",
+        "size": len(wire),
+        "encoding": "zlib",
+        "sha256": hashlib.sha256(data).hexdigest(),
+    }
     preview.save(previews / f"{basename}.png", format="PNG")
 
     if screen.startswith("spare"):
@@ -185,6 +217,7 @@ def publish(
     )
     for old in newest[4:]:
         old.unlink()
+        (frames / f"{old.stem}.vnz").unlink(missing_ok=True)
         (previews / f"{old.stem}.png").unlink(missing_ok=True)
     return entry
 

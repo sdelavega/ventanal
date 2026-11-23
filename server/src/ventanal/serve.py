@@ -18,7 +18,8 @@ from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
 from ventanal.manifest import (MAX_SERVED_MANIFEST_BYTES, encode_board_manifest,
-                               omit_board_credits, select_lcd_encoding)
+                               omit_board_credits, select_epaper_encoding,
+                               select_lcd_encoding)
 from ventanal.owner import SkipQueue, parse_skips
 
 
@@ -191,12 +192,12 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
             if ui is not None and not re.fullmatch(r'/(?:manifest\.json|frames/.*|previews/.*|devices/[a-z0-9-]+(?:/(?:manifest\.json|frames/.*|previews/.*))?)', path):
                 ui.handle(self, path)
                 return
-            if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnf|previews/[A-Za-z0-9_-]+\.png|devices/[a-z0-9-]+/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnr))', path):
+            if not re.fullmatch(r'/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vn[fz]|previews/[A-Za-z0-9_-]+\.png|devices/[a-z0-9-]+/(?:manifest\.json|frames/[A-Za-z0-9_-]+\.vnr))', path):
                 self.send_error(404)
                 return
             device_manifest = re.fullmatch(r'/devices/([a-z0-9-]+)/manifest\.json', path)
             report = {}
-            if device_manifest or (cache_dir is not None and path == '/manifest.json'):
+            if device_manifest or path == '/manifest.json':
                 query = parse_qs(urlsplit(self.path).query, keep_blank_values=True)
                 report = parse_board(query)
             if cache_dir is not None and (path == '/manifest.json' or device_manifest):
@@ -243,6 +244,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         manifest.pop('battery', None)
                         if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
                     omit_board_credits(manifest)
+                    select_epaper_encoding(manifest, report)
                     sign = None
                     if self.proof_key is not None:
                         sign = lambda document: ui.security.manifest(document, root, key=self.proof_key)
@@ -335,10 +337,11 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 return
             suffix = target.suffix
             kind = {'.json': 'application/json', '.png': 'image/png',
-                    '.vnf': 'application/octet-stream', '.vnr': 'application/octet-stream'}[suffix]
+                    '.vnf': 'application/octet-stream', '.vnz': 'application/octet-stream',
+                    '.vnr': 'application/octet-stream'}[suffix]
             cache_control = 'no-cache' if suffix == '.json' else 'public, max-age=31536000, immutable'
             etag = None
-            if suffix in ('.vnf', '.vnr'):
+            if suffix in ('.vnf', '.vnz', '.vnr'):
                 ident = FRAME_ID_SUFFIX.search(target.stem)
                 # A fallback stem cannot match a manifest ID, so devices fetch the full frame.
                 etag = f'"{ident[1] if ident else target.stem}"'

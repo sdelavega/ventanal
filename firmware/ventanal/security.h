@@ -97,7 +97,8 @@ inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* 
     return true;
 }
 // Verified manifest hashes live only for this wake, never change NVS State ABI.
-struct ExpectedHash { std::string url, sha, id = {}; };
+// sha is the decoded frame's SHA-256; a zlib entry also names its wire size.
+struct ExpectedHash { std::string url, sha, id = {}; bool zlib = false; uint32_t wireSize = 0; };
 inline std::vector<ExpectedHash> expectedHashes;
 inline const ExpectedHash* expectedFrame(const char* url) {
     const std::string origin=installation.host;
