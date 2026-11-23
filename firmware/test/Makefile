@@ -135,7 +135,8 @@ test: test-epaper-wake
 test-epaper-wake: build/test_wake
 	@result=0; for case in weather_fetched_first_when_due first_frame_uses_remaining_budget \
 		later_frames_get_leftover_budget sd_not_probed_when_nothing_due \
-		no_card_result_cached_until_cold_boot_or_24h; do \
+		no_card_result_cached_until_cold_boot_or_24h complete_screen_shown_instead_of_waiting \
+		displayed_missing_screen_downloads_before_spares; do \
 		./build/test_wake $$case || result=1; \
 	done; exit $$result
 

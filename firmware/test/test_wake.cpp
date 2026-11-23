@@ -22,6 +22,7 @@ static ScreenInfo art{"aaaaaaaaaaaaaaaa","/frames/art",{1092,22,480,26,false}};
 static ScreenInfo weather{"bbbbbbbbbbbbbbbb","/frames/weather",{1236,30,334,136,true}};
 static uint32_t wifiDelay=0, timeDelay=0, manifestDelay=0, frameDelay=0;
 static std::vector<std::string> downloadPaths;
+static std::string failPath; // A frame that never completes (e.g. art on a weak link).
 static std::vector<uint32_t> downloadBudgets;
 static unsigned sdProbes = 0;
 static bool sdPresent = false, sdSelected = false;
@@ -60,7 +61,7 @@ bool fetchFrame(const char*, const char* path, uint32_t budget) {
     downloadPaths.push_back(path);
     downloadBudgets.push_back(budget);
     delay(std::min(frameDelay, budget));
-    if (!frameOK || frameDelay > budget) return false;
+    if (!frameOK || frameDelay > budget || failPath == path) return false;
     files[path] = {1};
     return true;
 }
@@ -123,7 +124,71 @@ static void weather_fetched_first_when_due() {
     manifestExtras.spares[0]=art;
     preferences["dl-next"]={5};
     wake(0);
-    assert((downloadPaths==std::vector<std::string>{"/weather.vnf", "/spare0.vnf", "/art.vnf"}));
+    // Visible screens precede spares; the spare cursor only rotates spares.
+    assert((downloadPaths==std::vector<std::string>{"/weather.vnf", "/art.vnf", "/spare0.vnf"}));
+}
+
+static State storedState() {
+    State state{};
+    assert(preferences.at("state13").size()==sizeof state);
+    memcpy(&state,preferences.at("state13").data(),sizeof state);
+    return state;
+}
+
+// Art (the scheduled screen) never finishes while weather is complete:
+// the panel shows weather, never "waiting for host", and art stays scheduled.
+static void complete_screen_shown_instead_of_waiting() {
+    failPath="/art.vnf";
+    wake(0);
+    assert(files.count("/weather.vnf") && !files.count("/art.vnf") && blitted=="/weather.vnf");
+    fakeReset=ESP_RST_DEEPSLEEP;
+    Serial.output.clear();
+    wake(ESP_SLEEP_WAKEUP_EXT0); // The button schedules art, which is missing.
+    assert(waiting==0 && blitted=="/weather.vnf" && readouts==2);
+    assert(storedState().active==Screen::Art);
+    assert(Serial.output.find("draw=weather")!=std::string::npos);
+    assert(Serial.output.find("draw=waiting-for-host")==std::string::npos);
+    downloadPaths.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(waiting==0 && storedState().active==Screen::Art);
+    assert(!downloadPaths.empty() && downloadPaths.front()=="/art.vnf");
+    assert(readouts==2); // The same fallback is already on the panel.
+    failPath.clear();
+    downloadPaths.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(downloadPaths.front()=="/art.vnf" && blitted=="/art.vnf" && readouts==3 && waiting==0);
+    // With nothing complete at all, the waiting screen is still honest.
+    files.clear(); online=false;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(waiting==1);
+}
+
+// The scheduled screen downloads first, then due weather, then spares in
+// round-robin from the saved cursor.
+static void displayed_missing_screen_downloads_before_spares() {
+    failPath="/art.vnf";
+    wake(0);
+    fakeReset=ESP_RST_DEEPSLEEP;
+    wake(ESP_SLEEP_WAKEUP_EXT0);
+    assert(storedState().active==Screen::Art && !files.count("/art.vnf"));
+    manifestExtras.count=3;
+    for(int i=0;i<3;++i) { manifestExtras.spares[i]=art; memset(manifestExtras.spares[i].id,'1'+i,16); }
+    strcpy(weather.id,"cccccccccccccccc"); // Weather is due as well.
+    preferences["dl-next"]={6};
+    failPath.clear();
+    downloadPaths.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert((downloadPaths==std::vector<std::string>{"/art.vnf", "/weather.vnf",
+                                                    "/spare1.vnf", "/spare2.vnf", "/spare0.vnf"}));
+    assert(blitted=="/art.vnf");
+    // The first frame keeps the whole remaining wake budget (round-2 H1).
+    files.erase("/art.vnf"); files.erase("/spare1.vnf");
+    strcpy(art.id,"9999999999999999");
+    downloadBudgets.clear(); downloadPaths.clear();
+    fakeClock=0;
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(downloadPaths.front()=="/art.vnf" && downloadBudgets.front()>frameBudgetMs);
+    assert(downloadPaths.back()=="/spare1.vnf");
 }
 
 static void first_frame_uses_remaining_budget() {
@@ -194,6 +259,8 @@ int main(int argc, char** argv) {
             {"later_frames_get_leftover_budget", later_frames_get_leftover_budget},
             {"sd_not_probed_when_nothing_due", sd_not_probed_when_nothing_due},
             {"no_card_result_cached_until_cold_boot_or_24h", no_card_result_cached_until_cold_boot_or_24h},
+            {"complete_screen_shown_instead_of_waiting", complete_screen_shown_instead_of_waiting},
+            {"displayed_missing_screen_downloads_before_spares", displayed_missing_screen_downloads_before_spares},
         };
         for (const auto& [name, run] : cases) {
             if (strcmp(argv[1], name)) continue;

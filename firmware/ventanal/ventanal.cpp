@@ -229,6 +229,14 @@ bool screenCached(const State& state, Screen screen) {
     State candidate=state; candidate.active=screen;
     return selectedScreen(candidate).id[0] && LittleFS.exists(selectedPath(candidate));
 }
+char* drawnId(State& state, Screen screen) {
+    if(screen==Screen::Extra0 || screen==Screen::Extra1) return state.extraDrawn[static_cast<unsigned>(screen)-3];
+    return screen==Screen::Art?state.drawn.artId:screen==Screen::Solar?state.solarDrawn:state.drawn.weatherId;
+}
+// Never "waiting for host" while a complete screen is cached: when the
+// scheduled screen is missing, show weather, else art, else solar or an
+// extra. The scheduled screen stays active, so it downloads first.
+constexpr Screen fallbackScreens[]={Screen::Weather,Screen::Art,Screen::Solar,Screen::Extra0,Screen::Extra1};
 Screen cycleScreen(const State& state, WakeCause wake, bool mounted) {
     if(wake!=WakeCause::Button) return state.active;
     unsigned start=state.orderCount-1;
@@ -946,9 +954,27 @@ void setup() {
                       [] { ESP_ERROR_CHECK(esp_task_wdt_reset_user(wakeWatchdog)); });
         if(otaFailed) Serial.println("download deferred=failed-ota");
         if(!offline && mounted && !otaFailed) {
-            // Weather gets first use of the remaining wake budget. It does
-            // not move the cursor that keeps the other slots in rotation.
-            constexpr unsigned weatherSlot=1;
+            // Order: the screen on display (or scheduled) when missing or
+            // stale, then weather, then the other visible screens in manifest
+            // order, then spares in round-robin. The first frame fetched gets
+            // the whole remaining wake budget; only spares move the cursor.
+            constexpr unsigned weatherSlot=1, firstSpareSlot=5;
+            constexpr unsigned spareSlots=frameCachePaths.size()-firstSpareSlot;
+            std::array<uint8_t, frameCachePaths.size()> downloadOrder{};
+            unsigned orderLength=0;
+            const auto schedule=[&](unsigned slot) {
+                for(unsigned i=0;i<orderLength;++i) if(downloadOrder[i]==slot) return;
+                downloadOrder[orderLength++]=static_cast<uint8_t>(slot);
+            };
+            // A displayed override is a cached copy; it needs no download.
+            if(state.active!=Screen::Art || !state.owner.overrideArt.id[0]) schedule(static_cast<unsigned>(state.active));
+            schedule(weatherSlot);
+            for(unsigned i=0;i<manifestExtras.orderCount;++i) schedule(static_cast<unsigned>(manifestExtras.order[i]));
+            for(unsigned slot=0;slot<firstSpareSlot;++slot) schedule(slot);
+            uint8_t next=firstSpareSlot;
+            if(persisted) prefs.getBytes("dl-next",&next,sizeof next);
+            if(next<firstSpareSlot || next>=frameCachePaths.size()) next=firstSpareSlot;
+            for(unsigned i=0;i<spareSlots;++i) schedule(firstSpareSlot+(next-firstSpareSlot+i)%spareSlots);
             bool firstFrame=true, sdFramesSwept=false;
             const auto recoverSdFrames = [&] {
                 if (sdFramesSwept || partialsOnFlash()) return;
@@ -956,12 +982,9 @@ void setup() {
                 if(recoverFrames() && persisted) save(prefs,state);
             };
             recoverSdFrames();
-            uint8_t next=0;
-            if(persisted) prefs.getBytes("dl-next",&next,sizeof next);
-            if(next>=frameCachePaths.size()) next=0;
-            for(unsigned step=0;step<=frameCachePaths.size();++step) {
-                const unsigned slot=step==0 ? weatherSlot : (next+step-1)%frameCachePaths.size();
-                if(step && slot==weatherSlot) continue;
+            for(unsigned step=0;step<orderLength;++step) {
+                const unsigned slot=downloadOrder[step];
+                const bool spare=slot>=firstSpareSlot;
                 auto* cached=cachedFrames[slot];
                 const auto* incoming=incomingFrames[slot];
                 const char* path=frameCachePaths[slot];
@@ -986,9 +1009,9 @@ void setup() {
                     continue;
                 }
                 if(frameWakeRemainingMs(millis()-wakeStarted)) {
-                    // A timeout or failure still advances the round-robin cursor.
-                    const uint8_t following=(slot+1)%frameCachePaths.size();
-                    if(persisted && slot!=weatherSlot) prefs.putBytes("dl-next",&following,sizeof following);
+                    // A timeout or failure still advances the spare cursor.
+                    const uint8_t following=firstSpareSlot+(slot-firstSpareSlot+1)%spareSlots;
+                    if(persisted && spare) prefs.putBytes("dl-next",&following,sizeof following);
                     if(extra && !canStageExtraFrame(path)) {
                         Serial.println("extra download deferred=filesystem-budget"); continue;
                     }
@@ -1002,12 +1025,11 @@ void setup() {
                 const String url=String(installation.host)+incoming->url;
                 const auto remaining=frameWakeRemainingMs(millis()-wakeStarted);
                 if(!remaining) {
-                    if(persisted && slot!=weatherSlot) {
+                    if(persisted && spare) {
                         const uint8_t deferred=slot;
                         prefs.putBytes("dl-next",&deferred,sizeof deferred);
                     }
                     Serial.printf("download deferred slot=%u wake-budget\n",slot);
-                    if(slot==weatherSlot) continue;
                     break;
                 }
                 const auto budget=firstFrame ? remaining : std::min(remaining,frameBudgetMs);
@@ -1069,27 +1091,38 @@ void setup() {
         }
     } else if(!longPress) state.active=cycleScreen(state,wake,mounted);
     if(static_cast<unsigned>(state.active)>=2 && (!mounted || !screenCached(state,state.active))) state.active=Screen::Art;
-    const ScreenInfo& selected=selectedScreen(state);
-    const char* path=selectedPath(state);
+    // `shown` is the screen drawn: the scheduled one, or a cached fallback.
+    State shown=state;
+    if(mounted && !LittleFS.exists(selectedPath(state))) {
+        for(const Screen candidate : fallbackScreens) {
+            if(candidate==state.active || !screenCached(state,candidate)) continue;
+            shown.active=candidate;
+            break;
+        }
+    }
+    const ScreenInfo& selected=selectedScreen(shown);
+    const char* path=selectedPath(shown);
     const bool cached=mounted && LittleFS.exists(path);
     const uint32_t epochNow=ventanal::trustedEpoch(time(nullptr));
     contentStaleness.observe(epochNow,contentDue);
     if(persisted && contentStaleness.checkpointDue(epochNow)) contentStaleness.checkpoint(prefs,epochNow);
     const bool downloadFailure=contentStaleness.label(false,epochNow)==ventanal::RefreshLabel::Failed;
-    const bool redraw=downloadFailure!=downloadFailureDrawn || longPress || (static_cast<unsigned>(state.active)>=2 ? wake!=WakeCause::Timer || !state.drawn.any || strcmp(selectedDrawn(state),selected.id)!=0 : needsRedraw(wake,state.active,state.drawn,selectedArt(state).id,state.weather.id,pct));
+    const bool redraw=downloadFailure!=downloadFailureDrawn || longPress || (static_cast<unsigned>(shown.active)>=2 ? wake!=WakeCause::Timer || !shown.drawn.any || strcmp(selectedDrawn(shown),selected.id)!=0 : needsRedraw(wake,shown.active,shown.drawn,selectedArt(shown).id,shown.weather.id,pct));
     start=millis();
     if(!cached || redraw || otaPendingBoot) {
         const bool ready=cached && blitFrame(path,display);
         Serial.printf("blit ms=%lu valid=%d\n",static_cast<unsigned long>(millis()-start),ready);
         if(ready) {
             const time_t drawnAt=time(nullptr);
-            rememberPanel(state,pct,offline,drawnAt,0,0,downloadFailure);
+            if(shown.active!=state.active)
+                Serial.printf("draw fallback=%s scheduled=%s missing\n",screenName(shown),screenName(state));
+            rememberPanel(shown,pct,offline,drawnAt,0,0,downloadFailure);
             const uint32_t overlayStart=millis();
             drawReadout(display,selected.readout,pct,offline,isLow(pct),drawnAt,installation.clock24h);
             Serial.printf("readout ms=%lu\n",static_cast<unsigned long>(millis()-overlayStart));
             char local[40]; tm now{}; localtime_r(&drawnAt,&now);
             strftime(local,sizeof local,"%Y-%m-%d %H:%M:%S",&now);
-            Serial.printf("draw=%s updated=%s offline=%d rect=%d,%d,%d,%d\n",screenName(state),local,offline,
+            Serial.printf("draw=%s updated=%s offline=%d rect=%d,%d,%d,%d\n",screenName(shown),local,offline,
                           selected.readout.x,selected.readout.y,selected.readout.w,selected.readout.h);
         } else {
             rememberPanel(state,pct,offline,time(nullptr),1,0,downloadFailure);
@@ -1112,6 +1145,8 @@ void setup() {
             strcpy(state.solarDrawn,state.solar.id);
             for(unsigned i=0;i<2;++i) strcpy(state.extraDrawn[i],state.extraScreens[i].id);
             state.drawn.pct=static_cast<int8_t>(pct);
+            // The scheduled screen is not on the panel: draw it once it lands.
+            if(shown.active!=state.active) drawnId(state,state.active)[0]=0;
         }
     } else {
         Serial.println("draw skipped=unchanged");

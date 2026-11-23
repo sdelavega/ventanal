@@ -169,6 +169,12 @@ plus wire size). Once complete it is stream-inflated into `<path>.tmp` with the
 checking the header, every colour index, the exact size and the SHA-256 before
 the rename. A corrupt, short, oversized or trailing stream discards the wire and
 keeps the previous frame. Frames cached by older firmware stay valid.
+
+A missing scheduled screen never shows the waiting screen while another
+complete screen is cached: weather, then art, then solar or an extra is shown,
+and the scheduled screen stays scheduled and downloads first. Each wake then
+fetches weather if due, the other visible screens in manifest order, and the
+spares in round-robin.
 Internal RAM avoids the flash driver's small PSRAM bounce copies, and stays off
 the 8 KiB task stack. Each frame log includes elapsed `ms` from allocation/request through validation
 and commit, plus read/write/check phase timings; the combined sketch download
