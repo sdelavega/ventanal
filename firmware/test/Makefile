@@ -28,7 +28,7 @@ check_lcd43b_pie:
 test-lcd-round4:
 	$(PYTHON) test_lcd_round4.py
 
-test: test-lcd-round4
+test: test-lcd-round4 test-review6-wake
 
 test: check_lcd43b_pie check-arduinojson check-hardening check_lcd43b_display_owner check_standalone_screens build/test_lcd43b_wifi_roam
 
@@ -448,3 +448,8 @@ test-lcd-round4-integration: test-lcd-round4 test-lcd-storage test-resume-store 
 .PHONY: test-secure-transport
 test-secure-transport: build/test_secure_transport
 	./build/test_secure_transport
+
+.PHONY: test-review6-wake
+test-review6-wake: build/test_wake
+	./build/test_wake invalid_cached_frame_falls_back_and_redownloads
+	./build/test_wake zlib_frame_not_started_without_inflate_reserve

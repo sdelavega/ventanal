@@ -4,6 +4,7 @@
 #include <cstdio>
 #include "../ventanal/cache.h"
 #include "../ventanal/net.h"
+#include "../ventanal/security.h"
 #include "../ventanal/overlay.h"
 #include "../ventanal/sd_card.h"
 #include <Preferences.h>
@@ -67,8 +68,9 @@ bool fetchFrame(const char*, const char* path, uint32_t budget) {
 }
 bool canStageExtraFrame(const char*) { return LittleFS.totalBytes() >= LittleFS.usedBytes() + 960016 + 65536; }
 static std::string blitted;
+static std::string invalidPath;
 
-bool blitFrame(const char* path,Inkplate&) { blitted=path;return files.count(path); }
+bool blitFrame(const char* path,Inkplate&) { blitted=path;return files.count(path) && invalidPath != path; }
 static ReadoutRect lastReadout{};
 static time_t readoutTime=0;
 static int readoutPct=0;
@@ -191,6 +193,25 @@ static void displayed_missing_screen_downloads_before_spares() {
     assert(downloadPaths.back()=="/spare1.vnf");
 }
 
+static void invalid_cached_frame_falls_back_and_redownloads() {
+    wake(0);
+    fakeReset=ESP_RST_DEEPSLEEP;
+    invalidPath="/weather.vnf";
+    auto state = storedState(); state.drawn.any = false;
+    memcpy(preferences["state13"].data(), &state, sizeof state);
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(blitted=="/art.vnf" && waiting==0);
+    assert(!storedState().weather.id[0]);
+    invalidPath.clear(); downloadPaths.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(std::find(downloadPaths.begin(), downloadPaths.end(), "/weather.vnf") != downloadPaths.end());
+}
+static void zlib_frame_not_started_without_inflate_reserve() {
+    expectedHashes = {{weather.url, std::string(64, 'a'), weather.id, true, 100}};
+    wifiDelay=100000;
+    wake(0);
+    assert(std::find(downloadPaths.begin(), downloadPaths.end(), "/weather.vnf") == downloadPaths.end());
+}
 static void first_frame_uses_remaining_budget() {
     wifiDelay=20000;
     frameDelay=45000;
@@ -255,6 +276,8 @@ int main(int argc, char** argv) {
     if (argc>1) {
         const std::pair<const char*, void (*)()> cases[]{
             {"weather_fetched_first_when_due", weather_fetched_first_when_due},
+            {"invalid_cached_frame_falls_back_and_redownloads", invalid_cached_frame_falls_back_and_redownloads},
+            {"zlib_frame_not_started_without_inflate_reserve", zlib_frame_not_started_without_inflate_reserve},
             {"first_frame_uses_remaining_budget", first_frame_uses_remaining_budget},
             {"later_frames_get_leftover_budget", later_frames_get_leftover_budget},
             {"sd_not_probed_when_nothing_due", sd_not_probed_when_nothing_due},

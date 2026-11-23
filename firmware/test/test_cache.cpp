@@ -10,6 +10,7 @@
 #include <esp_heap_caps.h>
 #include <cassert>
 #include <iostream>
+#include <chrono>
 #include <map>
 #include <zlib.h>
 #include "../lcd43b/src/miniz/ventanal_tinfl.h"
@@ -140,7 +141,10 @@ void zlib_frame_downloads_inflates_and_verifies() {
     const std::string url = std::string(installation.host) + "/frames/weather-z.vnz";
     const auto before = frameBytesRead;
     Serial.output.clear();
+    const auto started = std::chrono::steady_clock::now();
     assert(fetchFrame(url.c_str(), cachePath));
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
+    std::cout << "host zlib transfer inflate and verification ms=" << elapsed << " bytes=" << decoded.size() << "\n";
     assert(files.at(cachePath) == decoded && noZlibLeftovers());
     // Wire bytes are what travel, what budgets count and what the log reports.
     assert(frameBytesRead - before == wire.size() && wire.size() < 60000);
@@ -155,6 +159,16 @@ void zlib_frame_downloads_inflates_and_verifies() {
               << " weather wire=" << wire.size() << "\n";
     fakeGetResponse = nullptr;
     expectedHashes.clear();
+}
+
+void zlib_stored_file_verified_before_rename() {
+    const auto old = files.at(cachePath);
+    const auto decoded = panelFrame(1000, 22);
+    const auto wire = deflated(decoded);
+    serveZlib("/frames/truncated.vnz", decoded, wire);
+    truncateOnClose = "/weather.vnf.tmp";
+    assert(!fetchFrame((std::string(installation.host) + "/frames/truncated.vnz").c_str(), cachePath));
+    assert(files.at(cachePath) == old && !files.count("/weather.vnf.tmp"));
 }
 
 void corrupt_zlib_frame_fails_closed() {
@@ -227,6 +241,12 @@ void resume_zlib_frame_across_wakes() {
     files[wireStage] = wire;
     assert(sweepFramePartials(slots) == (1u << 1));
     assert(files.at(cachePath) == decoded && noZlibLeftovers());
+    // Recovery must verify bytes after the output file has closed too.
+    files[cachePath] = good;
+    files[wireStage] = wire;
+    truncateOnClose = "/weather.vnf.tmp";
+    assert(!sweepFramePartials(slots));
+    assert(files.at(cachePath) == good && noZlibLeftovers());
     // A committed wire that does not decode to the signed frame is dropped.
     files[cachePath] = good;
     files[wireStage] = deflated(panelFrame(1000, 7));
@@ -411,6 +431,11 @@ void epaper_sd_commit_and_fallback() {
     stopBefore = 0;
     assert(fetchFrame(url.c_str(), cachePath));
     assert(offsets.front() == chunkSize && files.at(cachePath) == frame);
+    const auto old = files.at(cachePath);
+    prepareRanges();
+    truncateOnClose = "/weather.vnf.tmp";
+    assert(!fetchFrame(url.c_str(), cachePath));
+    assert(files.at(cachePath) == old && !files.count("/weather.vnf.tmp"));
     assert(!sd.files.count(partialPath) && !files.count("/weather.vnf.tmp"));
 
     stopBefore = chunkSize;
@@ -504,6 +529,7 @@ int main() {
     epaper_sd_commit_and_fallback();
     weather_completes_in_two_wakes_at_256_kbit();
     zlib_frame_downloads_inflates_and_verifies();
+    zlib_stored_file_verified_before_rename();
     corrupt_zlib_frame_fails_closed();
     resume_zlib_frame_across_wakes();
     raw_frame_from_old_server_still_works();

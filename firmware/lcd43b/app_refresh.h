@@ -384,15 +384,16 @@ void reconcileUpdate(lcd::UpdateSource source, const lcd::UpdateOffer& current) 
 
 void sweepDownloads(uint32_t now, const lcd::AcceptedUpdate& accepted,
                     const lcd::DeviceManifest* manifest, const char* displayedArtId,
-                    lcd::Watchdog& watchdog) {
+                    lcd::Watchdog& watchdog, bool boot = false) {
     if (now < resume_detail::kValidEpoch) return;
-    const bool daily = downloadSweepDay.due(now);
+    const bool daily = boot || downloadSweepDay.due(now);
     const bool standalone = lcd::standalone(lcd::installation);
     const bool sweepFrames = manifest && frameSweepDay.due(now);
     if (!daily && !sweepFrames) return;
     lcd::DownloadSweep sweep;
+    sweep.boot = boot;
     if (daily) {
-        if (standalone)
+        if (standalone && !boot)
             sweep.art = lcd::wantedArtTargets(now, displayedArtId);
         if (accepted.source != lcd::UpdateSource::None) {
             sweep.otaTarget = otaStageTarget(accepted.image);

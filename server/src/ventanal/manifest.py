@@ -68,7 +68,9 @@ def select_lcd_encoding(manifest: dict, report: dict) -> None:
 EPAPER_ZLIB_FIRMWARE = (1, 1, 0)
 
 
-def select_epaper_encoding(manifest: dict, report: dict) -> None:
+_missing_epaper_warnings = set()
+
+def select_epaper_encoding(manifest: dict, report: dict, root=None) -> None:
     """Offer zlib e-paper frames only to firmware that can inflate them.
 
     Older boards (no ``fw``, or one before 1.1.0) get exactly the legacy
@@ -83,6 +85,18 @@ def select_epaper_encoding(manifest: dict, report: dict) -> None:
     for entry in _entries(manifest):
         wire = entry.pop("zlib", None)
         if capable and isinstance(wire, dict):
+            if root is not None:
+                try:
+                    path = root / wire['url'].lstrip('/')
+                    available = path.resolve() == path and path.stat().st_size == wire['size']
+                except (OSError, KeyError, TypeError, ValueError):
+                    available = False
+                if not available:
+                    frame_id = entry.get('id')
+                    if frame_id not in _missing_epaper_warnings:
+                        _missing_epaper_warnings.add(frame_id)
+                        logging.getLogger(__name__).warning("E-paper zlib unavailable for frame %s; serving raw", frame_id)
+                    continue
             entry.update(wire)
 
 

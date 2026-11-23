@@ -36,6 +36,7 @@ SET_LOOP_TASK_STACK_SIZE(16384);
 #include <new>
 #include <type_traits>
 #include "cache.h"
+#include "security.h"
 #include "overlay.h"
 
 // 1: full application with 60-second sleeps. 2: additionally exercise the
@@ -1024,7 +1025,11 @@ void setup() {
                 }
                 const String url=String(installation.host)+incoming->url;
                 const auto remaining=frameWakeRemainingMs(millis()-wakeStarted);
-                if(!remaining) {
+                // Reserve time for flash inflate and stored-file validation before the cutoff.
+                constexpr uint32_t inflateReserveMs=15000;
+                const auto* expected=expectedFrame(url.c_str());
+                const uint32_t reserve=expected && expected->zlib ? inflateReserveMs : 0;
+                if(remaining<=reserve) {
                     if(persisted && spare) {
                         const uint8_t deferred=slot;
                         prefs.putBytes("dl-next",&deferred,sizeof deferred);
@@ -1032,7 +1037,8 @@ void setup() {
                     Serial.printf("download deferred slot=%u wake-budget\n",slot);
                     break;
                 }
-                const auto budget=firstFrame ? remaining : std::min(remaining,frameBudgetMs);
+                const auto transferRemaining=remaining-reserve;
+                const auto budget=firstFrame ? transferRemaining : std::min(transferRemaining,frameBudgetMs);
                 firstFrame=false;
                 if(fetchFrame(url.c_str(),path,budget)) {
                     acceptFrame(slot);
@@ -1110,9 +1116,29 @@ void setup() {
     const bool redraw=downloadFailure!=downloadFailureDrawn || longPress || (static_cast<unsigned>(shown.active)>=2 ? wake!=WakeCause::Timer || !shown.drawn.any || strcmp(selectedDrawn(shown),selected.id)!=0 : needsRedraw(wake,shown.active,shown.drawn,selectedArt(shown).id,shown.weather.id,pct));
     start=millis();
     if(!cached || redraw || otaPendingBoot) {
-        const bool ready=cached && blitFrame(path,display);
+        bool ready=cached && blitFrame(path,display);
+        if (cached && !ready) {
+            const auto invalidate = [&](Screen screen) {
+                switch (screen) {
+                    case Screen::Art: if (state.owner.overrideArt.id[0]) state.owner.overrideArt = {}; else state.art.id[0] = 0; break;
+                    case Screen::Weather: state.weather.id[0] = 0; break;
+                    case Screen::Solar: state.solar.id[0] = 0; break;
+                    case Screen::Extra0: state.extraScreens[0].id[0] = 0; break;
+                    case Screen::Extra1: state.extraScreens[1].id[0] = 0; break;
+                    default: break;
+                }
+            };
+            invalidate(shown.active);
+            for (const Screen candidate : fallbackScreens) {
+                if (candidate == shown.active || !screenCached(state,candidate)) continue;
+                shown = state; shown.active = candidate;
+                if (blitFrame(selectedPath(shown),display)) { ready = true; break; }
+                invalidate(candidate);
+            }
+        }
         Serial.printf("blit ms=%lu valid=%d\n",static_cast<unsigned long>(millis()-start),ready);
         if(ready) {
+            const ScreenInfo& selected=selectedScreen(shown);
             const time_t drawnAt=time(nullptr);
             if(shown.active!=state.active)
                 Serial.printf("draw fallback=%s scheduled=%s missing\n",screenName(shown),screenName(state));

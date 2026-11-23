@@ -20,6 +20,7 @@ private:
 };
 
 struct DownloadSweep {
+    bool boot = false;
     std::vector<std::string> art;
     std::string otaTarget, otaValidator;
     std::function<bool(FsStore&, const char*)> otaCommittedMatches;
@@ -47,7 +48,7 @@ struct DownloadSweep {
         }
         store.sweep(now, [&](const char* target, const PartialMeta& meta) {
             if (const auto sun = sunDay(target)) return sun == day;
-            if (isArt(target)) return artLive(target);
+            if (isArt(target)) return boot || artLive(target);
             if (isOta(target)) return otaTarget == target && otaValidator == meta.validator;
             return frameLive(target, meta);
         }, managed);
@@ -58,7 +59,7 @@ struct DownloadSweep {
             if (frameCommittedWanted && !std::strncmp(target, "frame-", 6) && !frameCommittedWanted(store, target)) {
                 store.removeCommitted(target);
             } else if (daily && ((sun && sun != day && sun != previous) ||
-                (isArt(target) && !artLive(target)) ||
+                (isArt(target) && (boot ? (entry.modified >= resume_detail::kValidEpoch && entry.modified <= now && now - entry.modified >= 7 * 86400) : !artLive(target))) ||
                 (isOta(target) && (entry.target != otaTarget ||
                     (entry.modified >= resume_detail::kValidEpoch && entry.modified <= now &&
                         now - entry.modified >= 7 * 86400) ||

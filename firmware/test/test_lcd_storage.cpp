@@ -26,6 +26,23 @@ struct Fixture {
     bool exists(const char* target) { return fs.exists((std::string("/partials/") + target).c_str()); }
 };
 
+void boot_sweep_keeps_inflight_art() {
+    Fixture f;
+    f.seed("art-met-1", false); f.seed("art-met-2", true);
+    f.sweep.boot = true;
+    f.sweep.run(f.store, now);
+    assert(f.exists("art-met-1.part") && f.exists("art-met-2"));
+    f.fs.modified["/partials/art-met-2"] = now;
+    f.sweep.run(f.store, now + 8 * 86400);
+    assert(!f.exists("art-met-1.part") && !f.exists("art-met-2"));
+}
+void move_committed_replaces_existing_destination() {
+    Fixture f;
+    f.seed("source", true); f.seed("dest", true);
+    f.fs.replaceOnRename = false;
+    assert(f.store.moveCommitted("source", "dest"));
+    assert(f.exists("dest") && !f.exists("source"));
+}
 void daily_sweep_removes_old_day_sun() {
     Fixture f;
     f.seed("sdo-1", false);
@@ -144,6 +161,8 @@ void partial_store_append_enters_scan_scope() {
 }
 
 int main() {
+    boot_sweep_keeps_inflight_art();
+    move_committed_replaces_existing_destination();
     daily_sweep_removes_old_day_sun();
     sweep_keeps_newest_sun_and_today();
     sweep_removes_unreferenced_art();

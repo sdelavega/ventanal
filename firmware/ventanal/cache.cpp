@@ -8,6 +8,10 @@
 #include "../common/resume/fs_store.h"
 #include "../common/resume/storage.h"
 #include <ctime>
+#ifdef VENTANAL_HOST_TEST
+#include <chrono>
+#include <cstdio>
+#endif
 #include <esp_heap_caps.h>
 #include <memory>
 #include <string>
@@ -82,7 +86,7 @@ bool validate(File& f, const char* id = "", FsStore* store = nullptr, const char
 }
 // SD stages verified bytes. Copy them into LittleFS so replacement remains
 // a single rename on the same filesystem as the display cache.
-bool copyToCache(FsStore& store, File& staged, const char* path, uint8_t* block) {
+bool copyToCache(FsStore& store, File& staged, const char* path, uint8_t* block, const char* sha, const char* id) {
     if (!staged.seek(0)) return false;
     const auto temporary = std::string(path) + ".tmp";
     File out = LittleFS.open(temporary.c_str(), "w");
@@ -93,6 +97,7 @@ bool copyToCache(FsStore& store, File& staged, const char* path, uint8_t* block)
         remaining -= count;
     }
     if (out) { out.flush(); out.close(); }
+    if (ok) { File check = LittleFS.open(temporary.c_str(), "r"); ok = validate(check, id, nullptr, sha); check.close(); }
     ok = ok && LittleFS.rename(temporary.c_str(), path);
     if (!ok) LittleFS.remove(temporary.c_str());
     return ok;
@@ -166,22 +171,31 @@ const char* inflateFrame(FsStore& store, const char* target, uint32_t wireSize, 
     if (!inflater) { wire.close(); return "memory"; }
     const auto temporary = std::string(path) + ".tmp";
     File out = LittleFS.open(temporary.c_str(), "w");
+    const uint32_t inflateStarted = millis();
+#ifdef VENTANAL_HOST_TEST
+    const auto hostInflateStarted = std::chrono::steady_clock::now();
+#endif
     const char* failure = out ? streamInflate(store, wire, wireSize, out, *inflater, dictionary, sha)
                               : "storage";
+#ifdef VENTANAL_HOST_TEST
+    std::printf("host inflate ms=%lld bytes=%u\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hostInflateStarted).count()), unsigned(frameSize));
+#endif
     wire.close();
     if (out) { out.flush(); out.close(); }
+    Serial.printf("inflate ms=%lu bytes=%u\n", static_cast<unsigned long>(millis() - inflateStarted), unsigned(frameSize));
+    if (!failure) { File check = LittleFS.open(temporary.c_str(), "r"); if (!validate(check, "", nullptr, sha)) failure = "stored-frame"; check.close(); }
     if (!failure && !LittleFS.rename(temporary.c_str(), path)) failure = "storage";
     if (failure) LittleFS.remove(temporary.c_str());
     return failure;
 }
 
 bool promoteFrame(FsStore& store, bool flash, File& staged, const char* target,
-                  const char* path, uint8_t* block) {
+                  const char* path, uint8_t* block, const char* sha, const char* id) {
     if (flash) {
         staged.close();
         return store.renameCommitted(target, path);
     }
-    const bool copied = copyToCache(store, staged, path, block);
+    const bool copied = copyToCache(store, staged, path, block, sha, id);
     staged.close();
     if (copied) store.removeCommitted(target);
     return copied;
@@ -237,7 +251,7 @@ bool recoverFrame(FsStore& store, bool flash, const char* path, const ScreenInfo
         block = allocateFrameChunk();
         if (!block) return false;
     }
-    if (!promoteFrame(store, flash, staged, target.c_str(), path, block.get())) return false;
+    if (!promoteFrame(store, flash, staged, target.c_str(), path, block.get(), expected->sha.c_str(), "")) return false;
     if (securityConfigured()) Serial.println("security frame-hash=verified");
     return true;
 }
@@ -357,7 +371,7 @@ bool fetchFrame(const char* url, const char* path, uint32_t budgetMs) {
 
     auto staged = store.openCommitted(target.c_str());
     const bool valid = validate(staged, legacyId, &store);
-    const bool committed = valid && promoteFrame(store, flash, staged, target.c_str(), path, block.get());
+    const bool committed = valid && promoteFrame(store, flash, staged, target.c_str(), path, block.get(), sha, legacyId);
     if (!valid) staged.close();
     if (!committed) store.removeCommitted(target.c_str());
     if (&partialStore() != &store && !committed) return result(FetchOutcome::NoProgress, "storage");

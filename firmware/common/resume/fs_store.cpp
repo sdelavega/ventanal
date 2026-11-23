@@ -283,7 +283,12 @@ bool FsStore::renameCommitted(const char* target, const char* destination) {
 
 bool FsStore::moveCommitted(const char* from, const char* to) {
     const auto a = path(from), b = path(to);
-    return !faulted_ && !a.empty() && !b.empty() && (rename(a, b) || fail());
+    if (faulted_ || a.empty() || b.empty()) return false;
+    errno = 0;
+    if (rename(a, b)) return true;
+    if (errno != EEXIST) return fail();
+    if (!remove(b)) return false;
+    return rename(a, b) || fail();
 }
 
 bool FsStore::seek(fs::File& file, size_t position) {

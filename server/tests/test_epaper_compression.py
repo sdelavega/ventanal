@@ -125,6 +125,29 @@ def test_signed_epaper_zlib_manifest_hashes_decoded_frame(tmp_path):
     wire = out / entry['url'].lstrip('/')
     wire.write_bytes(wire.read_bytes() + b'\0')
     document = read_manifest(out)
-    select_epaper_encoding(document, {'fw': '1.1.0', 'board': 'inkplate13spectra'})
-    with pytest.raises(ValueError):
-        security.manifest(document, out.resolve())
+    select_epaper_encoding(document, {'fw': '1.1.0', 'board': 'inkplate13spectra'}, out.resolve())
+    assert security.manifest(document, out.resolve())['screens']['weather']['url'].endswith('.vnf')
+
+
+@pytest.mark.parametrize("missing", [True, False])
+def test_missing_vnz_falls_back_to_raw_entry(published, tmp_path, missing):
+    srv, data, original = published
+    wire = tmp_path / original['zlib']['url'].lstrip('/')
+    if missing:
+        wire.unlink()
+    else:
+        wire.write_bytes(b'bad')
+    entry = manifest(srv, '?fw=1.1.0')
+    assert entry['url'] == original['url'] and 'encoding' not in entry
+    assert get(srv, entry['url'])[2] == data
+
+
+def test_missing_vnz_warns_once_per_frame(tmp_path, caplog):
+    document = {'screens': {'weather': {'id': 'warning-test-frame', 'url': '/frames/raw.vnf',
+                                        'zlib': {'url': '/frames/missing.vnz', 'size': 100}}}}
+    import copy
+    for _ in range(2):
+        selected = copy.deepcopy(document)
+        select_epaper_encoding(selected, {'fw': '1.1.0'}, tmp_path.resolve())
+        assert selected['screens']['weather']['url'].endswith('.vnf')
+    assert sum('warning-test-frame' in record.message for record in caplog.records) == 1

@@ -244,7 +244,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                         manifest.pop('battery', None)
                         if full_mv is not None: manifest['battery'] = {'full_mv': full_mv}
                     omit_board_credits(manifest)
-                    select_epaper_encoding(manifest, report)
+                    select_epaper_encoding(manifest, report, root)
                     sign = None
                     if self.proof_key is not None:
                         sign = lambda document: ui.security.manifest(document, root, key=self.proof_key)

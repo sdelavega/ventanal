@@ -251,7 +251,7 @@ void setup() {
     }
     sntp_set_time_sync_notification_cb(onNtpSync);
     const time_t rtcEpoch = seedRtc(); // after GT911 reset on the shared bus
-    sweepDownloads(ventanal::trustedEpoch(rtcEpoch), acceptedUpdate, nullptr, "", bootWatchdog);
+    sweepDownloads(ventanal::trustedEpoch(rtcEpoch), acceptedUpdate, nullptr, "", bootWatchdog, true);
     loadResidentCache();
     WiFi.persistent(false);
     refreshWatchdog.arm();
