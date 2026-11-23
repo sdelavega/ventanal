@@ -444,3 +444,7 @@ test-lcd-round4-integration: test-lcd-round4 test-lcd-storage test-resume-store 
 	./build/test_lcd43b_sync
 	./build/test_ota
 	./build/test_lcd43b_settings_page
+
+.PHONY: test-secure-transport
+test-secure-transport: build/test_secure_transport
+	./build/test_secure_transport

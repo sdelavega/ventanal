@@ -46,10 +46,32 @@ inline bool nextCounter(uint64_t& value) {
     ok=p.putBytes("sec-counter",&value,sizeof value)==sizeof value;
     p.end(); return ok;
 }
+// Count response bytes consumed by HTTPClient as well as body reads. In
+// particular, GET() can fail after consuming an incomplete response header.
 #ifdef VENTANAL_HOST_TEST
-using TransportClient=WiFiClient;
+using SecureClientBase = WiFiClient;
 #else
-struct TransportClient { WiFiClient plain; WiFiClientSecure secure; };
+using SecureClientBase = WiFiClientSecure;
+#endif
+struct CountingSecureClient : SecureClientBase {
+    size_t received = 0;
+    int read() override {
+        const int value = SecureClientBase::read();
+        if (value >= 0) ++received;
+        return value;
+    }
+    int read(uint8_t* buffer, size_t size) override {
+        const int count = SecureClientBase::read(buffer, size);
+        if (count > 0) received += count;
+        return count;
+    }
+};
+#ifdef VENTANAL_HOST_TEST
+using TransportClient = CountingSecureClient;
+inline CountingSecureClient& secureTransportClient(TransportClient& client) { return client; }
+#else
+struct TransportClient { WiFiClient plain; CountingSecureClient secure; };
+inline CountingSecureClient& secureTransportClient(TransportClient& client) { return client.secure; }
 #endif
 // Only one Arduino task performs requests. Keep its verified TLS connection
 // across manifest/main/weather and post-draw spare refills within this wake.

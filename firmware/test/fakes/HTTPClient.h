@@ -34,6 +34,8 @@ inline bool holdConnection = false;     // connected() stays true (no hang-up)
 // lcd43b connection-close framing (defaults keep every other test unchanged):
 inline bool reuse = true;               // keep-alive, the installed core default
 inline std::string lastConnectionHeader;   // Connection: header the request carries
+inline bool socketTestMode = false, socketOpen = false;
+inline size_t fakeHeaderBytes = 0;
 inline bool persistentServer = false;   // HTTP/1.1 server: keeps the socket open
                                           // after the body ONLY under keep-alive
 class WiFiClient {
@@ -52,8 +54,10 @@ public:
         return std::min(size_t(1460), remaining);
     }
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
-    int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; frameBytesRead+=n; return n; }
-    bool connected() { if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
+    virtual int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; frameBytesRead+=n; return n; }
+    virtual int read() { uint8_t byte; return read(&byte, 1) == 1 ? byte : -1; }
+    void stop() { socketOpen = false; }
+    bool connected() { if (socketTestMode) return socketOpen; if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {
     WiFiClient* client = nullptr;
@@ -90,10 +94,16 @@ public:
         lastConnectionHeader = reuse ? "keep-alive" : "close";
         lastHeaders["Connection"] = lastConnectionHeader;
         fakeResponseHeaders.clear();
-        return fakeGetResponse ? fakeGetResponse() : status;
+        const int result = fakeGetResponse ? fakeGetResponse() : status;
+        if (socketTestMode) {
+            socketOpen = true;
+            for (size_t i = 0; i < fakeHeaderBytes; ++i) client->read();
+            client->resetResponse();
+        }
+        return result;
     }
     int getSize() { return sizeFromResponse ? int(response.size()) : advertisedSize; }
     WiFiClient* getStreamPtr() { return client; }
     bool connected() { return client->connected(); }
-    void end() {}
+    void end() { if (socketTestMode && !reuse) socketOpen = false; }
 };

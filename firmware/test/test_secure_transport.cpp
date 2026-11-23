@@ -40,6 +40,51 @@ static void framed_transfer_finishes_without_close() {
     }
 }
 
+static int retryCalls;
+static std::vector<std::string> retryCounters, retryProofs;
+static std::vector<bool> retrySockets;
+static bool failBoth;
+static int retryResponse() {
+    ++retryCalls;
+    retrySockets.push_back(socketOpen);
+    retryCounters.push_back(lastHeaders.at("X-Ventanal-Counter"));
+    retryProofs.push_back(lastHeaders.at("Authorization"));
+    return retryCalls == 1 || failBoth ? HTTPC_ERROR_CONNECTION_LOST : 200;
+}
+static bool retryRequest(bool reused, size_t headerBytes = 0, uint32_t budget = 60000) {
+    socketTestMode = true; socketOpen = reused; fakeHeaderBytes = headerBytes;
+    retryCalls = 0; retryCounters.clear(); retryProofs.clear(); retrySockets.clear();
+    response = {1, 2, 3}; responseBody.clear(); advertisedSize = 3;
+    fakeGetResponse = retryResponse;
+    const ResumeSource source{"https://test:8766/frames/retry", "pinned", "", 3, false};
+    HostRangeTransport transport(source.url, millis(), budget, 6000, HostRangeTransport::Asset::Frame);
+    const bool result = transport.get(source, 0, kWholeGet, "", [](const RangeResponse&) { return true; },
+                                      [](const uint8_t*, size_t) { return true; });
+    fakeGetResponse = nullptr; fakeHeaderBytes = 0; socketTestMode = false; socketOpen = false;
+    return result;
+}
+static void reused_connection_failure_retries_once_fresh() {
+    const auto log = Serial.output.size();
+    assert(retryRequest(true));
+    assert(retryCalls == 2 && retrySockets[0] && !retrySockets[1]);
+    assert(Serial.output.find("transport retry=fresh-connection reason=", log) != std::string::npos);
+    assert(!retryRequest(true, 0, 9999) && retryCalls == 1);
+    failBoth = true;
+    assert(!retryRequest(true) && retryCalls == 2);
+    failBoth = false;
+}
+static void fresh_connection_failure_not_retried() {
+    assert(!retryRequest(false) && retryCalls == 1);
+}
+static void retry_uses_new_counter() {
+    assert(retryRequest(true) && retryCalls == 2);
+    assert(std::stoull(retryCounters[1]) > std::stoull(retryCounters[0]));
+    assert(retryProofs[0] != retryProofs[1]);
+}
+static void no_retry_after_response_bytes() {
+    assert(!retryRequest(true, 1) && retryCalls == 1);
+}
+
 int main() {
     assert(securityConfigured());
     // Independent Python UTF-8 canonical-JSON/HMAC vector.
@@ -165,5 +210,9 @@ int main() {
     assert(manifestExtras.order[3]==Screen::Extra0 && !strcmp(manifestExtras.names[0],"extra-test"));
     assert(!strcmp(manifestExtras.extraScreens[0].id,"8cc1cf86d93ff0d6"));
     framed_transfer_finishes_without_close();
+    reused_connection_failure_retries_once_fresh();
+    fresh_connection_failure_not_retried();
+    retry_uses_new_counter();
+    no_retry_after_response_bytes();
     std::cout << "secure transport: proofs, no HTTP downgrade, signed manifest tamper rejection and last-good frame hashes passed\n";
 }

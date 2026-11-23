@@ -41,33 +41,42 @@ public:
     bool get(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
              const ResponseHeaders& headers, const ChunkSink& sink) override {
         failure_ = nullptr;
-        const auto elapsed = millis() - started_;
-        if (elapsed >= budgetMs_) return false;
+        const bool keepAlive = asset_ == Asset::Frame && securityConfigured();
         TransportClient localClient;
         HTTPClient localHttp;
-        const bool keepAlive = asset_ == Asset::Frame && securityConfigured();
         auto& client = keepAlive ? requestClient(localClient) : localClient;
         auto& http = keepAlive ? requestHttp(localHttp) : localHttp;
-        configureHttp(http);
-        http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
-        http.setConnectTimeout(std::min(uint32_t(budgetMs_ - elapsed), uint32_t(5000)));
-        http.setTimeout(std::min(uint32_t(budgetMs_ - elapsed), idleMs_));
-        if (!beginTransport(http, client, url_)) return false;
-        http.setReuse(keepAlive);
-        const char* names[] = {"Content-Range", "ETag"};
-        http.collectHeaders(names, 2);
-        if (end != kWholeGet) {
-            const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
-            http.addHeader("Range", range.c_str());
-            if (*ifRange) http.addHeader("If-Range", ifRange);
+        for (unsigned attempt = 0; attempt < 2; ++attempt) {
+            const auto elapsed = millis() - started_;
+            if (elapsed >= budgetMs_) return false;
+            configureHttp(http);
+            http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
+            http.setConnectTimeout(std::min(uint32_t(budgetMs_ - elapsed), uint32_t(5000)));
+            http.setTimeout(std::min(uint32_t(budgetMs_ - elapsed), idleMs_));
+            if (!beginTransport(http, client, url_)) return false;
+            auto& secure = secureTransportClient(client);
+            const bool reused = keepAlive && secure.connected();
+            secure.received = 0;
+            http.setReuse(keepAlive);
+            const char* names[] = {"Content-Range", "ETag"};
+            http.collectHeaders(names, 2);
+            if (end != kWholeGet) {
+                const auto range = "bytes=" + std::to_string(start) + "-" + std::to_string(end);
+                http.addHeader("Range", range.c_str());
+                if (*ifRange) http.addHeader("If-Range", ifRange);
+            }
+            bool framed = false;
+            const bool complete = receive(http, source, headers, sink, framed);
+            const bool retry = attempt == 0 && reused && status_ < 0 && secure.received == 0 &&
+                millis() - started_ < budgetMs_ && budgetMs_ - (millis() - started_) >= 10000; // TCP connect and TLS handshake limits
+            // Never reuse a connection with unread or incomplete response bytes.
+            http.setReuse(keepAlive && complete && framed && (status_ == 200 || status_ == 206));
+            http.end();
+            if (!retry) return complete;
+            secure.stop();
+            logTransferOutcome("transport retry=fresh-connection reason=status-%d", -status_);
         }
-        bool framed = false;
-        const bool complete = receive(http, source, headers, sink, framed);
-        // Closing after a timeout or rejected header prevents unread bytes
-        // from carrying over to the next authenticated request.
-        http.setReuse(keepAlive && complete && framed && (status_ == 200 || status_ == 206));
-        http.end();
-        return complete;
+        return false;
     }
 
     const char* failureReason() const override { return failure_; }
