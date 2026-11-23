@@ -151,3 +151,43 @@ def test_missing_vnz_warns_once_per_frame(tmp_path, caplog):
         select_epaper_encoding(selected, {'fw': '1.1.0'}, tmp_path.resolve())
         assert selected['screens']['weather']['url'].endswith('.vnf')
     assert sum('warning-test-frame' in record.message for record in caplog.records) == 1
+
+
+def test_symlinked_output_root_keeps_zlib(tmp_path):
+    out = tmp_path / 'actual'
+    publish(out, 'weather', frame_bytes(), Readout(0, 0, 1, 1, 'shade'), None, Image.new('RGB', (1, 1)), NOW)
+    link = tmp_path / 'link'
+    link.symlink_to(out, target_is_directory=True)
+    document = read_manifest(link)
+    select_epaper_encoding(document, {'fw': '1.1.0'}, link)
+    assert document['screens']['weather']['encoding'] == 'zlib'
+
+
+def test_missing_warnings_are_bounded_and_thread_safe(tmp_path, caplog):
+    import copy
+    from concurrent.futures import ThreadPoolExecutor
+    from ventanal import manifest as module
+    document = {'screens': {'weather': {'id': 'concurrent-warning', 'url': '/frames/raw.vnf',
+                'zlib': {'url': '/frames/concurrent-missing.vnz', 'size': 100}}}}
+    def select(_):
+        select_epaper_encoding(copy.deepcopy(document), {'fw': '1.1.0'}, tmp_path)
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        list(pool.map(select, range(100)))
+    assert sum('concurrent-warning' in r.message for r in caplog.records) == 1
+    for i in range(1100):
+        document['screens']['weather']['id'] = str(i)
+        document['screens']['weather']['zlib']['url'] = f'/frames/missing-{i}.vnz'
+        select(0)
+    assert len(module._missing_epaper_warnings) <= 1024
+
+
+def test_zlib_symlink_outside_output_root_falls_back(tmp_path):
+    root = tmp_path / 'out'
+    root.mkdir()
+    external = tmp_path / 'external.vnz'
+    external.write_bytes(b'wire')
+    (root / 'wire.vnz').symlink_to(external)
+    document = {'screens': {'weather': {'id': 'escape-test', 'url': '/raw.vnf',
+                'zlib': {'url': '/wire.vnz', 'size': 4}}}}
+    select_epaper_encoding(document, {'fw': '1.1.0'}, root)
+    assert document['screens']['weather']['url'] == '/raw.vnf'

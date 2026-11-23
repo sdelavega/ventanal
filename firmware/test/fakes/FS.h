@@ -12,6 +12,7 @@
 #include <vector>
 
 inline bool failRename = false;
+inline std::string failOpenWrite;
 inline std::string truncateOnClose;
 inline bool failWrite = false;
 inline size_t writeLimit = SIZE_MAX;
@@ -95,7 +96,7 @@ public:
     bool exists(const char* path) { return bool(open(path)); }
     bool exists(const String& path) { return exists(path.c_str()); }
     File open(const char* path, const char* mode = "r") {
-        if (offline) { errno = EIO; return {}; }
+        if (offline || (*mode == 'w' && failOpenWrite == path)) { errno = EIO; return {}; }
         if (directories.count(path)) {
             File dir(files, path, true);
             dir.timestamps = &modified;

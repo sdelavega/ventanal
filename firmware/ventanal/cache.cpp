@@ -178,11 +178,11 @@ const char* inflateFrame(FsStore& store, const char* target, uint32_t wireSize, 
     const char* failure = out ? streamInflate(store, wire, wireSize, out, *inflater, dictionary, sha)
                               : "storage";
 #ifdef VENTANAL_HOST_TEST
-    std::printf("host inflate ms=%lld bytes=%u\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hostInflateStarted).count()), unsigned(frameSize));
+    if (out) std::printf("host inflate ms=%lld bytes=%u\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hostInflateStarted).count()), unsigned(frameSize));
 #endif
+    if (out) Serial.printf("inflate ms=%lu bytes=%u\n", static_cast<unsigned long>(millis() - inflateStarted), unsigned(frameSize));
     wire.close();
     if (out) { out.flush(); out.close(); }
-    Serial.printf("inflate ms=%lu bytes=%u\n", static_cast<unsigned long>(millis() - inflateStarted), unsigned(frameSize));
     if (!failure) { File check = LittleFS.open(temporary.c_str(), "r"); if (!validate(check, "", nullptr, sha)) failure = "stored-frame"; check.close(); }
     if (!failure && !LittleFS.rename(temporary.c_str(), path)) failure = "storage";
     if (failure) LittleFS.remove(temporary.c_str());

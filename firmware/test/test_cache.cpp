@@ -161,6 +161,17 @@ void zlib_frame_downloads_inflates_and_verifies() {
     expectedHashes.clear();
 }
 
+void no_inflate_log_when_output_open_fails() {
+    const auto decoded = panelFrame(1000, 23);
+    const auto wire = deflated(decoded);
+    serveZlib("/frames/open-fail.vnz", decoded, wire);
+    failOpenWrite = "/weather.vnf.tmp";
+    Serial.output.clear();
+    assert(!fetchFrame((std::string(installation.host) + "/frames/open-fail.vnz").c_str(), cachePath));
+    assert(Serial.output.find("inflate ms=") == std::string::npos);
+    failOpenWrite.clear();
+}
+
 void zlib_stored_file_verified_before_rename() {
     const auto old = files.at(cachePath);
     const auto decoded = panelFrame(1000, 22);
@@ -529,6 +540,7 @@ int main() {
     epaper_sd_commit_and_fallback();
     weather_completes_in_two_wakes_at_256_kbit();
     zlib_frame_downloads_inflates_and_verifies();
+    no_inflate_log_when_output_open_fails();
     zlib_stored_file_verified_before_rename();
     corrupt_zlib_frame_fails_closed();
     resume_zlib_frame_across_wakes();

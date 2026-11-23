@@ -453,3 +453,5 @@ test-secure-transport: build/test_secure_transport
 test-review6-wake: build/test_wake
 	./build/test_wake invalid_cached_frame_falls_back_and_redownloads
 	./build/test_wake zlib_frame_not_started_without_inflate_reserve
+	./build/test_wake zlib_frame_gets_remaining_less_reserve
+	./build/test_wake failed_scheduled_screen_is_not_retried

@@ -25,6 +25,7 @@ static uint32_t wifiDelay=0, timeDelay=0, manifestDelay=0, frameDelay=0;
 static std::vector<std::string> downloadPaths;
 static std::string failPath; // A frame that never completes (e.g. art on a weak link).
 static std::vector<uint32_t> downloadBudgets;
+static std::vector<uint32_t> downloadTimes;
 static unsigned sdProbes = 0;
 static bool sdPresent = false, sdSelected = false;
 static bool otaAccepted = false;
@@ -61,6 +62,7 @@ bool fetchFrame(const char*, const char* path, uint32_t budget) {
     ++downloads;
     downloadPaths.push_back(path);
     downloadBudgets.push_back(budget);
+    downloadTimes.push_back(millis());
     delay(std::min(frameDelay, budget));
     if (!frameOK || frameDelay > budget || failPath == path) return false;
     files[path] = {1};
@@ -69,8 +71,10 @@ bool fetchFrame(const char*, const char* path, uint32_t budget) {
 bool canStageExtraFrame(const char*) { return LittleFS.totalBytes() >= LittleFS.usedBytes() + 960016 + 65536; }
 static std::string blitted;
 static std::string invalidPath;
+static std::vector<std::string> blitPaths;
+static std::vector<std::string> invalidPaths;
 
-bool blitFrame(const char* path,Inkplate&) { blitted=path;return files.count(path) && invalidPath != path; }
+bool blitFrame(const char* path,Inkplate&) { blitted=path; blitPaths.push_back(path); return files.count(path) && invalidPath != path && std::find(invalidPaths.begin(), invalidPaths.end(), path)==invalidPaths.end(); }
 static ReadoutRect lastReadout{};
 static time_t readoutTime=0;
 static int readoutPct=0;
@@ -212,6 +216,24 @@ static void zlib_frame_not_started_without_inflate_reserve() {
     wake(0);
     assert(std::find(downloadPaths.begin(), downloadPaths.end(), "/weather.vnf") == downloadPaths.end());
 }
+static void zlib_frame_gets_remaining_less_reserve() {
+    expectedHashes = {{weather.url, std::string(64, 'a'), weather.id, true, 100}};
+    wifiDelay=85000;
+    wake(0);
+    assert(!downloadBudgets.empty() && downloadPaths.front()=="/weather.vnf");
+    // The fake millis() advances one tick between budgeting and the fetch.
+    assert(downloadBudgets.front()==frameWakeRemainingMs(downloadTimes.front()-1)-15000);
+}
+static void failed_scheduled_screen_is_not_retried() {
+    wake(0);
+    fakeReset=ESP_RST_DEEPSLEEP; online=false;
+    auto state=storedState(); state.active=Screen::Art; state.drawn.any=false;
+    state.owner.overrideArt=art; files["/override.vnf"]={1};
+    memcpy(preferences["state13"].data(), &state, sizeof state);
+    invalidPaths={"/override.vnf", "/weather.vnf"}; blitPaths.clear();
+    wake(ESP_SLEEP_WAKEUP_TIMER);
+    assert(std::count(blitPaths.begin(), blitPaths.end(), "/art.vnf")==0);
+}
 static void first_frame_uses_remaining_budget() {
     wifiDelay=20000;
     frameDelay=45000;
@@ -278,6 +300,8 @@ int main(int argc, char** argv) {
             {"weather_fetched_first_when_due", weather_fetched_first_when_due},
             {"invalid_cached_frame_falls_back_and_redownloads", invalid_cached_frame_falls_back_and_redownloads},
             {"zlib_frame_not_started_without_inflate_reserve", zlib_frame_not_started_without_inflate_reserve},
+            {"failed_scheduled_screen_is_not_retried", failed_scheduled_screen_is_not_retried},
+            {"zlib_frame_gets_remaining_less_reserve", zlib_frame_gets_remaining_less_reserve},
             {"first_frame_uses_remaining_budget", first_frame_uses_remaining_budget},
             {"later_frames_get_leftover_budget", later_frames_get_leftover_budget},
             {"sd_not_probed_when_nothing_due", sd_not_probed_when_nothing_due},

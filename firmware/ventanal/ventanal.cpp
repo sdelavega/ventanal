@@ -1128,9 +1128,10 @@ void setup() {
                     default: break;
                 }
             };
-            invalidate(shown.active);
+            const Screen failedScreen = shown.active;
+            invalidate(failedScreen);
             for (const Screen candidate : fallbackScreens) {
-                if (candidate == shown.active || !screenCached(state,candidate)) continue;
+                if (candidate == failedScreen || !screenCached(state,candidate)) continue;
                 shown = state; shown.active = candidate;
                 if (blitFrame(selectedPath(shown),display)) { ready = true; break; }
                 invalidate(candidate);

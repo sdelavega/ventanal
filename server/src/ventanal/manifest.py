@@ -3,6 +3,7 @@
 
 """Publish encoded frames, previews and the firmware's version 1 manifest."""
 
+from collections import OrderedDict
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import logging
@@ -13,6 +14,7 @@ import hashlib
 import zlib
 from pathlib import Path
 from typing import Literal
+from threading import Lock
 
 from PIL import Image
 
@@ -68,7 +70,9 @@ def select_lcd_encoding(manifest: dict, report: dict) -> None:
 EPAPER_ZLIB_FIRMWARE = (1, 1, 0)
 
 
-_missing_epaper_warnings = set()
+_missing_epaper_warnings = OrderedDict()
+_missing_epaper_warnings_lock = Lock()
+_MISSING_EPAPER_WARNING_LIMIT = 1024
 
 def select_epaper_encoding(manifest: dict, report: dict, root=None) -> None:
     """Offer zlib e-paper frames only to firmware that can inflate them.
@@ -88,14 +92,18 @@ def select_epaper_encoding(manifest: dict, report: dict, root=None) -> None:
             if root is not None:
                 try:
                     path = root / wire['url'].lstrip('/')
-                    available = path.resolve() == path and path.stat().st_size == wire['size']
+                    resolved = path.resolve()
+                    available = resolved.is_relative_to(root.resolve()) and resolved.is_file() and resolved.stat().st_size == wire['size']
                 except (OSError, KeyError, TypeError, ValueError):
                     available = False
                 if not available:
                     frame_id = entry.get('id')
-                    if frame_id not in _missing_epaper_warnings:
-                        _missing_epaper_warnings.add(frame_id)
-                        logging.getLogger(__name__).warning("E-paper zlib unavailable for frame %s; serving raw", frame_id)
+                    with _missing_epaper_warnings_lock:
+                        if frame_id not in _missing_epaper_warnings:
+                            if len(_missing_epaper_warnings) >= _MISSING_EPAPER_WARNING_LIMIT:
+                                _missing_epaper_warnings.popitem(last=False)
+                            _missing_epaper_warnings[frame_id] = None
+                            logging.getLogger(__name__).warning("E-paper zlib unavailable for frame %s; serving raw", frame_id)
                     continue
             entry.update(wire)
 
