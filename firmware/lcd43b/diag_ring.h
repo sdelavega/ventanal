@@ -25,7 +25,8 @@ public:
     void add(uint32_t t, DiagStage type, int a=0, int b=0, int c=0, int d=0, int e=0, int f=0) {
         DiagLock lock; (void)lock; init();
         s.entries[s.next] = {t,a,b,c,d,e,f,type}; s.next=(s.next+1)%96;
-        if(s.count<96) ++s.count; if(s.unread<96) ++s.unread;
+        if (s.count < 96) ++s.count;
+        if (s.unread < 96) ++s.unread;
     }
     void wake(uint32_t t) { add(t,DiagStage::Wake); }
     void join(uint32_t t,int rssi,int channel,bool up,bool ipv4,bool gateway,bool route,int sockets) {
