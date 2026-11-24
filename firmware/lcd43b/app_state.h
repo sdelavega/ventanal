@@ -113,6 +113,7 @@ lcd::DisplayOwner displayOwner;
 bool updateScreenShowing = false;  // the Updating notice is lit even in quiet hours
 uint32_t touchUntilMs = 0;
 uint32_t lastFetchMs = 0;
+uint32_t lastFetchCompletedMs = 0;
 lcd::WifiRetry wifiRetry;
 lcd::WifiRetry updateRetry;
 uint32_t lastTouchPollMs = 0;

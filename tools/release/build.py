@@ -101,6 +101,8 @@ def guard_image(data, board, version, sdkconfig):
         raise ValueError(f"{board} image app descriptor version does not match {version}")
     if board == "lcd43b" and re.search(r"^CONFIG_ESPTOOLPY_OCT_FLASH=y\s*$", sdkconfig, re.MULTILINE):
         raise ValueError("lcd43b sdkconfig enables CONFIG_ESPTOOLPY_OCT_FLASH")
+    if board == "lcd43b" and re.search(r"^CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\s*$", sdkconfig, re.MULTILINE):
+        raise ValueError("lcd43b sdkconfig enables CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC")
     if board == "lcd43b" and not re.search(r"^CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y\s*$", sdkconfig, re.MULTILINE):
         raise ValueError("lcd43b sdkconfig does not put TLS buffers in PSRAM (CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC)")
 

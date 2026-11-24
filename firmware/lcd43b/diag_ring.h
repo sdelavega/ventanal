@@ -54,7 +54,10 @@ public:
             case DiagStage::SocketConnect: log("diag ring t=%u socket_connect fd=%d result=%d connect_errno=%d\n",unsigned(e.time),e.a,e.b,e.c); break;
             case DiagStage::SocketSelect: log("diag ring t=%u socket_select result=%d select_errno=%d elapsed_ms=%d timeout_ms=%d writable=%d\n",unsigned(e.time),e.a,e.b,e.c,e.d,e.e); break;
             case DiagStage::SocketError: log("diag ring t=%u socket_error fd=%d result=%d getsockopt_errno=%d so_error=%d\n",unsigned(e.time),e.a,e.b,e.c,e.d); break;
-            case DiagStage::TlsSetup: log("diag ring t=%u tls_setup code=%d (-0x%04X) free_internal=%d largest_internal=%d\n",unsigned(e.time),e.a,unsigned(-e.a),e.b,e.c); break;
+            case DiagStage::TlsSetup:
+                if (e.a < 0) log("diag ring t=%u tls_setup code=%d (-0x%04X) free_internal=%d largest_internal=%d\n",unsigned(e.time),e.a,0u-unsigned(e.a),e.b,e.c);
+                else log("diag ring t=%u tls_setup code=%d free_internal=%d largest_internal=%d\n",unsigned(e.time),e.a,e.b,e.c);
+                break;
             default: { const char* stage=e.type==DiagStage::Connect?"connect":e.type==DiagStage::Handshake?"handshake":e.type==DiagStage::Send?"send":"read";
                 log("diag ring t=%u failure stage=%s errno=%d free_internal=%d largest_internal=%d\n",unsigned(e.time),stage,e.a,e.b,e.c); }
             }

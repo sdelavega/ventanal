@@ -809,6 +809,18 @@ void post_wake_failure_retries_within_60s() {
     assert(state.retryInterval(300000) == 60000);
     state.response(200); assert(state.retryInterval(300000) == 300000);
 }
+void retry_interval_keeps_zero_sentinel() {
+    lcd::NetworkRecovery state; state.woke(); state.failure();
+    assert(state.retryInterval(0) == 0);
+}
+void retry_gap_starts_at_pass_completion() {
+    lcd::NetworkRecovery state; state.woke(); state.failure();
+    assert(state.retryElapsed(90000, 1000, 80000) == 10000);
+    assert(state.retryElapsed(139999, 1000, 80000) == 59999);
+    assert(state.retryElapsed(140000, 1000, 80000) == 60000);
+    state.response(200);
+    assert(state.retryElapsed(140000, 1000, 80000) == 139000);
+}
 void reboot_allowed_after_proven_previous_reboot() {
     Preferences p; p.begin("ventanal", false); preferences.erase("net-pending");
     lcd::RecoveryRebootGate gate; gate.load(p, false);
@@ -855,6 +867,9 @@ void socket_diagnostics_are_distinct() {
     ring.tlsSetupFailed(7, -0x7F00, 70000, 31000);
     Serial.output.clear(); ring.printUnread();
     assert(Serial.output.find("tls_setup code=-32512 (-0x7F00) free_internal=70000 largest_internal=31000") != std::string::npos);
+    ring.tlsSetupFailed(8, 7, 70000, 31000);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("tls_setup code=7 free_internal=70000") != std::string::npos);
 }
 void reboot_gates_still_hold() {
     lcd::RecoveryRebootGate gate; gate.pending = false;
@@ -872,7 +887,13 @@ void ring_has_no_identifiers() {
     lcd::DiagStorage storage{}; lcd::DiagRing ring(storage);
     ring.join(1, -45, 6, true, true, true, true, -1);
     ring.failure(2, lcd::DiagStage::Connect, 5, 100, 80);
+    ring.socketCreated(3, 54, 0); ring.socketConnected(4, 54, -1, 9);
+    ring.socketSelected(5, 1, 0, 110, 5000, true); ring.socketError(6, 54, 0, 0, 113);
+    ring.tlsSetupFailed(7, 0, 70000, 31000);
     Serial.output.clear(); ring.printUnread();
+    for (const char* entry : {" socket fd=", " socket_connect ", " socket_select ", " socket_error ", " tls_setup "})
+        assert(Serial.output.find(entry) != std::string::npos);
+    assert(Serial.output.find("tls_setup code=0 free_internal=") != std::string::npos);
     assert(Serial.output.find("ssid") == std::string::npos);
     assert(Serial.output.find("ip=") == std::string::npos);
     assert(Serial.output.find("mac") == std::string::npos);
@@ -1241,6 +1262,8 @@ int main() {
     success_clears_wake_flag();
     reboot_after_one_failed_pass_post_restart();
     post_wake_failure_retries_within_60s();
+    retry_interval_keeps_zero_sentinel();
+    retry_gap_starts_at_pass_completion();
     reboot_allowed_after_proven_previous_reboot();
     reboot_blocked_when_previous_unproven();
     success_clears_pending_flag();

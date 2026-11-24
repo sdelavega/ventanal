@@ -705,4 +705,5 @@ void applyFinishedRefresh() {
     if (redraw || labelChanged || ((callStateChanged || githubChecked) && settingsPage.active))
         show(screenIndex);
     backlightRefresh();
+    lastFetchCompletedMs = millis();
 }

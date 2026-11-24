@@ -472,11 +472,15 @@ void loop() {
 #endif
 #endif
     const uint32_t interval=lcd::networkRecovery.retryInterval(powerPollMs());
+    const uint32_t retryNow = millis();
+    const uint32_t retryElapsed = lcd::networkRecovery.retryElapsed(retryNow, lastFetchMs, lastFetchCompletedMs);
+    const bool recovering = lcd::networkRecovery.postWake && lcd::networkRecovery.transportFailed;
     const bool networkIdle = !refreshBusy && !installRequested;
-    const bool refreshDue = wifiRetry.waiting()
-        ? networkIdle && (wifiRetry.due(millis()) || (lcd::networkRecovery.postWake && lcd::networkRecovery.transportFailed && now-lastFetchMs >= 60000))
-        : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,
-                                  settingsRefreshPending);
+    const bool retryReady = !recovering || (interval && retryElapsed >= 60000);
+    const bool refreshDue = retryReady && (wifiRetry.waiting()
+        ? networkIdle && (recovering || wifiRetry.due(retryNow))
+        : powerSession.refreshDue(retryNow, retryNow-retryElapsed, interval, powerLevel(), !networkIdle,
+                                  settingsRefreshPending));
     if (refreshDue) {
         const bool started=startRefresh(false);
         powerSession.refreshStarted(started);
@@ -491,11 +495,16 @@ void loop() {
         settingsSaveFailedAt = millis();
     }
     persistDeferred(false);
-    if (!refreshBusy && lcd::networkRecovery.successfulResponse) {
+    static uint32_t successSaveFailedAt = 0;
+    static bool successSaveFailed = false;
+    if (!refreshBusy && lcd::networkRecovery.successfulResponse &&
+        (!successSaveFailed || millis() - successSaveFailedAt >= 5000)) {
+        ScanoutSavePause pause(!LitNvsWrites);
         if (lcd::recoveryRebootGate.recordSuccess(prefs)) {
             recoveryRtcPending = 0;
             lcd::networkRecovery.successfulResponse = false;
-        }
+            successSaveFailed = false;
+        } else { successSaveFailed = true; successSaveFailedAt = millis(); }
     }
     static bool blockedReported = false;
     if (!lcd::networkRecovery.rebootDue()) blockedReported = false;
@@ -512,15 +521,15 @@ void loop() {
             if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
             for (int i = 0; i < lcd::SCREEN_SLOTS + 2 && persistDeferred(false); ++i) {}
             const bool selectionSaved = lcd::saveSelection(prefs, screenIndex, spareCursor);
-            contentStaleness.checkpoint(prefs, epoch);
-            if (!settingsDirty && selectionSaved && !contentStaleness.checkpointDirty) {
+            if (epoch >= 1704067200U) contentStaleness.checkpoint(prefs, epoch);
+            if (!settingsDirty && selectionSaved && (epoch < 1704067200U || !contentStaleness.checkpointDirty)) {
                 recoveryRtcPending = 1;
                 if (lcd::recoveryRebootGate.markReboot(prefs)) {
                     lcd::diagRing.add(millis(), lcd::DiagStage::Reboot);
                     lcd::log("power reboot reason=network-stuck\n");
                     Serial.flush();
                     esp_restart();
-                }
+                } else { lcd::log("power reboot blocked=nvs\n"); blockedReported = true; }
             }
         }
     }

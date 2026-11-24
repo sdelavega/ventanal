@@ -103,8 +103,14 @@ def test_inkplate_staged_ini_sets_app_descriptor_version(tmp_path):
 LCD_SDKCONFIG = "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\nCONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y\n"
 
 
+def test_guard_rejects_lcd_internal_and_external_tls_allocators():
+    with pytest.raises(ValueError, match="INTERNAL_MEM_ALLOC"):
+        build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0",
+                          LCD_SDKCONFIG + "CONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\n")
+
+
 def test_guard_rejects_lcd_tls_buffers_in_internal_ram():
-    with pytest.raises(ValueError, match="EXTERNAL_MEM_ALLOC"):
+    with pytest.raises(ValueError, match="INTERNAL_MEM_ALLOC"):
         build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0",
                           "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\nCONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\n")
 

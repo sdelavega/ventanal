@@ -49,7 +49,10 @@ struct NetworkRecovery {
             else failedPasses = 0;
         }
     }
-    uint32_t retryInterval(uint32_t normal) const { return postWake && transportFailed ? (normal && normal < 60000 ? normal : 60000) : normal; }
+    uint32_t retryInterval(uint32_t normal) const { return postWake && transportFailed && normal ? (normal < 60000 ? normal : 60000) : normal; }
+    uint32_t retryElapsed(uint32_t now, uint32_t started, uint32_t completed) const {
+        return now - (postWake && transportFailed ? completed : started);
+    }
     bool rebootDue() const { return postWake && restartDone && failedPasses >= 1; }
 };
 inline NetworkRecovery networkRecovery;
