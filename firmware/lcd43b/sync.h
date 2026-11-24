@@ -22,6 +22,7 @@
 #include "frame.h"
 #include "deferred_save.h"
 #include "log.h"
+#include "diag_ring.h"
 #include "local/art_state.h"
 #include "manifest.h"
 #include "persist.h"
@@ -35,10 +36,11 @@ namespace lcd {
 // Owned by the refresh worker between wakes; the main loop observes it only
 // after the worker has handed back its result.
 struct NetworkRecovery {
-    bool postWake = false, restartDone = false;
+    bool postWake = false, restartDone = false, transportFailed = false;
     unsigned failedPasses = 0;
     void woke() { postWake = true; }
     void response(int status) { if (status == 200 || status == 206) *this = {}; }
+    void failure() { if (postWake) transportFailed = true; }
     void restarted() { if (!restartDone) failedPasses = 0; restartDone = true; }
     void finishPass(bool transportFailed, bool connected) {
         if (postWake && restartDone) {
@@ -46,7 +48,8 @@ struct NetworkRecovery {
             else failedPasses = 0;
         }
     }
-    bool rebootDue() const { return postWake && restartDone && failedPasses >= 2; }
+    uint32_t retryInterval(uint32_t normal) const { return postWake && transportFailed ? (normal && normal < 60000 ? normal : 60000) : normal; }
+    bool rebootDue() const { return postWake && restartDone && failedPasses >= 1; }
 };
 inline NetworkRecovery networkRecovery;
 inline bool networkRebootAllowed(bool due, bool ota, bool settings, bool updateScreen,

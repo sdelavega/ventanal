@@ -19,6 +19,10 @@
 #include <esp_heap_caps.h>
 #include <esp_sntp.h>
 #include <esp_wifi.h>
+#ifndef VENTANAL_HOST_TEST
+#include <esp_netif.h>
+#include <lwip/netif.h>
+#endif
 
 #include <algorithm>
 
@@ -102,6 +106,19 @@ bool joinWifi(Watchdog& watchdog, const WifiScan* previous = nullptr,
         connected = wait();
     }
     logWifiScan(scan);
+    if (connected) {
+        bool up=false, ipv4=false, gateway=false, route=false;
+#ifndef VENTANAL_HOST_TEST
+        auto* station = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+        esp_netif_ip_info_t info{};
+        up = station && esp_netif_is_netif_up(station);
+        if (station && esp_netif_get_ip_info(station, &info) == ESP_OK) {
+            ipv4 = info.ip.addr != 0; gateway = info.gw.addr != 0;
+        }
+        route = netif_default != nullptr;
+#endif
+        diagRing.join(millis(), WiFi.RSSI(), WiFi.channel(), up, ipv4, gateway, route, -1);
+    }
     return connected;
 }
 
@@ -223,7 +240,7 @@ public:
 
     void report(int status) {
         networkRecovery.response(status);
-        if (status <= 0) ++failures_;
+        if (status <= 0) { networkRecovery.failure(); ++failures_; }
         else failures_ = 0;
         if (failures_ >= 2) rejoin();
     }
@@ -246,6 +263,7 @@ public:
             const bool ok = spent < TRANSFER_BUDGET_MS &&
                 joinWifi(watchdog_, nullptr, TRANSFER_BUDGET_MS - spent);
             networkRecovery.restarted();
+            diagRing.add(millis(), DiagStage::Restart, int(ok));
             frameRetry_ = ok;
             log("wifi restart reason=post-wake-unreachable ok=%d\n", int(ok));
             return ok;

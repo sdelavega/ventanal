@@ -65,7 +65,7 @@ void sleepPower() {
     // reconnects on demand, using its bounded/watchdog-supervised path.
     WiFi.mode(WIFI_OFF);
     esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
-    uint32_t wait=lcd::pollWaitMs(millis()-lastFetchMs,powerPollMs());
+    uint32_t wait=lcd::pollWaitMs(millis()-lastFetchMs,lcd::networkRecovery.retryInterval(powerPollMs()));
 #ifdef VENTANAL_LCD_DIAG_POWER
     if(powerLevel()!=lcd::BatteryLevel::Critical) wait=20000; // capture timer wake
 #endif
@@ -95,6 +95,7 @@ void sleepPower() {
     }
     // A rejected/failed sleep has no new wake cause or post-wake probe.
     lcd::networkRecovery.woke();
+    lcd::diagRing.wake(millis());
     const auto reason=esp_sleep_get_wakeup_cause();
     if(powerSession.touchReady || powerSession.probeDue(millis()))
         powerSession.probed(probeTouchAfterWake(),millis());

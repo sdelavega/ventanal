@@ -137,6 +137,8 @@ void setup() {
 #endif
     Serial.begin(115200);
     delay(300);
+    lcd::diagRing.add(millis(), lcd::DiagStage::Boot, int(esp_reset_reason()));
+    if (Serial) lcd::diagRing.printUnread();
     const auto* slot = esp_ota_get_running_partition();
     lcd::log("ventanal lcd43b boot fw=%s app=%s slot=%s\n", lcd::FIRMWARE_VERSION,
              esp_app_get_description()->version, slot ? slot->label : "unknown");
@@ -313,6 +315,10 @@ void setup() {
 
 void loop() {
     const uint32_t now = millis();
+    static bool serialConnected = false;
+    const bool connectedNow = bool(Serial);
+    if (connectedNow && !serialConnected) lcd::diagRing.printUnread();
+    serialConnected = connectedNow;
 #ifdef VENTANAL_LCD_DIAG_HW
     lcd::hwProbeTick(now, expander);
     delay(2);
@@ -459,10 +465,10 @@ void loop() {
     probeBusyInstall();
 #endif
 #endif
-    const uint32_t interval=powerPollMs();
+    const uint32_t interval=lcd::networkRecovery.retryInterval(powerPollMs());
     const bool networkIdle = !refreshBusy && !installRequested;
     const bool refreshDue = wifiRetry.waiting()
-        ? networkIdle && wifiRetry.due(millis())
+        ? networkIdle && (wifiRetry.due(millis()) || (lcd::networkRecovery.postWake && lcd::networkRecovery.transportFailed && now-lastFetchMs >= 60000))
         : powerSession.refreshDue(now, lastFetchMs, interval, powerLevel(), !networkIdle,
                                   settingsRefreshPending);
     if (refreshDue) {
@@ -492,6 +498,7 @@ void loop() {
             contentStaleness.checkpoint(prefs, epoch);
             if (!settingsDirty && selectionSaved && !contentStaleness.checkpointDirty &&
                 prefs.putUInt("net-reboot", epoch) == sizeof(epoch)) {
+                lcd::diagRing.add(millis(), lcd::DiagStage::Reboot);
                 lcd::log("power reboot reason=network-stuck\n");
                 Serial.flush();
                 esp_restart();

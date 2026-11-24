@@ -10,6 +10,8 @@
 #include "installation.h"
 #include "transport.h"
 #include "log.h"
+#include "diag_ring.h"
+#include <cerrno>
 #include <WiFi.h>
 #include <esp_heap_caps.h>
 #include <cctype>
@@ -187,7 +189,9 @@ public:
             }
             prepare(http);
             feed();
+            errno = 0;
             const int status = http.GET();
+            const int requestErrno = errno;
             feed();
             if (status > 0) return status;
             // A refused connect means the kept socket was already gone and a
@@ -195,7 +199,7 @@ public:
             const bool wasReused = reused_ && status != HTTPC_ERROR_CONNECTION_REFUSED;
             const bool retry = attempt == 0 && wasReused && !received() &&
                 remainingMs() >= kFreshRetryMs;
-            logFailure(stageOf(status), wasReused);
+            logFailure(stageOf(status), wasReused, requestErrno);
             close();
             if (!retry) return status;
             log("transport retry=fresh-connection reason=status-%d\n", -status);
@@ -250,7 +254,9 @@ private:
         return plain_.received;
     }
 
-    void logFailure(const char* stage, bool reused) {
+    void logFailure(const char* stage, bool reused, int error = 0) {
+        const DiagStage kind = !strcmp(stage,"connect") ? DiagStage::Connect : !strcmp(stage,"handshake") ? DiagStage::Handshake : !strcmp(stage,"send") ? DiagStage::Send : DiagStage::Read;
+        diagRing.failure(millis(), kind, error, int(heap_caps_get_free_size(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)), int(heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)));
         constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
         log("transport fail stage=%s free_internal=%u largest_internal=%u reused=%d\n", stage,
             unsigned(heap_caps_get_free_size(internal)),

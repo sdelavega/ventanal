@@ -794,17 +794,48 @@ void success_clears_wake_flag() {
     lcd::NetworkRecovery state; state.woke(); state.response(200);
     assert(!state.postWake && !state.rebootDue());
 }
-void stuck_two_passes_after_restart_reboots() {
+void reboot_after_one_failed_pass_post_restart() {
     resetFakes(); lcd::networkRecovery = {}; lcd::networkRecovery.woke();
     WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}}; status = HTTPC_ERROR_CONNECTION_REFUSED;
     char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
     refresh("http://host", "lcd43b", ids, result, watchdog);
     assert(!lcd::networkRecovery.rebootDue());
     refresh("http://host", "lcd43b", ids, result, watchdog);
-    assert(!lcd::networkRecovery.rebootDue());
-    refresh("http://host", "lcd43b", ids, result, watchdog);
     assert(lcd::networkRecovery.rebootDue());
     lcd::networkRecovery = {};
+}
+void post_wake_failure_retries_within_60s() {
+    lcd::NetworkRecovery state; state.woke(); state.failure();
+    assert(state.retryInterval(300000) == 60000);
+    state.response(200); assert(state.retryInterval(300000) == 300000);
+}
+void reboot_gates_still_hold() {
+    assert(!lcd::networkRebootAllowed(true, true, false, false, 1704069200, 0));
+    assert(!lcd::networkRebootAllowed(true, false, true, false, 1704069200, 0));
+    assert(!lcd::networkRebootAllowed(true, false, false, true, 1704069200, 0));
+    assert(!lcd::networkRebootAllowed(true, false, false, false, 1704069200, 1704069199));
+}
+void ring_survives_reboot_and_prints_on_boot() {
+    lcd::DiagStorage storage{}; lcd::DiagRing first(storage); first.wake(42);
+    lcd::DiagRing reboot(storage); Serial.output.clear(); reboot.printUnread();
+    assert(Serial.output.find("diag ring t=42 wake") != std::string::npos);
+    Serial.output.clear(); reboot.printUnread(); assert(Serial.output.empty());
+}
+void ring_has_no_identifiers() {
+    lcd::DiagStorage storage{}; lcd::DiagRing ring(storage);
+    ring.join(1, -45, 6, true, true, true, true, -1);
+    ring.failure(2, lcd::DiagStage::Connect, 5, 100, 80);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("ssid") == std::string::npos);
+    assert(Serial.output.find("ip=") == std::string::npos);
+    assert(Serial.output.find("mac") == std::string::npos);
+}
+void ring_wraps_without_corruption() {
+    lcd::DiagStorage storage{}; lcd::DiagRing ring(storage);
+    for (unsigned i = 0; i < 200; ++i) ring.wake(i);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("diag ring t=199 wake") != std::string::npos);
+    assert(Serial.output.find("diag ring t=0 wake") == std::string::npos);
 }
 void reboot_rate_limited() {
     assert(!lcd::networkRebootAllowed(true, false, false, false, 1704067300, 1704067299));
@@ -1171,7 +1202,12 @@ int main() {
     post_wake_failure_does_full_wifi_restart();
     non_wake_failure_keeps_plain_rejoin();
     success_clears_wake_flag();
-    stuck_two_passes_after_restart_reboots();
+    reboot_after_one_failed_pass_post_restart();
+    post_wake_failure_retries_within_60s();
+    reboot_gates_still_hold();
+    ring_survives_reboot_and_prints_on_boot();
+    ring_has_no_identifiers();
+    ring_wraps_without_corruption();
     reboot_rate_limited();
     no_reboot_during_ota_or_settings();
     no_socket_survives_pass();
