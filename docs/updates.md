@@ -172,6 +172,7 @@ the Python build tooling used in CI and in the local rebuild.
 The script stages tracked firmware sources, uses public Inkplate settings,
 checks for home directory paths in the application binary, and writes the
 unsigned assets. Relative output directories are rooted at the checkout.
+Each board has an isolated PlatformIO core, and a guard checks flash settings and the embedded application version before publishing assets.
 Add `--dry-run` to inspect the commands and asset names.
 The default minimum running version is `0.0.0`. Use the same minimum on both
 builds before comparing and signing the metadata.

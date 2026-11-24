@@ -7,6 +7,7 @@ import argparse
 from configparser import ConfigParser
 import hashlib
 from pathlib import Path
+import re
 import shlex
 import shutil
 import subprocess
@@ -70,6 +71,38 @@ def prefix_maps(*directories):
                     for path in sorted(paths, key=lambda path: (len(str(path)), str(path))))
 
 
+def set_project_version(work, project, version):
+    ini = work / project / "platformio.ini"
+    text = ini.read_text(encoding="utf-8")
+    if project == LCD:
+        pattern = r"(?ms)(^\[lcd43b\]\s*\n(?:(?!\[).)*?^version\s*=\s*)[^\n]*"
+        text, count = re.subn(pattern, lambda match: match.group(1) + version, text)
+    else:
+        pattern = r"(?m)^custom_sdkconfig\s*=\s*$"
+        replacement = ('custom_sdkconfig =\n    CONFIG_APP_PROJECT_VER_FROM_CONFIG=y\n'
+                       f'    CONFIG_APP_PROJECT_VER="{version}"')
+        text, count = re.subn(pattern, lambda _: replacement, text, count=1)
+    if count != 1:
+        raise ValueError(f"Cannot set release version in staged {project}/platformio.ini")
+    ini.write_text(text, encoding="utf-8")
+
+
+def guard_image(data, board, version, sdkconfig):
+    # esp_image_header_t (24 bytes), first esp_image_segment_header_t (8),
+    # then esp_app_desc_t: magic at offset 32, version at offset 48.
+    if len(data) < 80 or data[0] != 0xe9 or int.from_bytes(data[32:36], "little") != 0xabcd5432:
+        raise ValueError(f"{board} image has no valid ESP application descriptor")
+    mode, size = {"lcd43b": (2, 4), "inkplate13spectra": (3, 5)}[board]
+    if data[2] != mode:
+        raise ValueError(f"{board} image flash mode {data[2]:#x}, expected {mode:#x}")
+    if data[3] >> 4 != size:
+        raise ValueError(f"{board} image flash size {data[3] >> 4:#x}, expected {size:#x}")
+    if data[48:80].split(b"\0", 1)[0] != version.encode("ascii"):
+        raise ValueError(f"{board} image app descriptor version does not match {version}")
+    if board == "lcd43b" and re.search(r"^CONFIG_ESPTOOLPY_OCT_FLASH=y\s*$", sdkconfig, re.MULTILINE):
+        raise ValueError("lcd43b sdkconfig enables CONFIG_ESPTOOLPY_OCT_FLASH")
+
+
 def ensure_no_home_path(data, board):
     home = str(Path.home()).encode()
     # No platform-specific strings utility is needed on the signing machine.
@@ -79,11 +112,12 @@ def ensure_no_home_path(data, board):
         raise ValueError(f"{board} image contains a home directory path")
 
 
-def write_assets(image, output, board, version, minimum, notes_url):
+def write_assets(image, output, board, version, minimum, notes_url, sdkconfig=""):
     data = image.read_bytes()
     if not 0 < len(data) <= SLOT_SIZE or data[0] != 0xE9:
         raise ValueError(f"{board} did not produce an ESP application image that fits the OTA slot")
     ensure_no_home_path(data, board)
+    guard_image(data, board, version, sdkconfig)
     metadata = canonical_release_json({
         "board": board,
         "version": version,
@@ -125,6 +159,8 @@ def build(args):
         defines = work / "release_build.h"
         if not args.dry_run:
             stage_sources(work, projects.values())
+            for project in projects.values():
+                set_project_version(work, project, args.version)
             assets.mkdir()
             defines.write_text(
                 '#define VENTANAL_RELEASE_BUILD 1\n'
@@ -140,8 +176,8 @@ def build(args):
 
         # Keep the core, packages, cache and build paths inside the same
         # prefix map as the staged sources. Use a separate build per project.
-        pio_core = work / "pio-core"
         for board, project in projects.items():
+            pio_core = work / f"pio-core-{board}"
             pio_build = work / board
             build_flags = f"{prefix_maps(work)} -Wl,--strip-debug"
             if project == INKPLATE:
@@ -157,8 +193,15 @@ def build(args):
                 print(f"Would write {output}/ventanal-{board}-{args.version}.{{bin,json}}")
             else:
                 subprocess.run(command, cwd=work, check=True)
+                sdkconfig = ""
+                if board == "lcd43b":
+                    config = pio_core / "packages/framework-arduinoespressif32-libs/esp32s3/sdkconfig"
+                    sdkconfig = config.read_text(encoding="utf-8")
+                    for line in sdkconfig.splitlines():
+                        if re.match(r"^(?:# )?CONFIG_ESPTOOLPY_(?:OCT_FLASH|FLASHMODE_QIO)(?:=| is not set)", line):
+                            print(f"{board} sdkconfig: {line}", flush=True)
                 write_assets(pio_build / "normal/firmware.bin", assets, board,
-                             args.version, args.min_from_version, notes_url)
+                             args.version, args.min_from_version, notes_url, sdkconfig)
         if not args.dry_run:
             shutil.copytree(assets, output)
             print(f"Wrote unsigned firmware assets to {output}")
