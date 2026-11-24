@@ -14,6 +14,7 @@
 inline bool failRename = false;
 inline std::string failOpenWrite;
 inline std::string truncateOnClose;
+inline std::string delayClosePath;
 inline bool failWrite = false;
 inline size_t writeLimit = SIZE_MAX;
 inline size_t writeCalls = 0;
@@ -81,7 +82,7 @@ public:
     }
     bool seek(size_t pos) { pos_ = pos; return pos <= size(); }
     void flush() {}
-    void close() { if (files_ && filename_ == truncateOnClose) { files_->at(filename_).resize(16); truncateOnClose.clear(); } files_ = nullptr; }
+    void close() { if (files_ && filename_ == delayClosePath) delay(50); if (files_ && filename_ == truncateOnClose) { files_->at(filename_).resize(16); truncateOnClose.clear(); } files_ = nullptr; }
 };
 
 class FS {

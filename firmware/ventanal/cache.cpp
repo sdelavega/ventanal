@@ -177,12 +177,17 @@ const char* inflateFrame(FsStore& store, const char* target, uint32_t wireSize, 
 #endif
     const char* failure = out ? streamInflate(store, wire, wireSize, out, *inflater, dictionary, sha)
                               : "storage";
-#ifdef VENTANAL_HOST_TEST
-    if (out) std::printf("host inflate ms=%lld bytes=%u\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hostInflateStarted).count()), unsigned(frameSize));
-#endif
-    if (out) Serial.printf("inflate ms=%lu bytes=%u\n", static_cast<unsigned long>(millis() - inflateStarted), unsigned(frameSize));
+    const bool inflateRan = bool(out);
+    const uint32_t streamMs = inflateRan ? millis() - inflateStarted : 0;
     wire.close();
-    if (out) { out.flush(); out.close(); }
+    if (inflateRan) { out.flush(); out.close(); }
+    if (inflateRan) {
+        const uint32_t totalMs = millis() - inflateStarted;
+        Serial.printf("inflate ms=%lu total_ms=%lu bytes=%u\n", static_cast<unsigned long>(streamMs), static_cast<unsigned long>(totalMs), unsigned(frameSize));
+#ifdef VENTANAL_HOST_TEST
+        std::printf("host inflate total_ms=%lld bytes=%u\n", static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - hostInflateStarted).count()), unsigned(frameSize));
+#endif
+    }
     if (!failure) { File check = LittleFS.open(temporary.c_str(), "r"); if (!validate(check, "", nullptr, sha)) failure = "stored-frame"; check.close(); }
     if (!failure && !LittleFS.rename(temporary.c_str(), path)) failure = "storage";
     if (failure) LittleFS.remove(temporary.c_str());

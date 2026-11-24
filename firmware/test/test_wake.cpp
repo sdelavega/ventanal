@@ -232,7 +232,8 @@ static void failed_scheduled_screen_is_not_retried() {
     memcpy(preferences["state13"].data(), &state, sizeof state);
     invalidPaths={"/override.vnf", "/weather.vnf"}; blitPaths.clear();
     wake(ESP_SLEEP_WAKEUP_TIMER);
-    assert(std::count(blitPaths.begin(), blitPaths.end(), "/art.vnf")==0);
+    assert(std::count(blitPaths.begin(), blitPaths.end(), "/art.vnf")==1);
+    assert(blitted=="/art.vnf" && waiting==0);
 }
 static void first_frame_uses_remaining_budget() {
     wifiDelay=20000;

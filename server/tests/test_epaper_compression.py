@@ -2,6 +2,7 @@
 """E-paper frames travel zlib-compressed to firmware >= 1.1.0 (same pixels)."""
 from datetime import datetime, timedelta, timezone
 from http.client import HTTPConnection
+from pathlib import Path
 import hashlib
 import json
 from threading import Thread
@@ -191,3 +192,50 @@ def test_zlib_symlink_outside_output_root_falls_back(tmp_path):
                 'zlib': {'url': '/wire.vnz', 'size': 4}}}}
     select_epaper_encoding(document, {'fw': '1.1.0'}, root)
     assert document['screens']['weather']['url'] == '/raw.vnf'
+
+
+@pytest.mark.parametrize("kind", ["root", "contained", "escape"])
+def test_signed_wire_symlink_selection_over_http(tmp_path, monkeypatch, kind):
+    import ssl
+    import hmac
+    from ventanal.security import canonical
+    from http.client import HTTPSConnection
+    from types import SimpleNamespace
+    from test_security import proof
+    monkeypatch.setattr('socket.getfqdn', lambda *args: 'localhost')
+    out = tmp_path / 'out'
+    data = frame_bytes()
+    original = publish(out, 'weather', data, Readout(0, 0, 1, 1, 'shade'), None, Image.new('RGB', (1, 1)), NOW)
+    wire = out / original['zlib']['url'].lstrip('/')
+    if kind != 'root':
+        target = (out / 'frames' / 'other.vnz') if kind == 'contained' else (tmp_path / 'other.vnz')
+        wire.rename(target)
+        wire.symlink_to(target)
+    link = tmp_path / 'link'
+    link.symlink_to(out, target_is_directory=True)
+    cache = tmp_path / 'cache'
+    config = tmp_path / 'settings.toml'
+    example = Path(__file__).parents[1] / 'ventanal.example.toml'
+    config.write_text(example.read_text().replace('/var/lib/ventanal', str(tmp_path)).replace('/var/cache/ventanal', str(cache)))
+    monkeypatch.setattr('ventanal.solar.licence.verify', lambda *a: SimpleNamespace(ok=True))
+    srv = make_server(link, '127.0.0.1', 0, cache_dir=cache, config_path=config, https_host='127.0.0.1', https_port=0)
+    thread = Thread(target=srv.serve_forever, daemon=True); thread.start()
+    try:
+        srv.ui.enable_security()
+        srv.ui.auth.set_password('test password', 'test password')
+        ctx = ssl.create_default_context(cadata=srv.ui.security.certificate)
+        conn = HTTPSConnection(*srv.tls_server.server_address, context=ctx, timeout=5)
+        path = '/manifest.json?fw=1.1.0'
+        conn.request('GET', path, headers=proof(srv.ui.security.key, path, 1))
+        response = conn.getresponse(); body = response.read(); conn.close()
+        assert response.status == 200
+        document = json.loads(body)
+        signature = document.pop('sig')
+        assert hmac.compare_digest(signature, hmac.new(srv.ui.security.key, canonical(document), hashlib.sha256).hexdigest())
+        entry = document['screens']['weather']
+        assert entry['url'] == (original['zlib']['url'] if kind == 'root' else original['url'])
+        conn = HTTPSConnection(*srv.tls_server.server_address, context=ctx, timeout=5)
+        conn.request('GET', entry['url'], headers=proof(srv.ui.security.key, entry['url'], 2))
+        asset = conn.getresponse(); assert asset.status == 200; asset.read(); conn.close()
+    finally:
+        srv.shutdown(); srv.server_close(); thread.join()

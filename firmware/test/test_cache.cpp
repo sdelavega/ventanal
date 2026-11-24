@@ -141,10 +141,17 @@ void zlib_frame_downloads_inflates_and_verifies() {
     const std::string url = std::string(installation.host) + "/frames/weather-z.vnz";
     const auto before = frameBytesRead;
     Serial.output.clear();
+    delayClosePath = "/weather.vnf.tmp";
     const auto started = std::chrono::steady_clock::now();
     assert(fetchFrame(url.c_str(), cachePath));
     const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
     std::cout << "host zlib transfer inflate and verification ms=" << elapsed << " bytes=" << decoded.size() << "\n";
+    delayClosePath.clear();
+    unsigned long streamMs=0, totalMs=0; unsigned bytes=0;
+    const auto logAt = Serial.output.find("inflate ms=");
+    assert(logAt != std::string::npos);
+    assert(std::sscanf(Serial.output.c_str()+logAt, "inflate ms=%lu total_ms=%lu bytes=%u", &streamMs, &totalMs, &bytes)==3);
+    assert(totalMs >= streamMs + 50 && bytes == decoded.size());
     assert(files.at(cachePath) == decoded && noZlibLeftovers());
     // Wire bytes are what travel, what budgets count and what the log reports.
     assert(frameBytesRead - before == wire.size() && wire.size() < 60000);

@@ -67,6 +67,18 @@ def select_lcd_encoding(manifest: dict, report: dict) -> None:
             entry.update(jpeg)
 
 
+_ANY_SIZE = object()
+
+
+def available_asset(root: Path, path: Path, size=_ANY_SIZE) -> bool:
+    """Check a file under an already resolved root using the serving policy."""
+    try:
+        return (path.is_relative_to(root) and path.resolve() == path and
+                path.is_file() and (size is _ANY_SIZE or path.stat().st_size == size))
+    except (OSError, ValueError):
+        return False
+
+
 EPAPER_ZLIB_FIRMWARE = (1, 1, 0)
 
 
@@ -86,14 +98,14 @@ def select_epaper_encoding(manifest: dict, report: dict, root=None) -> None:
             capable = version_tuple(report.get("fw")) >= EPAPER_ZLIB_FIRMWARE
         except ValueError:
             pass
+    root = root.resolve() if root is not None else None
     for entry in _entries(manifest):
         wire = entry.pop("zlib", None)
         if capable and isinstance(wire, dict):
             if root is not None:
                 try:
                     path = root / wire['url'].lstrip('/')
-                    resolved = path.resolve()
-                    available = resolved.is_relative_to(root.resolve()) and resolved.is_file() and resolved.stat().st_size == wire['size']
+                    available = available_asset(root, path, wire['size'])
                 except (OSError, KeyError, TypeError, ValueError):
                     available = False
                 if not available:

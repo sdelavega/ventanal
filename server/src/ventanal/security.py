@@ -26,7 +26,7 @@ from cryptography.hazmat.primitives.asymmetric import ec
 from cryptography.x509.oid import ExtendedKeyUsageOID, NameOID
 from ventanal.auth import private_write
 from ventanal.config import normalize_hostname
-from ventanal.manifest import reject_manifest_floats
+from ventanal.manifest import available_asset, reject_manifest_floats
 
 
 def canonical(value):
@@ -294,6 +294,7 @@ class Security:
             return key
 
     def manifest(self, manifest, root, *, key=None, profile=None, device=None):
+        root = root.resolve()
         result=copy.deepcopy(manifest); result.pop('sig',None)
         reject_manifest_floats(result)
         frame_route = (r'/frames/[A-Za-z0-9_-]+\.vnf' if profile is None else
@@ -306,7 +307,7 @@ class Security:
             if epaper_zlib:
                 if not re.fullmatch(r'/frames/[A-Za-z0-9_-]+\.vnz', url): raise ValueError('Invalid frame path')
                 wire=root/url.lstrip('/')
-                if wire.resolve()!=wire or wire.stat().st_size!=entry['size']:
+                if not available_asset(root, wire, entry['size']):
                     raise ValueError('E-paper wire frame differs from its published size')
                 url=url[:-len('.vnz')]+'.vnf'
             elif not re.fullmatch(frame_route, url): raise ValueError('Invalid frame path')

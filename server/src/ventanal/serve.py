@@ -17,7 +17,7 @@ import re
 from urllib.parse import unquote, urlsplit, parse_qs
 from datetime import datetime, timezone
 from ventanal.config import load_config, normalize_hostname
-from ventanal.manifest import (MAX_SERVED_MANIFEST_BYTES, encode_board_manifest,
+from ventanal.manifest import (MAX_SERVED_MANIFEST_BYTES, available_asset, encode_board_manifest,
                                omit_board_credits, select_epaper_encoding,
                                select_lcd_encoding)
 from ventanal.owner import SkipQueue, parse_skips
@@ -327,7 +327,7 @@ def make_server(out_dir: Path, host: str, port: int, *, cache_dir: Path | None =
                 ui.handle(self, path); return
             target = root / path.lstrip('/')
             # Reject symbolic links as well as any escape from the publish root.
-            if target.resolve() != target:
+            if not available_asset(root, target):
                 self.send_error(404)
                 return
             try:

@@ -1129,9 +1129,10 @@ void setup() {
                 }
             };
             const Screen failedScreen = shown.active;
+            const bool failedArtOverride = failedScreen == Screen::Art && state.owner.overrideArt.id[0];
             invalidate(failedScreen);
             for (const Screen candidate : fallbackScreens) {
-                if (candidate == failedScreen || !screenCached(state,candidate)) continue;
+                if ((candidate == failedScreen && !failedArtOverride) || !screenCached(state,candidate)) continue;
                 shown = state; shown.active = candidate;
                 if (blitFrame(selectedPath(shown),display)) { ready = true; break; }
                 invalidate(candidate);
