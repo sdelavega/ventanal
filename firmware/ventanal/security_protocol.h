@@ -6,7 +6,7 @@
 #include <cstdint>
 #include <string>
 #ifdef VENTANAL_HOST_TEST
-#include <CommonCrypto/CommonHMAC.h>
+#include <sodium.h>
 #else
 #include <mbedtls/md.h>
 #endif
@@ -33,7 +33,10 @@ inline std::string decodeDeviceKey(const char* s) {
 inline std::string hmacHex(const std::string& key,const std::string& data) {
     unsigned char out[32];
 #ifdef VENTANAL_HOST_TEST
-    CCHmac(kCCHmacAlgSHA256,key.data(),key.size(),data.data(),data.size(),out);
+    crypto_auth_hmacsha256_state state;
+    crypto_auth_hmacsha256_init(&state,reinterpret_cast<const unsigned char*>(key.data()),key.size());
+    crypto_auth_hmacsha256_update(&state,reinterpret_cast<const unsigned char*>(data.data()),data.size());
+    crypto_auth_hmacsha256_final(&state,out);
 #else
     if(mbedtls_md_hmac(mbedtls_md_info_from_type(MBEDTLS_MD_SHA256),
         reinterpret_cast<const unsigned char*>(key.data()),key.size(),

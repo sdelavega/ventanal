@@ -157,17 +157,17 @@ build/test_cache build/test_cache_abort build/test_secure_transport $(NET_TARGET
 
 build/test_cache: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz $(SODIUM_LIBS) -o $@
 
 build/test_cache_abort: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz $(SODIUM_LIBS) -o $@
 
 NET_DEPS = test_net.cpp ../ventanal/quiet.h ../ventanal/net.cpp ../ventanal/net.h ../ventanal/config.example.h ../ventanal/http.h $(wildcard fakes/*.h) Makefile
 $(NET_TARGETS): $(NET_DEPS)
 build/test_net:
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_overlay: ../common/staleness.h ../ventanal/shade.h ../ventanal/shade_tables.h test_overlay.cpp ../ventanal/overlay.cpp ../ventanal/overlay.h $(wildcard ../ventanal/fonts/*.h) $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -175,27 +175,27 @@ build/test_overlay: ../common/staleness.h ../ventanal/shade.h ../ventanal/shade_
 
 build/test_wake: ../common/staleness.h test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/rtc_io.h fakes/driver/gpio.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_stall: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_pwren: test_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_PWRENTEST=1 -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_PWRENTEST=1 -Ifakes test_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_boottime build/test_bootconfirm: test_boottime.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST $(if $(filter build/test_bootconfirm,$@),-DVENTANAL_BOOT_CONFIRM_MS=7000,) -Ifakes test_boottime.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST $(if $(filter build/test_bootconfirm,$@),-DVENTANAL_BOOT_CONFIRM_MS=7000,) -Ifakes test_boottime.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_ponretry: test_ponretry.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_ponretry_stall: test_ponretry_stall.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_ponretry_stall.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_owner: test_owner.cpp ../ventanal/owner.h ../ventanal/net.h Makefile
 	mkdir -p build
@@ -203,22 +203,22 @@ build/test_owner: test_owner.cpp ../ventanal/owner.h ../ventanal/net.h Makefile
 
 build/test_spares: test_spares.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_spares.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_spares.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_statelost: test_statelost.cpp test_wake.cpp ../ventanal/owner.h ../ventanal/quiet.h ../ventanal/ventanal.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_statelost.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_security: test_security.cpp ../ventanal/settings.h ../ventanal/security.h ../ventanal/manifest_security.h ../lcd43b/transport.h ../lcd43b/manifest.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 # Shared transport headers also invalidate the net/cache builds.
 $(NET_TARGETS) build/test_cache build/test_cache_abort build/test_secure_transport: ../ventanal/settings.h ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
 build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_SECURITY_CONFIG=../test/secure_config.h -Ifakes -I"$(ARDUINOJSON)" test_secure_transport.cpp ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 
 build/test_battcal: test_battcal.cpp ../ventanal/battery.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
@@ -230,23 +230,23 @@ build/test_solar $(NET_TARGETS) build/test_secure_transport build/test_wake buil
 
 build/test_battcal_wake: test_battcal_wake.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/battery.h ../ventanal/logic.cpp ../ventanal/owner.h ../ventanal/net.h ../ventanal/logic.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_battcal_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_battcal_wake.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_solar: ../ventanal/battery.h ../ventanal/owner.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h test_solar.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/logic.cpp ../ventanal/logic.h ../ventanal/net.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_solar.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_solar.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_longpress: test_longpress.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/owner.h ../ventanal/logic.h ../ventanal/logic.cpp ../ventanal/battery.h ../ventanal/quiet.h ../ventanal/cache.h ../ventanal/overlay.h ../ventanal/net.h ../ventanal/security_config.h ../ventanal/config.example.h $(wildcard fakes/*.h) fakes/driver/gpio.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_longpress.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_longpress.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_extras: test_extras.cpp test_solar.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/net.h ../ventanal/logic.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_extras.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_extras.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_budget: test_budget.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/owner.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_budget.cpp ../ventanal/logic.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 # lcd43b device profile: host-side units. gesture/frame/manifest/overlay are
 # pure C++; panel compiles the production header against the esp_lcd fakes.
@@ -302,7 +302,7 @@ LCD_SYNC_DEPS = test_lcd43b_sync.cpp fake_tjpgd.cpp fakes/rom/tjpgd.h ../lcd43b/
 $(LCD_SYNC_TARGETS): $(LCD_SYNC_DEPS) | check-libjpeg
 build/test_lcd43b_sync:
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
+	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) $(SODIUM_LIBS) -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
 build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
@@ -469,10 +469,10 @@ test-review6-wake: build/test_wake
 # Exercise production owner-key decisions independently of the bench suite.
 build/test_lcd43b_sync_owner:
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) $(SODIUM_LIBS) -o $@
 
 build/test_net_owner: | check-arduinojson
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) $(SODIUM_CFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 test: build/test_lcd43b_sync_owner build/test_net_owner

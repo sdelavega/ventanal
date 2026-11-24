@@ -10,7 +10,7 @@
 #include <cstring>
 #include <vector>
 #ifdef VENTANAL_HOST_TEST
-#include <CommonCrypto/CommonDigest.h>
+#include <sodium.h>  // host tests on macOS and Linux (CI)
 #else
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -24,10 +24,10 @@ inline bool securityConfigured() {
 }
 struct FrameHash {
 #ifdef VENTANAL_HOST_TEST
-    CC_SHA256_CTX ctx;
-    FrameHash() { CC_SHA256_Init(&ctx); }
-    void add(const void* p,size_t n) { CC_SHA256_Update(&ctx,p,static_cast<CC_LONG>(n)); }
-    std::string finish() { unsigned char out[32]; CC_SHA256_Final(out,&ctx); return hexBytes(out,32); }
+    crypto_hash_sha256_state ctx;
+    FrameHash() { crypto_hash_sha256_init(&ctx); }
+    void add(const void* p,size_t n) { crypto_hash_sha256_update(&ctx,static_cast<const unsigned char*>(p),n); }
+    std::string finish() { unsigned char out[32]; crypto_hash_sha256_final(&ctx,out); return hexBytes(out,32); }
 #else
     mbedtls_sha256_context ctx;
     FrameHash() { mbedtls_sha256_init(&ctx); mbedtls_sha256_starts(&ctx,0); }
