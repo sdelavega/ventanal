@@ -16,6 +16,8 @@ struct FakeWiFi {
     bool connected = true, failPinned = false;
     int currentRssi = -50, currentChannel = 1;
     int pinnedBegins = 0, plainBegins = 0, disconnects = 0;
+    int failedPlainBegins = 0, scans = 0;
+    std::vector<int> scanCounts;
     int selectedChannel = 0;
     std::array<uint8_t, 6> selectedBssid{};
     wifi_ps_type_t sleeping = WIFI_PS_MAX_MODEM;
@@ -28,7 +30,7 @@ struct FakeWiFi {
     void mode(int) {}
     void setScanMethod(wifi_scan_method_t) {}
     void setSortMethod(wifi_sort_method_t) {}
-    void begin(const char*, const char*) { ++plainBegins; connected = true; }
+    void begin(const char*, const char*) { ++plainBegins; connected = plainBegins > failedPlainBegins; }
     void begin(const char*, const char*, int channel, const uint8_t* bssid) {
         ++pinnedBegins; selectedChannel = channel;
         std::copy_n(bssid, 6, selectedBssid.begin());
@@ -41,7 +43,7 @@ struct FakeWiFi {
     int channel(int i) { return aps.at(i).channel; }
     uint8_t* BSSID(int i) { return aps.at(i).bssid.data(); }
     int status() { return connected ? WL_CONNECTED : 0; }
-    int scanNetworks(bool, bool, bool, uint32_t, uint8_t, const char*) { return int(aps.size()); }
+    int scanNetworks(bool, bool, bool, uint32_t, uint8_t, const char*) { ++scans; return scans <= int(scanCounts.size()) ? scanCounts[scans - 1] : int(aps.size()); }
     int scanComplete() { return WIFI_SCAN_FAILED; }
     void scanDelete() {}
 };

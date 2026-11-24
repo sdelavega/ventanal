@@ -719,6 +719,52 @@ void host_failures_trigger_one_rejoin_per_pass() {
     assert(result.manifestOk && WiFi.disconnects == 2 && WiFi.pinnedBegins == 2);
 }
 
+void rejoin_keeps_association_when_scan_empty() {
+    resetFakes();
+    WiFi.scanCounts = {0, 0, 0};
+    const auto frame = solidFrame(0xf800);
+    const auto art = makeEntry("art", frame), weather = makeEntry("weather", frame);
+    responseBody = manifestBody(art, weather); sizeFromResponse = true;
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + art.body + "]");
+    fakeGetResponse = hostFailureResponse;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && WiFi.connected && WiFi.disconnects == 0);
+    assert(WiFi.scans >= 3 && WiFi.pinnedBegins == 0 && WiFi.plainBegins == 0);
+    assert(requestedUrls.size() == 4);
+}
+
+void rejoin_retries_empty_scan() {
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    WiFi.scanCounts = {0, 0, 0, 1};
+    const auto frame = solidFrame(0xf800);
+    const auto art = makeEntry("art", frame), weather = makeEntry("weather", frame);
+    responseBody = manifestBody(art, weather); sizeFromResponse = true;
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + art.body + "]");
+    fakeGetResponse = hostFailureResponse;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && WiFi.connected && WiFi.scans == 4);
+    assert(WiFi.disconnects == 1 && WiFi.pinnedBegins == 1);
+}
+
+void rejoin_failure_restores_wifi() {
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    WiFi.failPinned = true; WiFi.failedPlainBegins = 1;
+    const auto frame = solidFrame(0xf800);
+    const auto art = makeEntry("art", frame), weather = makeEntry("weather", frame);
+    responseBody = manifestBody(art, weather); sizeFromResponse = true;
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + art.body + "]");
+    fakeGetResponse = hostFailureResponse;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && WiFi.connected);
+    assert(WiFi.pinnedBegins == 1 && WiFi.plainBegins == 2);
+    assert(requestedUrls.size() == 4);
+}
+
 int main() {
     join_uses_strongest_scanned_ap();
     join_falls_back_when_bssid_join_fails();
@@ -744,6 +790,9 @@ int main() {
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
 #endif
+    rejoin_failure_restores_wifi();
+    rejoin_keeps_association_when_scan_empty();
+    rejoin_retries_empty_scan();
     host_failures_trigger_one_rejoin_per_pass();
     spare_larger_than_free_psram_downloads();
     two_large_frames_in_one_pass();

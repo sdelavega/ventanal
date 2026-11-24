@@ -32,7 +32,7 @@ struct WifiScan {
     bool found = false;
 };
 
-WifiScan strongestWifi(Watchdog& watchdog, uint32_t budget = UINT32_MAX) {
+WifiScan scanWifiOnce(Watchdog& watchdog, uint32_t budget) {
     constexpr uint32_t ScanTimeoutMs = 4000;
     const uint32_t started = millis();
     int count = WiFi.scanNetworks(true, true, false, 120, 0, installation.ssid);
@@ -52,6 +52,20 @@ WifiScan strongestWifi(Watchdog& watchdog, uint32_t budget = UINT32_MAX) {
         }
     }
     WiFi.scanDelete();
+    return scan;
+}
+
+WifiScan strongestWifi(Watchdog& watchdog, uint32_t budget = UINT32_MAX) {
+    const uint32_t started = millis();
+    WifiScan scan = scanWifiOnce(watchdog, budget);
+    constexpr uint32_t RetryDelayMs = 250;
+    const uint32_t elapsed = millis() - started;
+    if (scan.count == 0 && WiFi.status() == WL_CONNECTED &&
+        elapsed < budget && budget - elapsed > RetryDelayMs) {
+        watchdog.feed();
+        delay(RetryDelayMs);
+        scan = scanWifiOnce(watchdog, budget - (millis() - started));
+    }
     return scan;
 }
 
@@ -571,10 +585,23 @@ void runRefresh(const char* hostUrl, const char* deviceId,
         const uint32_t scanStarted = millis();
         const WifiScan scan = strongestWifi(watchdog, remaining);
         const uint32_t spent = millis() - scanStarted;
-        const bool disconnected = WiFi.disconnect(false);
-        const bool ok = disconnected && spent < remaining &&
-            joinWifi(watchdog, &scan, remaining - spent);
-        if (!disconnected || spent >= remaining) logWifiScan(scan);
+        bool ok = WiFi.status() == WL_CONNECTED;
+        bool disconnected = false;
+        if (scan.count > 0 && scan.found && spent < remaining && ok) {
+            disconnected = WiFi.disconnect(false);
+            ok = disconnected && joinWifi(watchdog, &scan, remaining - spent);
+            if (disconnected && !ok) {
+                WiFi.begin(installation.ssid, installation.password);
+                const uint32_t restoreStarted = millis();
+                while (WiFi.status() != WL_CONNECTED && millis() - restoreStarted < WIFI_TIMEOUT_MS) {
+                    watchdog.feed(); delay(50);
+                }
+                ok = WiFi.status() == WL_CONNECTED;
+            }
+        } else {
+            logWifiScan(scan);
+        }
+        if (!disconnected && scan.count > 0 && scan.found && spent < remaining) logWifiScan(scan);
         log("wifi rejoin reason=host-unreachable from_dbm=%d to_dbm=%d ok=%d\n",
             from, ok ? int(WiFi.RSSI()) : -127, int(ok));
     };
