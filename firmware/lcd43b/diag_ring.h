@@ -10,7 +10,7 @@
 #include <freertos/portmacro.h>
 #endif
 namespace lcd {
-enum class DiagStage : uint8_t { Wake, Join, Connect, Handshake, Send, Read, Restart, Boot, Reboot, Socket, SocketConnect, SocketSelect, SocketError };
+enum class DiagStage : uint8_t { Wake, Join, Connect, Handshake, Send, Read, Restart, Boot, Reboot, Socket, SocketConnect, SocketSelect, SocketError, TlsSetup };
 struct DiagEntry { uint32_t time; int32_t a, b, c, d, e, f; DiagStage type; };
 struct DiagStorage { uint32_t magic, next, count, unread; DiagEntry entries[96]; };
 #ifndef VENTANAL_HOST_TEST
@@ -37,6 +37,7 @@ public:
     void socketSelected(uint32_t t, int result, int err, int elapsedMs, int timeoutMs, bool writable) {
         add(t, DiagStage::SocketSelect, result, err, elapsedMs, timeoutMs, int(writable));
     }
+    void tlsSetupFailed(uint32_t t, int code, int freeHeap, int largest) { add(t, DiagStage::TlsSetup, code, freeHeap, largest); }
     void socketError(uint32_t t, int fd, int result, int err, int soError) { add(t, DiagStage::SocketError, fd, result, err, soError); }
     void printUnread() {
         for (;;) {
@@ -53,6 +54,7 @@ public:
             case DiagStage::SocketConnect: log("diag ring t=%u socket_connect fd=%d result=%d connect_errno=%d\n",unsigned(e.time),e.a,e.b,e.c); break;
             case DiagStage::SocketSelect: log("diag ring t=%u socket_select result=%d select_errno=%d elapsed_ms=%d timeout_ms=%d writable=%d\n",unsigned(e.time),e.a,e.b,e.c,e.d,e.e); break;
             case DiagStage::SocketError: log("diag ring t=%u socket_error fd=%d result=%d getsockopt_errno=%d so_error=%d\n",unsigned(e.time),e.a,e.b,e.c,e.d); break;
+            case DiagStage::TlsSetup: log("diag ring t=%u tls_setup code=%d (-0x%04X) free_internal=%d largest_internal=%d\n",unsigned(e.time),e.a,unsigned(-e.a),e.b,e.c); break;
             default: { const char* stage=e.type==DiagStage::Connect?"connect":e.type==DiagStage::Handshake?"handshake":e.type==DiagStage::Send?"send":"read";
                 log("diag ring t=%u failure stage=%s errno=%d free_internal=%d largest_internal=%d\n",unsigned(e.time),stage,e.a,e.b,e.c); }
             }

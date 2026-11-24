@@ -852,6 +852,9 @@ void socket_diagnostics_are_distinct() {
     Serial.output.clear(); ring.printUnread();
     assert(Serial.output.find("socket_select result=1 select_errno=0 elapsed_ms=110 timeout_ms=5000 writable=1") != std::string::npos);
     assert(Serial.output.find("socket_error fd=54 result=0 getsockopt_errno=0 so_error=113") != std::string::npos);
+    ring.tlsSetupFailed(7, -0x7F00, 70000, 31000);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("tls_setup code=-32512 (-0x7F00) free_internal=70000 largest_internal=31000") != std::string::npos);
 }
 void reboot_gates_still_hold() {
     lcd::RecoveryRebootGate gate; gate.pending = false;

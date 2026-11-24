@@ -53,7 +53,15 @@ public:
         beginSocketDiagnostics();
         const int connected = WiFiClientSecure::connect(host, port, timeout);
         endSocketDiagnostics();
-        if (!connected) return 0;
+        if (!connected) {
+            // The plain start still runs the TLS setup (socket options, RNG
+            // seed, CA parse, buffers); its error code says which step failed.
+            char text[2];
+            constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
+            diagRing.tlsSetupFailed(millis(), lastError(text, sizeof text),
+                int(heap_caps_get_free_size(internal)), int(heap_caps_get_largest_free_block(internal)));
+            return 0;
+        }
         if (!startTLS()) {
             handshakeFailed_ = true;
             return 0;
