@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
-inline constexpr int HTTPC_ERROR_CONNECTION_REFUSED=-1, HTTPC_ERROR_NOT_CONNECTED=-4,
+inline constexpr int HTTPC_ERROR_CONNECTION_REFUSED=-1, HTTPC_ERROR_SEND_HEADER_FAILED=-2,
+    HTTPC_ERROR_SEND_PAYLOAD_FAILED=-3, HTTPC_ERROR_NOT_CONNECTED=-4,
     HTTPC_ERROR_CONNECTION_LOST=-5, HTTPC_ERROR_READ_TIMEOUT=-11;
 inline constexpr int HTTPC_DISABLE_FOLLOW_REDIRECTS = 0;
 #include "Arduino.h"
@@ -36,6 +37,11 @@ inline bool reuse = true;               // keep-alive, the installed core defaul
 inline std::string lastConnectionHeader;   // Connection: header the request carries
 inline bool socketTestMode = false, socketOpen = false;
 inline size_t fakeHeaderBytes = 0;
+// Socket-mode extras (lcd43b keep-alive): connections opened, and per-response
+// controls a fakeGetResponse may set (both reset at every GET).
+inline unsigned socketConnects = 0;
+inline bool unframedResponse = false;      // no Content-Length (getSize() == -1)
+inline bool serverClosesAfterBody = false; // the server hangs up after the body
 inline bool persistentServer = false;   // HTTP/1.1 server: keeps the socket open
                                           // after the body ONLY under keep-alive
 class WiFiClient {
@@ -57,7 +63,7 @@ public:
     virtual int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; frameBytesRead+=n; return n; }
     virtual int read() { uint8_t byte; return read(&byte, 1) == 1 ? byte : -1; }
     void stop() { socketOpen = false; }
-    bool connected() { if (socketTestMode) return socketOpen; if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
+    bool connected() { if (socketTestMode) return socketOpen && !(serverClosesAfterBody && pos >= response.size()); if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {
     WiFiClient* client = nullptr;
@@ -73,7 +79,13 @@ public:
     bool begin(const String& u) { return begin(u.c_str()); }
     void setReuse(bool r) { reuse = r; }   // the production code disables keep-alive
     void addHeader(const char* k,const char* v) { lastHeaders[k]=v; }
-    String getString() { return responseBody; }
+    String getString() {
+        if (!socketTestMode || !client) return responseBody;
+        String body;   // a real client consumes the body from the socket
+        uint8_t block[1460];
+        for (int n; (n = client->available()) > 0;) body.append(reinterpret_cast<char*>(block), client->read(block, n));
+        return body;
+    }
     void setTimeout(unsigned) {}
     void setConnectTimeout(unsigned) {}
     void setFollowRedirects(int) {}
@@ -94,15 +106,18 @@ public:
         lastConnectionHeader = reuse ? "keep-alive" : "close";
         lastHeaders["Connection"] = lastConnectionHeader;
         fakeResponseHeaders.clear();
+        unframedResponse = serverClosesAfterBody = false;
         const int result = fakeGetResponse ? fakeGetResponse() : status;
         if (socketTestMode) {
+            if (!socketOpen) ++socketConnects;
             socketOpen = true;
             for (size_t i = 0; i < fakeHeaderBytes; ++i) client->read();
             client->resetResponse();
+            if (result < 0) socketOpen = false;   // HTTPClient stops the client on errors
         }
         return result;
     }
-    int getSize() { return sizeFromResponse ? int(response.size()) : advertisedSize; }
+    int getSize() { if (unframedResponse) return -1; return sizeFromResponse ? int(response.size()) : advertisedSize; }
     WiFiClient* getStreamPtr() { return client; }
     bool connected() { return client->connected(); }
     void end() { if (socketTestMode && !reuse) socketOpen = false; }

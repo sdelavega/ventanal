@@ -5,18 +5,24 @@
 #include "../common/resume/resume.h"
 #include "host_request.h"
 #include "sync.h"
-#ifdef VENTANAL_LCD_DIAG_PANEL
 #include <esp_heap_caps.h>
-#endif
+#include <memory>
 
 namespace lcd {
 
+// Range GETs for one staging pass (a refresh's frames or an OTA image). They
+// share `connection` when the pass owns one (the refresh worker: manifest and
+// frames on one keep-alive connection); otherwise this transport keeps its
+// own connection for its lifetime (the OTA staging pass).
 class HostRangeTransport : public RangeTransport {
 public:
     HostRangeTransport(const char* origin, const char* path, const std::string& key,
                        Watchdog& watchdog, uint32_t passStarted, bool ota = false,
-                       const std::function<void(int)>& hostResult = {})
-        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted), ota_(ota), hostResult_(hostResult) {}
+                       const std::function<void(int)>& hostResult = {},
+                       HostConnection* connection = nullptr)
+        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted), ota_(ota),
+          hostResult_(hostResult),
+          own_(connection ? nullptr : new HostConnection), connection_(connection ? *connection : *own_) {}
 
     uint32_t remainingMs() const {
         const uint32_t elapsed = millis() - passStarted_;
@@ -34,23 +40,32 @@ public:
         reason_ = nullptr;
         malformed_ = false;
         status_ = 0;
+        framed_ = false;
         if (!remainingMs()) return interrupt("budget");
-        HostRequest request;
-        if (!request.begin(origin_, String(path_), key_)) return interrupt("transport");
-        request.setRange(start, end, ifRange);
-        auto& http = request.http;
-        const uint32_t remaining = remainingMs();
-        if (!remaining) return interrupt("budget");
-        http.setConnectTimeout(std::min(remaining, uint32_t(5000)));
-        http.setTimeout(std::min(remaining, HTTP_TIMEOUT_MS));
-        watchdog_.feed();
+        const bool complete = receive(source, start, end, ifRange, headers, sink);
+        // Keep the connection only after an exactly-framed body.
+        connection_.finish(complete && framed_ && (status_ == 200 || status_ == 206));
+        return complete;
+    }
+
+private:
+    bool receive(const ResumeSource& source, uint32_t start, uint32_t end, const char* ifRange,
+                 const ResponseHeaders& headers, const ChunkSink& sink) {
         RangeResponse response{};
-        status_ = response.status = http.GET();
-        watchdog_.feed();
-        if (hostResult_) {
-            if (status_ <= 0) http.end();
-            hostResult_(status_);
-        }
+        const int status = connection_.get(origin_, String(path_), key_,
+            [this] { return remainingMs(); },
+            [&](HTTPClient& http) {
+                HostConnection::setRange(http, start, end, ifRange);
+                const uint32_t remaining = remainingMs();
+                http.setConnectTimeout(std::min(remaining, uint32_t(5000)));
+                http.setTimeout(std::min(remaining, HTTP_TIMEOUT_MS));
+            },
+            [this] { watchdog_.feed(); });
+        if (status == HostConnection::kNotBegun) return interrupt("transport");
+        status_ = response.status = status;
+        // A failed GET has already closed the connection, so a re-join in
+        // the hook never leaves a socket behind.
+        if (hostResult_) hostResult_(status_);
 #ifdef VENTANAL_LCD_DIAG_PANEL
         if (!sampledHeap_) {
             constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -65,6 +80,7 @@ public:
         if (response.status <= 0) return interrupt("transport");
         if (response.status == 408 || response.status == 429 || response.status >= 500)
             return false;
+        auto& http = connection_.http;
 
         const auto etag = http.header("ETag");
         const char* tag = etag.c_str();
@@ -98,10 +114,10 @@ public:
         if (!headers(response)) return false;
         if (response.status != 200 && response.status != 206) return true;
         if (!bodySize) return reject("size");
-        return readBody(http, bodySize, length >= 0, sink);
+        framed_ = length >= 0;
+        return readBody(http, bodySize, framed_, sink);
     }
 
-private:
     bool interrupt(const char* reason) {
         reason_ = reason;
         return false;
@@ -109,6 +125,12 @@ private:
 
     bool reject(const char* reason) {
         malformed_ = true;
+        return interrupt(reason);
+    }
+
+    // The body stopped arriving: a transport failure while reading.
+    bool bodyFailure(const char* reason) {
+        connection_.logFailure("read");
         return interrupt(reason);
     }
 
@@ -135,7 +157,7 @@ private:
             if (available > 0) {
                 const size_t limit = std::min({size_t(available), missing, sizeof packet});
                 const int count = stream->read(packet, limit);
-                if (count < 0) return interrupt("short-body");
+                if (count < 0) return bodyFailure("short-body");
                 if (count > 0) {
                     bytesRead_ += count;
                     missing -= count;
@@ -149,8 +171,8 @@ private:
                     continue;
                 }
             }
-            if (!http.connected()) return interrupt("short-body");
-            if (millis() - lastProgress >= BODY_IDLE_MS) return interrupt("body-idle");
+            if (!http.connected()) return bodyFailure("short-body");
+            if (millis() - lastProgress >= BODY_IDLE_MS) return bodyFailure("body-idle");
             delay(2);
         }
         return interrupt("budget");
@@ -166,7 +188,10 @@ private:
     const char* reason_ = nullptr;
     bool malformed_ = false;
     bool ota_;
+    bool framed_ = false;
     std::function<void(int)> hostResult_;
+    std::unique_ptr<HostConnection> own_;   // only without a pass connection
+    HostConnection& connection_;
 #ifdef VENTANAL_LCD_DIAG_PANEL
     bool sampledHeap_ = false;
 #endif

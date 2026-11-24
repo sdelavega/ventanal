@@ -142,11 +142,14 @@ bool syncTime(Watchdog& watchdog) {
     return false;
 }
 
+// The pass's first host request. Opens the pass connection; transportFailed
+// says the GET itself failed (no HTTP answer), for the host-unreachable re-join.
 bool fetchManifest(const char* hostUrl, const char* deviceId,
                    RefreshResult& result, Watchdog& watchdog, const char* skips,
-                   const char* otaReport, const char* otaApproval, ScanHealth health) {
-    HostRequest request;
-    auto& http = request.http;
+                   const char* otaReport, const char* otaApproval, ScanHealth health,
+                   HostConnection& connection, uint32_t passStarted,
+                   const std::function<void(int)>& hostResult, bool& transportFailed) {
+    transportFailed = false;
     // Skip ids are 16 lowercase hex digits (including restored owner state).
     // The comma and tilde separators are permitted literally in a query.
     String path = String("/devices/") + deviceId + "/manifest.json?board=" + BOARD_ID
@@ -163,21 +166,37 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
     if (otaReport[0]) path += String("&ota=") + otaReport;
     if (otaApproval[0]) path += String("&ota_approval=") + otaApproval;
     const auto key = decodeDeviceKey(installation.deviceKey);
-    if (!request.begin(hostUrl, path, key)) {
+    const auto remaining = [&]() -> uint32_t {
+        const uint32_t elapsed = millis() - passStarted;
+        return elapsed < TRANSFER_BUDGET_MS ? TRANSFER_BUDGET_MS - elapsed : 0;
+    };
+    const int status = connection.get(hostUrl, path, key, remaining,
+        [&](HTTPClient& http) {
+            http.setConnectTimeout(std::min(remaining(), uint32_t(5000)));
+            http.setTimeout(std::min(remaining(), HTTP_TIMEOUT_MS));
+        },
+        [&] { watchdog.feed(); });
+    if (status == HostConnection::kNotBegun) {
         log("manifest transport=unavailable\n");
         return false;
     }
-    watchdog.feed();
-    const int status = http.GET();
-    watchdog.feed();
-    if (status != 200 || http.getSize() <= 0 || http.getSize() > 6144) {
+    hostResult(status);
+    auto& http = connection.http;
+    const int size = http.getSize();
+    if (status != 200 || size <= 0 || size > 6144) {
+        transportFailed = status <= 0;
+        connection.finish(false);
         log("manifest status=%d\n", status);
         return false;
     }
     const String body = http.getString();
+    // Keep the connection only after exactly Content-Length bytes.
+    auto* stream = http.getStreamPtr();
+    const bool exact = body.length() == unsigned(size);
+    connection.finish(exact && !(stream && stream->available() > 0));
     const bool secured = !key.empty();
     JsonDocument doc;
-    const bool ok = body.length() == unsigned(http.getSize())
+    const bool ok = exact
         && !deserializeJson(doc, body)
         && (!secured || verifyManifestSignature(doc, key))
         && parseDeviceManifest(doc.as<JsonVariantConst>(), result.manifest);
@@ -193,6 +212,62 @@ bool fetchManifest(const char* hostUrl, const char* deviceId,
         out.quietValid() ? out.quietEnd : -1, secured);
     return true;
 }
+
+// Host-unreachable recovery for one pass: two consecutive transport-level
+// host failures (status <= 0) while Wi-Fi reports connected rescan and
+// re-join the strongest AP, at most once per pass and within its budget.
+class HostRecovery {
+public:
+    HostRecovery(Watchdog& watchdog, HostConnection& connection, uint32_t passStarted)
+        : watchdog_(watchdog), connection_(connection), passStarted_(passStarted) {}
+
+    void report(int status) {
+        if (status <= 0) ++failures_;
+        else failures_ = 0;
+        if (failures_ >= 2) rejoin();
+    }
+
+    // True when Wi-Fi was dropped and is connected again.
+    bool rejoin() {
+        const uint32_t elapsed = millis() - passStarted_;
+        if (rejoined_ || WiFi.status() != WL_CONNECTED || elapsed >= TRANSFER_BUDGET_MS) return false;
+        rejoined_ = true;
+        auto& watchdog = watchdog_;
+        const int from = WiFi.RSSI();
+        const uint32_t remaining = TRANSFER_BUDGET_MS - elapsed;
+        const uint32_t scanStarted = millis();
+        const WifiScan scan = strongestWifi(watchdog, remaining);
+        const uint32_t spent = millis() - scanStarted;
+        bool ok = WiFi.status() == WL_CONNECTED;
+        bool disconnected = false;
+        if (scan.count > 0 && scan.found && spent < remaining && ok) {
+            connection_.close();   // its socket does not survive the re-join
+            disconnected = WiFi.disconnect(false);
+            ok = disconnected && joinWifi(watchdog, &scan, remaining - spent);
+            if (disconnected && !ok) {
+                WiFi.begin(installation.ssid, installation.password);
+                const uint32_t restoreStarted = millis();
+                while (WiFi.status() != WL_CONNECTED && millis() - restoreStarted < WIFI_TIMEOUT_MS) {
+                    watchdog.feed(); delay(50);
+                }
+                ok = WiFi.status() == WL_CONNECTED;
+            }
+        } else {
+            logWifiScan(scan);
+        }
+        if (!disconnected && scan.count > 0 && scan.found && spent < remaining) logWifiScan(scan);
+        log("wifi rejoin reason=host-unreachable from_dbm=%d to_dbm=%d ok=%d\n",
+            from, ok ? int(WiFi.RSSI()) : -127, int(ok));
+        return disconnected && ok;
+    }
+
+private:
+    Watchdog& watchdog_;
+    HostConnection& connection_;
+    uint32_t passStarted_;
+    unsigned failures_ = 0;
+    bool rejoined_ = false;
+};
 
 }  // namespace
 
@@ -404,10 +479,11 @@ FrameDecode decodeFrameFile(FrameEncoding encoding, fs::File& file, FsStore* sto
 
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, FsStore& store, Watchdog& watchdog,
-                           uint32_t passStarted, const std::function<void(int)>& hostResult) {
+                           uint32_t passStarted, const std::function<void(int)>& hostResult,
+                           HostConnection* connection) {
     const uint32_t started = millis();
     const auto key = decodeDeviceKey(installation.deviceKey);
-    HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted, false, hostResult);
+    HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted, false, hostResult, connection);
     const auto target = std::string("frame-") + slotName;
     const auto result = [&](FetchOutcome outcome, const char* reason) {
         const auto size = store.size(target.c_str());
@@ -426,7 +502,7 @@ FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
     auto url = hostAssetUrl(hostUrl, info.url);
     if (url.size() >= sizeof(PartialMeta::url)) {
         // The sidecar has a fixed URL field. Preserve the full source identity
-        // for longer URLs while HostRequest still uses the original URL.
+        // for longer URLs while the request still uses the original URL.
         Sha256 hash;
         hash.update(reinterpret_cast<const uint8_t*>(url.data()), url.size());
         url = "sha256:" + hexBytes(hash.digest(), 32);
@@ -548,7 +624,25 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     if (!result.wifiOk) return;
     DownloadPower radio;
     result.timeOk = syncTime(watchdog);
-    if (!fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval, cache.health)) return;
+    // One keep-alive host connection carries the manifest and every frame
+    // range of this pass; the transfer budget and the host-failure count
+    // start with the manifest.
+    HostConnection connection;
+    const uint32_t passStarted = millis();
+    HostRecovery recovery(watchdog, connection, passStarted);
+    const std::function<void(int)> hostResult = [&](int status) { recovery.report(status); };
+    bool manifestTransportFailed = false;
+    const auto manifest = [&] {
+        return fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval,
+                             cache.health, connection, passStarted, hostResult, manifestTransportFailed);
+    };
+    if (!manifest()) {
+        // Nothing else in the pass can reach the host without a manifest, so
+        // its transport failure completes the count: re-join now (once) and
+        // fetch the manifest once more.
+        if (!manifestTransportFailed || !recovery.rejoin() ||
+            millis() - passStarted >= TRANSFER_BUDGET_MS || !manifest()) return;
+    }
     result.manifestOk = true;
     if (cache.manifestVerified) cache.manifestVerified();
     retireFrameStages();
@@ -569,42 +663,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     for(int i=0;i<count;++i) visible[slots[i]]=true;
     for(int i=0;i<result.manifest.spareCount;++i) visible[3+i]=settings.showArt;
     // Get the small, frequently updated pages onto the display before art.
-    const uint32_t passStarted = millis();
     bool otherPending = false;
-    unsigned hostFailures = 0;
-    bool rejoined = false;
-    const auto hostResult = [&](int status) {
-        if (status <= 0) ++hostFailures;
-        else hostFailures = 0;
-        const uint32_t elapsed = millis() - passStarted;
-        if (hostFailures < 2 || rejoined || WiFi.status() != WL_CONNECTED ||
-            elapsed >= TRANSFER_BUDGET_MS) return;
-        rejoined = true;
-        const int from = WiFi.RSSI();
-        const uint32_t remaining = TRANSFER_BUDGET_MS - elapsed;
-        const uint32_t scanStarted = millis();
-        const WifiScan scan = strongestWifi(watchdog, remaining);
-        const uint32_t spent = millis() - scanStarted;
-        bool ok = WiFi.status() == WL_CONNECTED;
-        bool disconnected = false;
-        if (scan.count > 0 && scan.found && spent < remaining && ok) {
-            disconnected = WiFi.disconnect(false);
-            ok = disconnected && joinWifi(watchdog, &scan, remaining - spent);
-            if (disconnected && !ok) {
-                WiFi.begin(installation.ssid, installation.password);
-                const uint32_t restoreStarted = millis();
-                while (WiFi.status() != WL_CONNECTED && millis() - restoreStarted < WIFI_TIMEOUT_MS) {
-                    watchdog.feed(); delay(50);
-                }
-                ok = WiFi.status() == WL_CONNECTED;
-            }
-        } else {
-            logWifiScan(scan);
-        }
-        if (!disconnected && scan.count > 0 && scan.found && spent < remaining) logWifiScan(scan);
-        log("wifi rejoin reason=host-unreachable from_dbm=%d to_dbm=%d ok=%d\n",
-            from, ok ? int(WiFi.RSSI()) : -127, int(ok));
-    };
     const bool trustedClock = time(nullptr) >= resume_detail::kValidEpoch;
     for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
@@ -649,7 +708,8 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             }
             if (recovered) return FrameDownload{FetchOutcome::Complete, "recovered", 0, 0, 0, 0};
             ScanScope activity(ScanActivity::Receive);
-            auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted, hostResult);
+            auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted,
+                                        hostResult, &connection);
             if (fetched.outcome == FetchOutcome::Complete &&
                 !store.moveCommitted(target.c_str(), version.c_str())) {
                 fetched.outcome = FetchOutcome::NoProgress;

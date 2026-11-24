@@ -12,6 +12,9 @@ inline size_t psramCapacity = SIZE_MAX;
 inline size_t psramInUse = 0;
 inline size_t psramPeak = 0;
 inline std::map<void*, size_t> psramBlocks;
+inline size_t fakeFreeInternal = 0, fakeLargestInternal = 0;
+inline size_t heap_caps_get_free_size(unsigned) { return fakeFreeInternal; }
+inline size_t heap_caps_get_largest_free_block(unsigned) { return fakeLargestInternal; }
 inline void* heap_caps_malloc(size_t n, unsigned caps) {
     if (failAllocation || caps != (MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT)) return nullptr;
     void* p = std::malloc(n);

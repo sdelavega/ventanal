@@ -193,6 +193,10 @@ void resetFakes() {
     std::fill_n(stagedDrops, lcd::SCREEN_SLOTS, false);
     rejectStageSlot = -1;
     fakeTz.clear();
+    socketTestMode = socketOpen = false;
+    socketConnects = 0;
+    fakeHeaderBytes = 0;
+    fakeFreeInternal = fakeLargestInternal = 0;
 }
 
 bool cutFirstPass = false;
@@ -765,6 +769,201 @@ void rejoin_failure_restores_wifi() {
     assert(requestedUrls.size() == 4);
 }
 
+// A transport-level manifest failure while Wi-Fi reports connected ends
+// the pass's only host connection, so it re-joins (once) and fetches the
+// manifest once more; the second failure does not re-join again.
+void manifest_failure_triggers_rejoin() {
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    status = HTTPC_ERROR_CONNECTION_REFUSED;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!result.manifestOk && WiFi.disconnects == 1 && WiFi.pinnedBegins == 1);
+    assert(Serial.output.find("wifi rejoin reason=host-unreachable from_dbm=-50 to_dbm=-45 ok=1")
+           != std::string::npos);
+    assert(requestedUrls.size() == 2);   // the manifest, then once more after the re-join
+    assert(requestedUrls[0] == requestedUrls[1] && requestedUrls[0].find("/manifest.json") != std::string::npos);
+    // A manifest that answers (even with an error status) is not a transport failure.
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    status = 503;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!result.manifestOk && WiFi.disconnects == 0 && requestedUrls.size() == 1);
+}
+
+// Socket-level helpers for the keep-alive tests: zlib frames are one range each.
+struct KeepAlivePass {
+    Entry art, weather, spare;
+    std::vector<uint8_t> artWire, weatherWire, spareWire;
+};
+
+KeepAlivePass keepAlivePass(const char* origin = "http://host") {
+    KeepAlivePass pass;
+    pass.artWire = compressFrame(solidFrame(0xF800));
+    pass.weatherWire = compressFrame(solidFrame(0x07E0));
+    pass.spareWire = compressFrame(solidFrame(0x001F));
+    pass.art = makeEntry("art", pass.artWire, lcd::FrameEncoding::Zlib);
+    pass.weather = makeEntry("weather", pass.weatherWire, lcd::FrameEncoding::Zlib);
+    pass.spare = makeEntry("spare", pass.spareWire, lcd::FrameEncoding::Zlib);
+    // Entries carry the wire hash; the zlib frames are verified on the wire bytes.
+    serveRanges(pass.art, pass.weather, pass.artWire, origin);
+    urlResponses[origin + pass.weather.url] = pass.weatherWire;
+    urlResponses[origin + pass.spare.url] = pass.spareWire;
+    socketTestMode = true;
+    return pass;
+}
+
+int (*innerResponse)() = nullptr;
+std::vector<int> scriptedFailures;   // by GET index (1-based); 0 = serve normally
+std::vector<bool> socketAtGet;
+std::vector<std::string> countersAtGet, proofsAtGet;
+int scriptedResponse() {
+    const size_t call = requestedUrls.size();
+    socketAtGet.push_back(socketOpen);
+    const auto counter = lastHeaders.find("X-Ventanal-Counter");
+    countersAtGet.push_back(counter == lastHeaders.end() ? "" : counter->second);
+    const auto proof = lastHeaders.find("Authorization");
+    proofsAtGet.push_back(proof == lastHeaders.end() ? "" : proof->second);
+    if (call <= scriptedFailures.size() && scriptedFailures[call - 1]) return scriptedFailures[call - 1];
+    return innerResponse();
+}
+void script(std::vector<int> failures) {
+    innerResponse = fakeGetResponse;
+    scriptedFailures = std::move(failures);
+    socketAtGet.clear(); countersAtGet.clear(); proofsAtGet.clear();
+    fakeGetResponse = scriptedResponse;
+}
+
+void pass_reuses_one_connection_for_manifest_and_ranges() {
+    resetFakes();
+    const auto frame = solidFrame(0xF800);
+    const Entry art = makeEntry("art", frame), weather = makeEntry("weather", solidFrame(0x07E0));
+    serveRanges(art, weather, frame);
+    socketTestMode = true;
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], weather.info.id);
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && result.frameOk[0]);
+    assert(frameBytesRead == responseBody.size() + frame.size());   // manifest body + frame, each read once
+    const size_t ranges = (frame.size() + kResumeChunk - 1) / kResumeChunk;
+    assert(rangeStarts.size() == ranges && requestedUrls.size() == 1 + ranges);
+    assert(socketConnects == 1);                    // manifest and every range on one connection
+    assert(lastConnectionHeader == "keep-alive");
+    assert(!socketOpen);                            // the pass closed it at the end
+    assert(Serial.output.find("transport fail") == std::string::npos);
+}
+
+void reused_connection_failure_retries_fresh_once() {
+    resetFakes();
+    const auto pass = keepAlivePass();
+    script({0, HTTPC_ERROR_CONNECTION_LOST});       // the reused connection is stale
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], pass.weather.info.id);
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && result.frameOk[0]);
+    assert(requestedUrls.size() == 3 && requestedUrls[1] == requestedUrls[2]);
+    assert(socketAtGet[1] && !socketAtGet[2] && socketConnects == 2);   // retried on a fresh connection
+    assert(Serial.output.find("transport retry=fresh-connection reason=status-5\n") != std::string::npos);
+
+    // Both attempts fail: no third attempt.
+    resetFakes();
+    const auto again = keepAlivePass();
+    script({0, HTTPC_ERROR_CONNECTION_LOST, HTTPC_ERROR_CONNECTION_LOST});
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && !result.frameOk[0]);
+    assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + again.art.url) == 2);
+
+    // A failure on a fresh connection is not retried (the manifest's, here).
+    resetFakes();
+    keepAlivePass();
+    script({HTTPC_ERROR_CONNECTION_LOST});
+    // (no AP is visible, so the pass keeps its association and does not refetch)
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!result.manifestOk && requestedUrls.size() == 1);
+
+    // The response had started: never retried.
+    resetFakes();
+    keepAlivePass();
+    script({0, HTTPC_ERROR_CONNECTION_LOST});
+    fakeHeaderBytes = 1;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && !result.frameOk[0] && requestedUrls.size() == 2);
+}
+
+void connection_closed_after_unframed_body() {
+    resetFakes();
+    const auto pass = keepAlivePass();
+    innerResponse = fakeGetResponse;
+    fakeGetResponse = [] {
+        const int result = innerResponse();
+        if (lastUrl.find("/frames/weather-") != std::string::npos)
+            fakeResponseHeaders["Connection"] = "close";     // framed, but the server closes
+        if (lastUrl.find("/frames/art-") != std::string::npos)
+            unframedResponse = serverClosesAfterBody = true; // body ends at the hang-up
+        return result;
+    };
+    const char ids[lcd::SCREEN_SLOTS][17]{};
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + pass.spare.body + "]");
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && result.frameOk[0] && result.frameOk[1] && result.frameOk[3]);
+    // manifest + weather on the first connection, art on the second, spare on a third
+    assert(requestedUrls.size() == 4 && socketConnects == 3);
+}
+
+void retry_uses_new_counter() {
+    resetFakes();
+    const auto originalInstallation = lcd::installation;
+    strcpy(lcd::installation.deviceKey, std::string(64, 'a').c_str());
+    strcpy(lcd::installation.pairing, "test-device");
+    strcpy(lcd::installation.certificate, "fake certificate for the fake HTTP client");
+    const auto pass = keepAlivePass("https://host");
+    JsonDocument manifest;
+    assert(!deserializeJson(manifest, responseBody));
+    const auto key = decodeDeviceKey(lcd::installation.deviceKey);
+    manifest["sig"] = hmacHex(key, canonicalJson(manifest.as<JsonVariantConst>()));
+    responseBody.clear();
+    serializeJson(manifest, responseBody);
+    script({0, HTTPC_ERROR_CONNECTION_LOST});
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], pass.weather.info.id);
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("https://host", "lcd43b", ids, result, watchdog);
+    lcd::installation = originalInstallation;
+    assert(result.manifestOk && result.frameOk[0] && countersAtGet.size() == 3);
+    assert(std::stoull(countersAtGet[2]) > std::stoull(countersAtGet[1]));
+    assert(std::stoull(countersAtGet[1]) > std::stoull(countersAtGet[0]));
+    assert(!proofsAtGet[1].empty() && proofsAtGet[1] != proofsAtGet[2]);
+    assert(proofsAtGet[2] == "Ventanal " + requestProof(key, "GET", pass.art.url.c_str(),
+                                                        std::stoull(countersAtGet[2])));
+}
+
+void transport_fail_log_has_heap_and_no_identifiers() {
+    resetFakes();
+    const auto pass = keepAlivePass();
+    fakeFreeInternal = 123456; fakeLargestInternal = 65536;
+    script({0, HTTPC_ERROR_CONNECTION_LOST, HTTPC_ERROR_CONNECTION_REFUSED});
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[1], pass.weather.info.id);
+    lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && !result.frameOk[0]);
+    const auto reused = Serial.output.find(
+        "transport fail stage=read free_internal=123456 largest_internal=65536 reused=1\n");
+    const auto fresh = Serial.output.find(
+        "transport fail stage=connect free_internal=123456 largest_internal=65536 reused=0\n");
+    assert(reused != std::string::npos && fresh != std::string::npos && reused < fresh);
+    for (size_t at = Serial.output.find("transport "); at != std::string::npos;
+         at = Serial.output.find("transport ", at + 1)) {
+        const auto line = Serial.output.substr(at, Serial.output.find('\n', at) - at);
+        assert(line.find("host") == std::string::npos && line.find('/') == std::string::npos);
+        assert(line.find(':') == std::string::npos && line.find("lcd43b") == std::string::npos);
+    }
+}
+
 int main() {
     join_uses_strongest_scanned_ap();
     join_falls_back_when_bssid_join_fails();
@@ -773,7 +972,7 @@ int main() {
     static_assert(!VENTANAL_TEST_RELEASE_KEY, "owner key must not enable bench mode");
     resetFakes();
     lcd::installation = {};
-    lcd::HostRequest unpaired;
+    lcd::HostConnection unpaired;
     assert(!unpaired.begin("http://host", "/manifest", {}));
     strcpy(lcd::installation.deviceKey, std::string(64, 'a').c_str());
     strcpy(lcd::installation.pairing, "test-device");
@@ -790,6 +989,12 @@ int main() {
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
 #endif
+    manifest_failure_triggers_rejoin();
+    pass_reuses_one_connection_for_manifest_and_ranges();
+    reused_connection_failure_retries_fresh_once();
+    connection_closed_after_unframed_body();
+    retry_uses_new_counter();
+    transport_fail_log_has_heap_and_no_identifiers();
     rejoin_failure_restores_wifi();
     rejoin_keeps_association_when_scan_empty();
     rejoin_retries_empty_scan();
@@ -1153,12 +1358,10 @@ int main() {
         }
         assert(std::count(requestedUrls.begin(), requestedUrls.end(), "http://host" + weather.url) == 1);
     }
-    {   // Connection-close framing must actually ask for closure: the
-        // outgoing request carries Connection: close (keep-alive disabled),
-        // so a persistent-capable HTTP/1.1 server — one that keeps the
-        // socket open after the body under keep-alive — hangs up and the
-        // frame verifies (round-4 Important 1: the default keep-alive made
-        // every such download time out on the close grace).
+    {   // Keep-alive (hardware fix 8): a persistent HTTP/1.1 server keeps the
+        // socket open after the body, and a framed body (Content-Length)
+        // completes without waiting for a hang-up (round-4 Important 1 was
+        // the unframed case, which still waits for the close).
         resetFakes();
         const std::vector<uint8_t> frame = solidFrame(0x001F);
         Entry art = makeEntry("art", frame);
@@ -1168,8 +1371,7 @@ int main() {
         CountingWatchdog watchdog;
         std::vector<uint8_t> buffer(lcd::FRAME_BYTES, 0);
         assert(receiveFrame(art, buffer, watchdog));
-        assert(lastConnectionHeader == "close");   // asked the server to close
-        assert(!reuse);                            // keep-alive disabled
+        assert(lastConnectionHeader == "keep-alive");   // one connection per pass
         assert(buffer == frame && files.empty());
     }
     {   // Manifest ok but a required frame fails: the failure is tracked per
@@ -1202,7 +1404,7 @@ int main() {
         assert(Serial.output.find("frame slot=weather outcome=failed reason=size got=0 have=0")
                != std::string::npos);
         assert(stagedBodies[0].available() && !stagedBodies[1].available() && files.size() == 1);
-        assert(lastConnectionHeader == "close");  // every request asks closure
+        assert(lastConnectionHeader == "keep-alive");  // requests share the pass connection
     }
     {   // The shared queue wire format is sent on the device manifest GET.
         resetFakes();

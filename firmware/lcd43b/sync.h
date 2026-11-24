@@ -55,7 +55,8 @@ struct ResidentCache {
     bool retryFileSave[SCREEN_SLOTS]{};
 };
 
-// Budgets (ms). The transfer budget is shared by all frame downloads in the pass;
+// Budgets (ms). The transfer budget is shared by the manifest and all frame
+// downloads in the pass;
 // the watchdog timeout must exceed the longest blocking call (one HTTP
 // GET with its connect + header timeouts).
 constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
@@ -162,10 +163,14 @@ struct FrameDownload {
     int status;
 };
 
+class HostConnection;
+
 // Receive and verify exactly the advertised wire bytes into the partial store.
+// With `connection` the range GETs reuse the pass's keep-alive connection.
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, FsStore& store, Watchdog& watchdog,
-                           uint32_t passStarted, const std::function<void(int)>& hostResult = {});
+                           uint32_t passStarted, const std::function<void(int)>& hostResult = {},
+                           HostConnection* connection = nullptr);
 
 // Keep queued sources visible to committed-file housekeeping.
 bool queuedFrameStage(FsStore& store, const char* target);
