@@ -848,6 +848,10 @@ void socket_diagnostics_are_distinct() {
     Serial.output.clear(); ring.printUnread();
     assert(Serial.output.find("socket fd=54 socket_errno=0") != std::string::npos);
     assert(Serial.output.find("socket_connect fd=54 result=-1 connect_errno=9") != std::string::npos);
+    ring.socketSelected(5, 1, 0, 110, 5000, true); ring.socketError(6, 54, 0, 0, 113);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("socket_select result=1 select_errno=0 elapsed_ms=110 timeout_ms=5000 writable=1") != std::string::npos);
+    assert(Serial.output.find("socket_error fd=54 result=0 getsockopt_errno=0 so_error=113") != std::string::npos);
 }
 void reboot_gates_still_hold() {
     lcd::RecoveryRebootGate gate; gate.pending = false;
