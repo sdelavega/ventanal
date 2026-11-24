@@ -11,6 +11,7 @@ class Preferences;
 inline constexpr size_t otaCacheOffset = 0x820000;
 inline constexpr size_t otaCacheSize = 0x17D0000;
 inline constexpr size_t otaSlotSize = 0x400000;
+inline constexpr uint32_t otaBodyIdleMs = 15000;
 inline FirmwareOffer manifestFirmware{};
 
 inline bool otaCanInstall(int battery, int minute, int quietStart, int quietEnd) {

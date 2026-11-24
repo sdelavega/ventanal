@@ -964,6 +964,38 @@ void transport_fail_log_has_heap_and_no_identifiers() {
     }
 }
 
+void body_idle_uses_budget_up_to_15s() {
+    for (bool ota : {false, true}) {
+        for (uint32_t budget : {uint32_t(60000), uint32_t(9000), uint32_t(15000)}) {
+            resetFakes();
+            response = {1, 2, 3}; advertisedSize = 3;
+            delayedFrom = 0; delayedUntilMs = 8000; holdConnection = true;
+            const uint32_t started = millis();
+            const uint32_t passStarted = started - (lcd::TRANSFER_BUDGET_MS - budget);
+            CountingWatchdog watchdog; const std::string key;
+            lcd::HostRangeTransport transport("http://host", "/range", key, watchdog, passStarted, ota);
+            const ResumeSource source{"http://host/range", "id", "", 3, true};
+            size_t received = 0;
+            const bool complete = transport.get(source, 0, 2, "", [](const RangeResponse&) { return true; },
+                [&](const uint8_t*, size_t count) { received += count; return true; });
+            assert(complete && received == 3 && millis() - started >= 8000 && millis() - started < 8050);
+            assert(watchdog.feeds > 0);
+        }
+        for (uint32_t budget : {uint32_t(60000), uint32_t(9000)}) {
+            resetFakes(); response = {1, 2, 3}; advertisedSize = 3; stallBody = true;
+            const uint32_t started = millis();
+            CountingWatchdog watchdog; const std::string key;
+            lcd::HostRangeTransport transport("http://host", "/range", key, watchdog,
+                started - (lcd::TRANSFER_BUDGET_MS - budget), ota);
+            const ResumeSource source{"http://host/range", "id", "", 3, true};
+            assert(!transport.get(source, 0, 2, "", [](const RangeResponse&) { return true; },
+                [](const uint8_t*, size_t) { return true; }));
+            assert(millis() - started >= std::min(budget, uint32_t(15000)) - 20);
+            assert(millis() - started <= std::min(budget, uint32_t(15000)) + 20);
+        }
+    }
+}
+
 void handshake_timeout_uses_remaining_budget() {
     assert(lcd::handshakeTimeoutSeconds(25000) == 20);
     assert(lcd::handshakeTimeoutSeconds(7500) == 7);
@@ -1009,6 +1041,9 @@ void restore_wait_bounded_by_budget() {
 }
 
 int main() {
+    #ifndef VENTANAL_OWNER_KEY_TEST
+    body_idle_uses_budget_up_to_15s();
+    #endif
     handshake_timeout_uses_remaining_budget();
     join_uses_strongest_scanned_ap();
     join_falls_back_when_bssid_join_fails();

@@ -5,6 +5,7 @@
 #include "../ventanal/battery.h"
 #include "../ventanal/cache.h"
 #include "../ventanal/http.h"
+#include "../ventanal/ota.h"
 #include <Inkplate.h>
 #include <cassert>
 #include <iostream>
@@ -83,6 +84,32 @@ static void retry_uses_new_counter() {
 }
 static void no_retry_after_response_bytes() {
     assert(!retryRequest(true, 1) && retryCalls == 1);
+}
+
+static void body_idle_uses_budget_up_to_15s() {
+    for (uint32_t budget : {uint32_t(60000), uint32_t(12000)}) {
+        fakeClock = 0; responseBody.clear(); response = {1, 2, 3}; advertisedSize = 3;
+        delayedFrom = 0; delayedUntilMs = 11000; holdConnection = true;
+        fakeGetResponse = nullptr;
+        const ResumeSource source{"https://test:8766/firmware", "id", "", 3, false};
+        HostRangeTransport transport(source.url, millis(), budget, otaBodyIdleMs);
+        assert(transport.get(source, 0, kWholeGet, "", [](const RangeResponse&) { return true; },
+                             [](const uint8_t*, size_t) { return true; }));
+        assert(millis() >= 11000 && millis() < 11050);
+    }
+    delayedUntilMs = 0; holdConnection = false;
+    for (uint32_t budget : {uint32_t(60000), uint32_t(9000)}) {
+        fakeClock = 0; response = {1, 2, 3}; advertisedSize = 3; stallBody = true;
+        const ResumeSource source{"https://test:8766/firmware", "id", "", 3, false};
+        const uint32_t started = millis();
+        HostRangeTransport transport(source.url, started, budget, otaBodyIdleMs);
+        assert(!transport.get(source, 0, kWholeGet, "", [](const RangeResponse&) { return true; },
+                              [](const uint8_t*, size_t) { return true; }));
+        const uint32_t elapsed = millis() - started;
+        assert(elapsed >= std::min(budget, uint32_t(15000)) - 20);
+        assert(elapsed <= std::min(budget, uint32_t(15000)) + 20);
+    }
+    stallBody = false;
 }
 
 static void epaper_handshake_timeout_uses_remaining_budget() {
@@ -221,5 +248,6 @@ int main() {
     fresh_connection_failure_not_retried();
     retry_uses_new_counter();
     no_retry_after_response_bytes();
+    body_idle_uses_budget_up_to_15s();
     std::cout << "secure transport: proofs, no HTTP downgrade, signed manifest tamper rejection and last-good frame hashes passed\n";
 }

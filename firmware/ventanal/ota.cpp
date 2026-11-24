@@ -35,7 +35,6 @@ namespace {
 constexpr char recordKey[] = "ota-record";
 constexpr char attemptsKey[] = "ota-attempts";
 constexpr uint32_t transferMs = 60000;
-constexpr uint32_t idleMs = 10000;
 // Budget for a full staged-image hash plus a second read, flash write and
 // finalization at the largest supported image size.
 constexpr uint32_t installReserveMs = 40000;
@@ -258,7 +257,7 @@ OtaFailure installHost(Preferences& prefs, const FirmwareOffer& offer,
 
     const auto url = std::string(installation.host) + path;
     const auto started = otaClock();
-    HostRangeTransport transport(url.c_str(), started, transferMs, idleMs);
+    HostRangeTransport transport(url.c_str(), started, transferMs, otaBodyIdleMs);
     return stageAndInstall(prefs, *target, release, url.c_str(), transport, started, attempts,
                            version, offer.approval, stillAllowed, installed, deferred, prepareStorage, feed);
 }

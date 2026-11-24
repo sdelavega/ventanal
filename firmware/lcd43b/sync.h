@@ -69,7 +69,7 @@ constexpr uint32_t WIFI_TIMEOUT_MS = 15000;
 constexpr uint32_t NTP_TIMEOUT_MS = 10000;
 constexpr uint32_t HTTP_TIMEOUT_MS = 10000;
 constexpr uint32_t TRANSFER_BUDGET_MS = 60000;
-constexpr uint32_t BODY_IDLE_MS = 6000;
+constexpr uint32_t BODY_IDLE_MS = 15000;
 // Bounded completion check for the connection-close framing below: how long
 // a body without Content-Length waits for the server to hang up after the
 // expected bytes arrive.

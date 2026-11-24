@@ -274,6 +274,34 @@ def test_open_mode_rejects_resolver_supplied_host(request, monkeypatch):
         assert connection.getresponse().status == 400
 
 
+@pytest.fixture
+def fast_test_dns(monkeypatch):
+    monkeypatch.setattr("socket.getfqdn", lambda *args: "localhost")
+
+
+def test_tls_handshake_timeout_is_20s(fast_test_dns, web, monkeypatch):
+    import socket
+    from threading import Event
+
+    _, srv, _ = web
+    srv.ui.auth.set_password('test secret', 'test secret')
+    srv.ui.enable_security()
+    seen = []
+    started = Event()
+    wrap_socket = ssl.SSLContext.wrap_socket
+
+    def observe(self, sock, *args, **kwargs):
+        if kwargs.get('server_side'):
+            seen.append(sock.gettimeout())
+            started.set()
+        return wrap_socket(self, sock, *args, **kwargs)
+
+    monkeypatch.setattr(ssl.SSLContext, 'wrap_socket', observe)
+    with socket.create_connection(('127.0.0.1', srv.tls_server.server_address[1]), timeout=2):
+        assert started.wait(2)
+    assert seen == [20]
+
+
 def test_silent_tls_connection_does_not_block_other_clients(web, monkeypatch):
     import socket
     from threading import Event
