@@ -222,16 +222,34 @@ public:
         : watchdog_(watchdog), connection_(connection), passStarted_(passStarted) {}
 
     void report(int status) {
+        networkRecovery.response(status);
         if (status <= 0) ++failures_;
         else failures_ = 0;
         if (failures_ >= 2) rejoin();
     }
+
+    bool takeFrameRetry() { const bool retry = frameRetry_; frameRetry_ = false; return retry; }
 
     // True when Wi-Fi was dropped and is connected again.
     bool rejoin() {
         const uint32_t elapsed = millis() - passStarted_;
         if (rejoined_ || WiFi.status() != WL_CONNECTED || elapsed >= TRANSFER_BUDGET_MS) return false;
         rejoined_ = true;
+        if (networkRecovery.postWake) {
+            connection_.close();
+            WiFi.disconnect(true);
+            WiFi.mode(WIFI_OFF);
+            watchdog_.feed();
+            delay(100);
+            WiFi.mode(WIFI_STA);
+            const uint32_t spent = millis() - passStarted_;
+            const bool ok = spent < TRANSFER_BUDGET_MS &&
+                joinWifi(watchdog_, nullptr, TRANSFER_BUDGET_MS - spent);
+            networkRecovery.restarted();
+            frameRetry_ = ok;
+            log("wifi restart reason=post-wake-unreachable ok=%d\n", int(ok));
+            return ok;
+        }
         auto& watchdog = watchdog_;
         const int from = WiFi.RSSI();
         const uint32_t remaining = TRANSFER_BUDGET_MS - elapsed;
@@ -271,6 +289,7 @@ private:
     uint32_t passStarted_;
     unsigned failures_ = 0;
     bool rejoined_ = false;
+    bool frameRetry_ = false;
 };
 
 }  // namespace
@@ -624,6 +643,14 @@ void runRefresh(const char* hostUrl, const char* deviceId,
                 const DeviceSettings& settings, const char* skips,
                 const ResidentCache& cache, const char* otaReport, const char* otaApproval) {
     result = RefreshResult{};
+    const bool restartAtStart = networkRecovery.restartDone;
+    bool passTransportFailed = false;
+    struct FinishRecovery {
+        bool started; bool& failed;
+        ~FinishRecovery() {
+            if (started) networkRecovery.finishPass(failed, WiFi.status() == WL_CONNECTED);
+        }
+    } finishRecovery{restartAtStart, passTransportFailed};
     result.wifiOk = wifiConnect(watchdog);
     if (!result.wifiOk) return;
     DownloadPower radio;
@@ -634,7 +661,10 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     HostConnection connection;
     const uint32_t passStarted = millis();
     HostRecovery recovery(watchdog, connection, passStarted);
-    const std::function<void(int)> hostResult = [&](int status) { recovery.report(status); };
+    const std::function<void(int)> hostResult = [&](int status) {
+        passTransportFailed = status <= 0;
+        recovery.report(status);
+    };
     bool manifestTransportFailed = false;
     const auto manifest = [&] {
         return fetchManifest(hostUrl, deviceId, result, watchdog, skips, otaReport, otaApproval,
@@ -645,7 +675,9 @@ void runRefresh(const char* hostUrl, const char* deviceId,
         // its transport failure completes the count: re-join now (once) and
         // fetch the manifest once more.
         if (!manifestTransportFailed || !recovery.rejoin() ||
-            millis() - passStarted >= TRANSFER_BUDGET_MS || !manifest()) return;
+            millis() - passStarted >= TRANSFER_BUDGET_MS) return;
+        recovery.takeFrameRetry();
+        if (!manifest()) return;
     }
     result.manifestOk = true;
     if (cache.manifestVerified) cache.manifestVerified();
@@ -714,6 +746,10 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             ScanScope activity(ScanActivity::Receive);
             auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted,
                                         hostResult, &connection);
+            if (fetched.status <= 0 && recovery.takeFrameRetry() &&
+                millis() - passStarted < TRANSFER_BUDGET_MS)
+                fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted,
+                                       hostResult, &connection);
             if (fetched.outcome == FetchOutcome::Complete &&
                 !store.moveCommitted(target.c_str(), version.c_str())) {
                 fetched.outcome = FetchOutcome::NoProgress;

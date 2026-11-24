@@ -479,6 +479,25 @@ void loop() {
         settingsSaveFailedAt = millis();
     }
     persistDeferred(false);
+    if (!refreshBusy && lcd::networkRecovery.rebootDue()) {
+        const uint32_t epoch = ventanal::trustedEpoch(time(nullptr));
+        const uint32_t last = prefs.getUInt("net-reboot", 0);
+        if (lcd::networkRebootAllowed(true, updateBoot.pending || installRequested ||
+                                      installQueued != lcd::UpdateSource::None || refreshStagingUpdate,
+                                      settingsPage.active, updateScreenShowing, epoch, last)) {
+            ScanoutSavePause pause(!LitNvsWrites);
+            if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
+            for (int i = 0; i < lcd::SCREEN_SLOTS + 2 && persistDeferred(false); ++i) {}
+            const bool selectionSaved = lcd::saveSelection(prefs, screenIndex, spareCursor);
+            contentStaleness.checkpoint(prefs, epoch);
+            if (!settingsDirty && selectionSaved && !contentStaleness.checkpointDirty &&
+                prefs.putUInt("net-reboot", epoch) == sizeof(epoch)) {
+                lcd::log("power reboot reason=network-stuck\n");
+                Serial.flush();
+                esp_restart();
+            }
+        }
+    }
     if (!updateBoot.pending && installQueued == lcd::UpdateSource::None) tickPower();
     delay(2);
 }

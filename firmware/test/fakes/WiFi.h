@@ -17,6 +17,7 @@ struct FakeWiFi {
     int currentRssi = -50, currentChannel = 1;
     int pinnedBegins = 0, plainBegins = 0, disconnects = 0;
     int failedPlainBegins = 0, scans = 0;
+    bool lastDisconnectOff = false; int offModes = 0, staModes = 0;
     std::vector<int> scanCounts;
     int selectedChannel = 0;
     std::array<uint8_t, 6> selectedBssid{};
@@ -25,9 +26,9 @@ struct FakeWiFi {
     wifi_ps_type_t getSleep() { return sleeping; }
     bool setSleep(wifi_ps_type_t value) { sleeping=value; ++sleepChanges; return true; }
     bool setSleep(bool value) { return setSleep(value ? WIFI_PS_MIN_MODEM : WIFI_PS_NONE); }
-    bool disconnect(bool) { ++disconnects; connected = false; return true; }
+    bool disconnect(bool off) { lastDisconnectOff = off; ++disconnects; connected = false; return true; }
     void persistent(bool) {}
-    void mode(int) {}
+    void mode(int value) { if (value == WIFI_OFF) ++offModes; if (value == WIFI_STA) ++staModes; }
     void setScanMethod(wifi_scan_method_t) {}
     void setSortMethod(wifi_sort_method_t) {}
     void begin(const char*, const char*) { ++plainBegins; connected = plainBegins > failedPlainBegins; }

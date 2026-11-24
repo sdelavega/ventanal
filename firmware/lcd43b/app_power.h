@@ -94,6 +94,7 @@ void sleepPower() {
         return;
     }
     // A rejected/failed sleep has no new wake cause or post-wake probe.
+    lcd::networkRecovery.woke();
     const auto reason=esp_sleep_get_wakeup_cause();
     if(powerSession.touchReady || powerSession.probeDue(millis()))
         powerSession.probed(probeTouchAfterWake(),millis());

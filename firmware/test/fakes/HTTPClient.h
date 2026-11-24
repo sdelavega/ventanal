@@ -39,7 +39,20 @@ inline bool socketTestMode = false, socketOpen = false;
 inline size_t fakeHeaderBytes = 0;
 // Socket-mode extras (lcd43b keep-alive): connections opened, and per-response
 // controls a fakeGetResponse may set (both reset at every GET).
-inline unsigned socketConnects = 0;
+inline unsigned socketConnects = 0, socketCloses = 0;
+inline std::vector<bool> fakeSocketTable;
+inline int fakeSocket = -1;
+inline void closeFakeSocket() {
+    if (fakeSocket >= 0 && fakeSocketTable[size_t(fakeSocket)]) {
+        fakeSocketTable[size_t(fakeSocket)] = false;
+        ++socketCloses;
+    }
+    fakeSocket = -1;
+    socketOpen = false;
+}
+inline size_t fakeSocketsOpen() {
+    return std::count(fakeSocketTable.begin(), fakeSocketTable.end(), true);
+}
 inline bool unframedResponse = false;      // no Content-Length (getSize() == -1)
 inline bool serverClosesAfterBody = false; // the server hangs up after the body
 inline bool persistentServer = false;   // HTTP/1.1 server: keeps the socket open
@@ -62,7 +75,7 @@ public:
     size_t readBytes(uint8_t* b, size_t n) { ++readBytesCalls; largestRead=std::max(largestRead,n); return read(b,n); }
     virtual int read(uint8_t* b, size_t n) { ++frameReadCalls; fakeClock+=readDelay; largestRead=std::max(largestRead,n); n=std::min(n,response.size()-pos); std::memcpy(b,response.data()+pos,n); pos+=n; frameBytesRead+=n; return n; }
     virtual int read() { uint8_t byte; return read(&byte, 1) == 1 ? byte : -1; }
-    void stop() { socketOpen = false; }
+    void stop() { closeFakeSocket(); }
     bool connected() { if (socketTestMode) return socketOpen && !(serverClosesAfterBody && pos >= response.size()); if (stallBody || holdConnection) return true; if (pos < response.size()) return true; return persistentServer && reuse; }
 };
 class HTTPClient {
@@ -109,16 +122,20 @@ public:
         unframedResponse = serverClosesAfterBody = false;
         const int result = fakeGetResponse ? fakeGetResponse() : status;
         if (socketTestMode) {
-            if (!socketOpen) ++socketConnects;
+            if (!socketOpen) {
+                ++socketConnects;
+                fakeSocket = int(fakeSocketTable.size());
+                fakeSocketTable.push_back(true);
+            }
             socketOpen = true;
             for (size_t i = 0; i < fakeHeaderBytes; ++i) client->read();
             client->resetResponse();
-            if (result < 0) socketOpen = false;   // HTTPClient stops the client on errors
+            if (result < 0) closeFakeSocket();   // HTTPClient stops the client on errors
         }
         return result;
     }
     int getSize() { if (unframedResponse) return -1; return sizeFromResponse ? int(response.size()) : advertisedSize; }
     WiFiClient* getStreamPtr() { return client; }
     bool connected() { return client->connected(); }
-    void end() { if (socketTestMode && !reuse) socketOpen = false; }
+    void end() { if (socketTestMode && !reuse) closeFakeSocket(); }
 };

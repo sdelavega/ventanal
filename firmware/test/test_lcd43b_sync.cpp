@@ -194,7 +194,7 @@ void resetFakes() {
     rejectStageSlot = -1;
     fakeTz.clear();
     socketTestMode = socketOpen = false;
-    socketConnects = 0;
+    socketConnects = socketCloses = 0; fakeSocketTable.clear(); fakeSocket = -1;
     fakeHeaderBytes = 0;
     fakeFreeInternal = fakeLargestInternal = 0;
 }
@@ -772,6 +772,51 @@ void rejoin_failure_restores_wifi() {
 // A transport-level manifest failure while Wi-Fi reports connected ends
 // the pass's only host connection, so it re-joins (once) and fetches the
 // manifest once more; the second failure does not re-join again.
+void post_wake_failure_does_full_wifi_restart() {
+    resetFakes(); lcd::networkRecovery = {};
+    lcd::networkRecovery.woke();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    status = HTTPC_ERROR_CONNECTION_REFUSED;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(WiFi.disconnects == 1 && WiFi.lastDisconnectOff && WiFi.offModes == 1 && WiFi.staModes == 1);
+    assert(requestedUrls.size() == 2);
+    assert(Serial.output.find("wifi restart reason=post-wake-unreachable ok=1") != std::string::npos);
+}
+void non_wake_failure_keeps_plain_rejoin() {
+    resetFakes(); lcd::networkRecovery = {};
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}}; status = HTTPC_ERROR_CONNECTION_REFUSED;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(WiFi.disconnects == 1 && !WiFi.lastDisconnectOff && WiFi.offModes == 0);
+}
+void success_clears_wake_flag() {
+    lcd::NetworkRecovery state; state.woke(); state.response(200);
+    assert(!state.postWake && !state.rebootDue());
+}
+void stuck_two_passes_after_restart_reboots() {
+    resetFakes(); lcd::networkRecovery = {}; lcd::networkRecovery.woke();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}}; status = HTTPC_ERROR_CONNECTION_REFUSED;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!lcd::networkRecovery.rebootDue());
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(!lcd::networkRecovery.rebootDue());
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(lcd::networkRecovery.rebootDue());
+    lcd::networkRecovery = {};
+}
+void reboot_rate_limited() {
+    assert(!lcd::networkRebootAllowed(true, false, false, false, 1704067300, 1704067299));
+    assert(lcd::networkRebootAllowed(true, false, false, false, 1704069200, 1704067299));
+    assert(!lcd::networkRebootAllowed(true, false, false, false, 0, 1704067299));
+}
+void no_reboot_during_ota_or_settings() {
+    assert(!lcd::networkRebootAllowed(true, true, false, false, 1704069200, 0));
+    assert(!lcd::networkRebootAllowed(true, false, true, false, 1704069200, 0));
+    assert(!lcd::networkRebootAllowed(true, false, false, true, 1704069200, 0));
+}
+
 void manifest_failure_triggers_rejoin() {
     resetFakes();
     WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
@@ -964,6 +1009,60 @@ void transport_fail_log_has_heap_and_no_identifiers() {
     }
 }
 
+void no_socket_survives_pass() {
+    for (int failure : {0, HTTPC_ERROR_CONNECTION_REFUSED, HTTPC_ERROR_CONNECTION_LOST, 503}) {
+        resetFakes();
+        const auto pass = keepAlivePass();
+        if (failure) script({0, failure});
+        char ids[lcd::SCREEN_SLOTS][17]{};
+        strcpy(ids[1], pass.weather.info.id);
+        lcd::RefreshResult result; CountingWatchdog watchdog;
+        refresh("http://host", "lcd43b", ids, result, watchdog);
+        assert(fakeSocketsOpen() == 0 && socketConnects == socketCloses);
+    }
+    resetFakes(); keepAlivePass();
+    script({HTTPC_ERROR_CONNECTION_REFUSED});
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(fakeSocketsOpen() == 0 && socketConnects == socketCloses);
+    assert(Serial.output.find("transport fail stage=connect ") != std::string::npos);
+}
+
+void sockets_stable_over_50_passes() {
+    resetFakes(); const auto pass = keepAlivePass();
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    strcpy(ids[0], pass.art.info.id); strcpy(ids[1], pass.weather.info.id);
+    CountingWatchdog watchdog;
+    for (int i = 0; i < 50; ++i) {
+        lcd::RefreshResult result;
+        refresh("http://host", "lcd43b", ids, result, watchdog);
+        assert(result.manifestOk && fakeSocketsOpen() == 0);
+    }
+    assert(socketConnects == 50 && socketCloses == 50);
+}
+
+void rejoin_closes_open_client() {
+    resetFakes(); keepAlivePass();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    script({HTTPC_ERROR_CONNECTION_REFUSED});
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(WiFi.disconnects == 1 && fakeSocketsOpen() == 0 && socketConnects == socketCloses);
+}
+
+void ota_stage_pass_closes_socket() {
+    resetFakes(); socketTestMode = true; response = {1, 2, 3}; advertisedSize = 3;
+    CountingWatchdog watchdog; const std::string key;
+    const ResumeSource source{"http://host/range", "id", "", 3, true};
+    {
+        lcd::HostRangeTransport transport("http://host", "/range", key, watchdog, millis(), true);
+        assert(transport.get(source, 0, 2, "", [](const RangeResponse&) { return true; },
+            [](const uint8_t*, size_t) { return true; }));
+        assert(fakeSocketsOpen() == 1);
+    }
+    assert(fakeSocketsOpen() == 0 && socketConnects == socketCloses);
+}
+
 void body_idle_uses_budget_up_to_15s() {
     for (bool ota : {false, true}) {
         for (uint32_t budget : {uint32_t(60000), uint32_t(9000), uint32_t(15000)}) {
@@ -1069,6 +1168,16 @@ int main() {
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
 #endif
+    post_wake_failure_does_full_wifi_restart();
+    non_wake_failure_keeps_plain_rejoin();
+    success_clears_wake_flag();
+    stuck_two_passes_after_restart_reboots();
+    reboot_rate_limited();
+    no_reboot_during_ota_or_settings();
+    no_socket_survives_pass();
+    sockets_stable_over_50_passes();
+    rejoin_closes_open_client();
+    ota_stage_pass_closes_socket();
     idle_connection_not_reused_after_8s();
     restore_wait_bounded_by_budget();
     manifest_failure_triggers_rejoin();

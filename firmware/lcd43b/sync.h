@@ -32,6 +32,29 @@ enum class FetchOutcome;
 
 namespace lcd {
 
+// Owned by the refresh worker between wakes; the main loop observes it only
+// after the worker has handed back its result.
+struct NetworkRecovery {
+    bool postWake = false, restartDone = false;
+    unsigned failedPasses = 0;
+    void woke() { postWake = true; }
+    void response(int status) { if (status == 200 || status == 206) *this = {}; }
+    void restarted() { if (!restartDone) failedPasses = 0; restartDone = true; }
+    void finishPass(bool transportFailed, bool connected) {
+        if (postWake && restartDone) {
+            if (transportFailed && connected) ++failedPasses;
+            else failedPasses = 0;
+        }
+    }
+    bool rebootDue() const { return postWake && restartDone && failedPasses >= 2; }
+};
+inline NetworkRecovery networkRecovery;
+inline bool networkRebootAllowed(bool due, bool ota, bool settings, bool updateScreen,
+                                 uint32_t now, uint32_t last) {
+    return due && !ota && !settings && !updateScreen && now >= 1704067200U &&
+           (!last || (now >= last && now - last >= 1800));
+}
+
 inline uint32_t restoreWaitMs(uint32_t started, uint32_t now, uint32_t budget, uint32_t limit) {
     const uint32_t elapsed = now - started;
     return elapsed >= budget ? 0 : std::min(budget - elapsed, limit);
