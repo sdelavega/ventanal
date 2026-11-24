@@ -47,6 +47,6 @@ jobs:
       - name: Install the server (shared release verification for firmware Python tests)
         run: python -m pip install -e 'server[dev]'
       - name: Firmware host tests
-        run: make -C firmware/test test
+        run: make -C firmware/test test PYTHON=python
       - name: Firmware tooling tests
         run: python -m pytest -q firmware/test

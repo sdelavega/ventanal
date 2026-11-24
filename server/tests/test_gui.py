@@ -15,7 +15,7 @@ from ventanal.auth import Auth
 from ventanal.status import BoardStore, next_wake, parse_board, showing
 from ventanal.settings import save_settings
 from ventanal.config import load_config
-from ventanal.serve import make_server
+from ventanal.serve import TLS_HANDSHAKE_TIMEOUT, TLS_IDLE_TIMEOUT, make_server
 
 EXAMPLE = Path(__file__).parents[1] / 'ventanal.example.toml'
 
@@ -347,6 +347,12 @@ def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch, capl
     process = tls.process_request_thread
     timeouts = []
     settimeout = ssl.SSLSocket.settimeout
+    wrap_socket = srv.ui.security.context.wrap_socket
+
+    def observe_handshake(conn, *args, **kwargs):
+        timeouts.append(conn.gettimeout())
+        assert timeouts[-1] == TLS_HANDSHAKE_TIMEOUT
+        return wrap_socket(conn, *args, **kwargs)
 
     def observe_timeout(conn, timeout):
         if conn.server_side:
@@ -358,6 +364,7 @@ def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch, capl
         freed.set()
 
     monkeypatch.setattr(tls, 'process_request_thread', observe)
+    monkeypatch.setattr(srv.ui.security.context, 'wrap_socket', observe_handshake)
     monkeypatch.setattr(ssl.SSLSocket, 'settimeout', observe_timeout)
     held = HTTPSConnection(*address, timeout=2, context=context)
     try:
@@ -365,7 +372,8 @@ def test_tls_connection_cap_covers_keepalive_and_recovers(web, monkeypatch, capl
         response = held.getresponse()
         assert response.status == 200 and not response.will_close
         response.read()
-        assert timeouts[-1] == 10 and all(timeout <= 10 for timeout in timeouts)
+        assert timeouts[-1] == TLS_IDLE_TIMEOUT
+        assert all(timeout <= max(TLS_HANDSHAKE_TIMEOUT, TLS_IDLE_TIMEOUT) for timeout in timeouts)
         with socket.create_connection(address, timeout=2) as excess:
             assert excess.recv(1) == b''
         assert 'Dropping TLS connection: all 1 slots are busy' in caplog.text

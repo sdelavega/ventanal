@@ -17,7 +17,7 @@ CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 .PHONY: test clean check_standalone_screens check_lcd43b_chrome check_lcd43b_pie check_lcd43b_display_owner check-arduinojson check-hardening
 
 # Validate the checked-in raster against the current server implementation.
-PYTHON ?= ../../server/.venv/bin/python
+PYTHON ?= $(if $(wildcard ../../server/.venv/bin/python),../../server/.venv/bin/python,python3)
 check_lcd43b_chrome:
 	$(PYTHON) ../lcd43b/tools/lcars_geometry.py --check
 	$(PYTHON) ../../tools/aa_fonts.py --check
