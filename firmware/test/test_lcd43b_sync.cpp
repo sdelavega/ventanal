@@ -809,11 +809,51 @@ void post_wake_failure_retries_within_60s() {
     assert(state.retryInterval(300000) == 60000);
     state.response(200); assert(state.retryInterval(300000) == 300000);
 }
+void reboot_allowed_after_proven_previous_reboot() {
+    Preferences p; p.begin("ventanal", false); preferences.erase("net-pending");
+    lcd::RecoveryRebootGate gate; gate.load(p, false);
+    assert(gate.allowed(true, false, false, false));
+    assert(gate.markReboot(p));
+    assert(gate.recordSuccess(p));
+    lcd::RecoveryRebootGate next; next.load(p, false);
+    assert(next.allowed(true, false, false, false));
+}
+void reboot_blocked_when_previous_unproven() {
+    Preferences p; p.begin("ventanal", false); preferences.erase("net-pending");
+    lcd::RecoveryRebootGate gate; gate.load(p, false); assert(gate.markReboot(p));
+    lcd::RecoveryRebootGate next; next.load(p, false);
+    assert(!next.allowed(true, false, false, false));
+    lcd::RecoveryRebootGate rtc; preferences.erase("net-pending"); rtc.load(p, true);
+    assert(!rtc.allowed(true, false, false, false));
+}
+void success_clears_pending_flag() {
+    Preferences p; p.begin("ventanal", false); preferences.erase("net-pending");
+    lcd::RecoveryRebootGate gate; gate.load(p, false); assert(gate.markReboot(p));
+    assert(gate.recordSuccess(p));
+    assert(!gate.pending && gate.allowed(true, false, false, false));
+    lcd::NetworkRecovery state; state.response(206); assert(state.successfulResponse);
+}
+void reboot_gate_failed_writes_stay_blocked() {
+    Preferences p; p.begin("ventanal", false); preferences.erase("net-pending");
+    lcd::RecoveryRebootGate gate; gate.load(p, false);
+    Preferences::failWriteKey = "net-pending";
+    assert(!gate.markReboot(p)); assert(gate.pending);
+    assert(!gate.recordSuccess(p)); assert(gate.pending);
+    Preferences::failWriteKey.clear();
+    assert(gate.recordSuccess(p)); assert(!gate.pending);
+}
+void socket_diagnostics_are_distinct() {
+    lcd::DiagStorage storage{}; lcd::DiagRing ring(storage);
+    ring.socketCreated(3, 54, 0); ring.socketConnected(4, 54, -1, 9);
+    Serial.output.clear(); ring.printUnread();
+    assert(Serial.output.find("socket fd=54 socket_errno=0") != std::string::npos);
+    assert(Serial.output.find("socket_connect fd=54 result=-1 connect_errno=9") != std::string::npos);
+}
 void reboot_gates_still_hold() {
-    assert(!lcd::networkRebootAllowed(true, true, false, false, 1704069200, 0));
-    assert(!lcd::networkRebootAllowed(true, false, true, false, 1704069200, 0));
-    assert(!lcd::networkRebootAllowed(true, false, false, true, 1704069200, 0));
-    assert(!lcd::networkRebootAllowed(true, false, false, false, 1704069200, 1704069199));
+    lcd::RecoveryRebootGate gate; gate.pending = false;
+    assert(!gate.allowed(true, true, false, false));
+    assert(!gate.allowed(true, false, true, false));
+    assert(!gate.allowed(true, false, false, true));
 }
 void ring_survives_reboot_and_prints_on_boot() {
     lcd::DiagStorage storage{}; lcd::DiagRing first(storage); first.wake(42);
@@ -836,16 +876,6 @@ void ring_wraps_without_corruption() {
     Serial.output.clear(); ring.printUnread();
     assert(Serial.output.find("diag ring t=199 wake") != std::string::npos);
     assert(Serial.output.find("diag ring t=0 wake") == std::string::npos);
-}
-void reboot_rate_limited() {
-    assert(!lcd::networkRebootAllowed(true, false, false, false, 1704067300, 1704067299));
-    assert(lcd::networkRebootAllowed(true, false, false, false, 1704069200, 1704067299));
-    assert(!lcd::networkRebootAllowed(true, false, false, false, 0, 1704067299));
-}
-void no_reboot_during_ota_or_settings() {
-    assert(!lcd::networkRebootAllowed(true, true, false, false, 1704069200, 0));
-    assert(!lcd::networkRebootAllowed(true, false, true, false, 1704069200, 0));
-    assert(!lcd::networkRebootAllowed(true, false, false, true, 1704069200, 0));
 }
 
 void manifest_failure_triggers_rejoin() {
@@ -1204,12 +1234,15 @@ int main() {
     success_clears_wake_flag();
     reboot_after_one_failed_pass_post_restart();
     post_wake_failure_retries_within_60s();
+    reboot_allowed_after_proven_previous_reboot();
+    reboot_blocked_when_previous_unproven();
+    success_clears_pending_flag();
+    reboot_gate_failed_writes_stay_blocked();
+    socket_diagnostics_are_distinct();
     reboot_gates_still_hold();
     ring_survives_reboot_and_prints_on_boot();
     ring_has_no_identifiers();
     ring_wraps_without_corruption();
-    reboot_rate_limited();
-    no_reboot_during_ota_or_settings();
     no_socket_survives_pass();
     sockets_stable_over_50_passes();
     rejoin_closes_open_client();

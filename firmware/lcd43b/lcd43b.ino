@@ -125,6 +125,9 @@ namespace {
 
 }  // namespace
 
+RTC_NOINIT_ATTR uint32_t recoveryRtcMagic;
+RTC_NOINIT_ATTR uint32_t recoveryRtcPending;
+
 void setup() {
     WiFi.persistent(false);  // keep the Wi-Fi driver out of the small shared NVS partition
     const bool pendingUpdate = lcd::armUpdateDeadline();
@@ -161,7 +164,10 @@ void setup() {
     backlightRefresh();  // panel not started yet: the owner reports Off
     allocateLocalPages();
     installationReady = lcd::initializeInstallation(pendingUpdate);
-    if (installationReady && !prefs.begin("ventanal", false)) lcd::log("error=nvs-open\n");
+    const bool recoveryPrefsOpen = installationReady && prefs.begin("ventanal", false);
+    if (installationReady && !recoveryPrefsOpen) lcd::log("error=nvs-open\n");
+    if (recoveryRtcMagic != 0x56524731) { recoveryRtcMagic = 0x56524731; recoveryRtcPending = 0; }
+    if (recoveryPrefsOpen) lcd::recoveryRebootGate.load(prefs, recoveryRtcPending);
     updateBoot = lcd::readUpdateBoot(prefs);
     int previous = -1;
     if (installationReady) {
@@ -485,23 +491,36 @@ void loop() {
         settingsSaveFailedAt = millis();
     }
     persistDeferred(false);
+    if (!refreshBusy && lcd::networkRecovery.successfulResponse) {
+        if (lcd::recoveryRebootGate.recordSuccess(prefs)) {
+            recoveryRtcPending = 0;
+            lcd::networkRecovery.successfulResponse = false;
+        }
+    }
+    static bool blockedReported = false;
+    if (!lcd::networkRecovery.rebootDue()) blockedReported = false;
     if (!refreshBusy && lcd::networkRecovery.rebootDue()) {
         const uint32_t epoch = ventanal::trustedEpoch(time(nullptr));
-        const uint32_t last = prefs.getUInt("net-reboot", 0);
-        if (lcd::networkRebootAllowed(true, updateBoot.pending || installRequested ||
+        if (lcd::recoveryRebootGate.pending && !blockedReported) {
+            lcd::log("power reboot blocked=unproven\n");
+            blockedReported = true;
+        }
+        if (lcd::recoveryRebootGate.allowed(true, updateBoot.pending || installRequested ||
                                       installQueued != lcd::UpdateSource::None || refreshStagingUpdate,
-                                      settingsPage.active, updateScreenShowing, epoch, last)) {
+                                      settingsPage.active, updateScreenShowing)) {
             ScanoutSavePause pause(!LitNvsWrites);
             if (settingsDirty && lcd::saveSettings(settingsPrefs, settings)) settingsDirty = false;
             for (int i = 0; i < lcd::SCREEN_SLOTS + 2 && persistDeferred(false); ++i) {}
             const bool selectionSaved = lcd::saveSelection(prefs, screenIndex, spareCursor);
             contentStaleness.checkpoint(prefs, epoch);
-            if (!settingsDirty && selectionSaved && !contentStaleness.checkpointDirty &&
-                prefs.putUInt("net-reboot", epoch) == sizeof(epoch)) {
-                lcd::diagRing.add(millis(), lcd::DiagStage::Reboot);
-                lcd::log("power reboot reason=network-stuck\n");
-                Serial.flush();
-                esp_restart();
+            if (!settingsDirty && selectionSaved && !contentStaleness.checkpointDirty) {
+                recoveryRtcPending = 1;
+                if (lcd::recoveryRebootGate.markReboot(prefs)) {
+                    lcd::diagRing.add(millis(), lcd::DiagStage::Reboot);
+                    lcd::log("power reboot reason=network-stuck\n");
+                    Serial.flush();
+                    esp_restart();
+                }
             }
         }
     }

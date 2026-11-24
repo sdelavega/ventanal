@@ -31,6 +31,8 @@ inline std::string hostAssetUrl(const char* origin, const char* path) {
 }
 
 #ifndef VENTANAL_HOST_TEST
+void beginSocketDiagnostics();
+void endSocketDiagnostics();
 class PinnedLeafClient : public WiFiClientSecure {
 public:
     void setPins(const char* pem) {
@@ -48,7 +50,10 @@ public:
         // TCP first, then the same handshake connect() would run, so a
         // failure names its stage.
         setPlainStart();
-        if (!WiFiClientSecure::connect(host, port, timeout)) return 0;
+        beginSocketDiagnostics();
+        const int connected = WiFiClientSecure::connect(host, port, timeout);
+        endSocketDiagnostics();
+        if (!connected) return 0;
         if (!startTLS()) {
             handshakeFailed_ = true;
             return 0;

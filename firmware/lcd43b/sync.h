@@ -38,8 +38,9 @@ namespace lcd {
 struct NetworkRecovery {
     bool postWake = false, restartDone = false, transportFailed = false;
     unsigned failedPasses = 0;
+    bool successfulResponse = false;
     void woke() { postWake = true; }
-    void response(int status) { if (status == 200 || status == 206) *this = {}; }
+    void response(int status) { if (status == 200 || status == 206) { *this = {}; successfulResponse = true; } }
     void failure() { if (postWake) transportFailed = true; }
     void restarted() { if (!restartDone) failedPasses = 0; restartDone = true; }
     void finishPass(bool transportFailed, bool connected) {
@@ -52,11 +53,31 @@ struct NetworkRecovery {
     bool rebootDue() const { return postWake && restartDone && failedPasses >= 1; }
 };
 inline NetworkRecovery networkRecovery;
-inline bool networkRebootAllowed(bool due, bool ota, bool settings, bool updateScreen,
-                                 uint32_t now, uint32_t last) {
-    return due && !ota && !settings && !updateScreen && now >= 1704067200U &&
-           (!last || (now >= last && now - last >= 1800));
-}
+struct RecoveryRebootGate {
+    bool pending = true;
+    void load(Preferences& prefs, bool rtcPending) {
+        uint8_t value = 0;
+        const bool exists = prefs.isKey("net-pending");
+        const bool valid = !exists || (prefs.getBytes("net-pending", &value, 1) == 1 && value <= 1);
+        pending = rtcPending || !valid || value == 1;
+    }
+    bool allowed(bool due, bool ota, bool settings, bool updateScreen) const {
+        return due && !ota && !settings && !updateScreen && !pending;
+    }
+    bool markReboot(Preferences& prefs) {
+        const uint8_t value = 1;
+        pending = true;
+        return prefs.putBytes("net-pending", &value, 1) == 1;
+    }
+    bool recordSuccess(Preferences& prefs) {
+        if (!pending) return true;
+        const uint8_t value = 0;
+        if (prefs.putBytes("net-pending", &value, 1) != 1) return false;
+        pending = false;
+        return true;
+    }
+};
+inline RecoveryRebootGate recoveryRebootGate;
 
 inline uint32_t restoreWaitMs(uint32_t started, uint32_t now, uint32_t budget, uint32_t limit) {
     const uint32_t elapsed = now - started;
