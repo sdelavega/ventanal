@@ -40,7 +40,7 @@ void selectPartialStore(bool mounted) {
 }
 bool wifiConnect(uint32_t) { ++connections; delay(wifiDelay); return online; }
 bool syncTime() { delay(timeDelay); return online; }
-bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient) {
+bool fetchManifest(ScreenInfo& a,ScreenInfo& w,bool* transient, uint32_t) {
     ++manifests;
     fetchedManifest=false;
     delay(manifestDelay);

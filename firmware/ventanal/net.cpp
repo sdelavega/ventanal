@@ -104,7 +104,7 @@ bool parseScreen(JsonVariantConst value, ScreenInfo& result) {
 }
 }
 
-bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient) {
+bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient, uint32_t budgetMs) {
     if (transient) *transient = false;
     manifestFirmware.release[0] = '\0';
     manifestFirmware.signature[0] = '\0';
@@ -118,7 +118,7 @@ bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient) {
     String url = String(installation.host) + "/manifest.json";
     if(manifestBoardQuery[0]) url += String("?")+manifestBoardQuery;
     if(manifestSkipQuery[0]) url += String(manifestBoardQuery[0]?"&skips=":"?skips=")+manifestSkipQuery;
-    if (!beginTransport(http, client, url.c_str())) return false;
+    if (!beginTransport(http, client, url.c_str(), budgetMs)) return false;
     const uint32_t started=millis();
     const int status = http.GET();
     Serial.printf("transport tls=%d handshake-headers ms=%lu status=%d\n",securityConfigured(),static_cast<unsigned long>(millis()-started),status);

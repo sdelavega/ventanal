@@ -53,7 +53,7 @@ public:
             http.setFollowRedirects(HTTPC_DISABLE_FOLLOW_REDIRECTS);
             http.setConnectTimeout(std::min(uint32_t(budgetMs_ - elapsed), uint32_t(5000)));
             http.setTimeout(std::min(uint32_t(budgetMs_ - elapsed), idleMs_));
-            if (!beginTransport(http, client, url_)) return false;
+            if (!beginTransport(http, client, url_, budgetMs_ - elapsed)) return false;
             auto& secure = secureTransportClient(client);
             const bool reused = keepAlive && secure.connected();
             secure.received = 0;

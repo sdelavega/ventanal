@@ -14,6 +14,7 @@
 #include <LittleFS.h>
 #include <Preferences.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -30,6 +31,11 @@
 enum class FetchOutcome;
 
 namespace lcd {
+
+inline uint32_t restoreWaitMs(uint32_t started, uint32_t now, uint32_t budget, uint32_t limit) {
+    const uint32_t elapsed = now - started;
+    return elapsed >= budget ? 0 : std::min(budget - elapsed, limit);
+}
 
 // Slot names double as the LittleFS cache file names (art, weather, solar,
 // spare0..2).

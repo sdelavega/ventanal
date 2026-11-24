@@ -85,7 +85,14 @@ static void no_retry_after_response_bytes() {
     assert(!retryRequest(true, 1) && retryCalls == 1);
 }
 
+static void epaper_handshake_timeout_uses_remaining_budget() {
+    assert(handshakeTimeoutSeconds(25000) == 20);
+    assert(handshakeTimeoutSeconds(7500) == 7);
+    assert(handshakeTimeoutSeconds(999) == 0);
+}
+
 int main() {
+    epaper_handshake_timeout_uses_remaining_budget();
     assert(securityConfigured());
     // Independent Python UTF-8 canonical-JSON/HMAC vector.
     JsonDocument vector;

@@ -24,7 +24,7 @@ from ventanal.owner import SkipQueue, parse_skips
 
 
 MAX_TLS_CONNECTIONS = 32
-TLS_IDLE_TIMEOUT = 10
+TLS_IDLE_TIMEOUT = 30
 DEVICE_PATH = re.compile(r'/devices/([a-z0-9-]{1,15})/')
 FRAME_ID_SUFFIX = re.compile(r'(?:^|-)([0-9a-f]{16})$')
 BYTE_RANGE = re.compile(r'bytes=([0-9]*)-([0-9]*)', re.IGNORECASE)

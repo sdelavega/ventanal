@@ -2,6 +2,7 @@
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
 #include "settings.h"
+#include "../common/handshake_timeout.h"
 #include "security_protocol.h"
 #include <Preferences.h>
 #include <HTTPClient.h>
@@ -87,7 +88,7 @@ inline void finishTransport(HTTPClient& http,bool complete) {
     if(securityConfigured()) http.setReuse(complete);
     http.end();
 }
-inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* url) {
+inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* url, uint32_t remainingMs = 30000) {
     if(!securityConfigured()) {
         if(strncmp(url,"http://",7)!=0) return false;
 #ifdef VENTANAL_HOST_TEST
@@ -96,13 +97,14 @@ inline bool beginTransport(HTTPClient& http,TransportClient& client,const char* 
         return http.begin(client.plain,url);
 #endif
     }
+    if (!handshakeTimeoutSeconds(remainingMs)) return false;
     const std::string key=deviceKey();
     const std::string origin=installation.host;
     if(key.size()!=32 || !strlen(installation.certificate) || origin.rfind("https://",0)!=0 ||
        std::string(url).compare(0,origin.size(),origin)!=0 || url[origin.size()]!='/') return false;
 #ifndef VENTANAL_HOST_TEST
     client.secure.setCACert(installation.certificate);
-    client.secure.setHandshakeTimeout(5);
+    client.secure.setHandshakeTimeout(handshakeTimeoutSeconds(remainingMs));
 #endif
 #ifdef VENTANAL_HOST_TEST
     if(!http.begin(client,url)) return false;

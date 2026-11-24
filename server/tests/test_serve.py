@@ -74,3 +74,8 @@ def test_disconnected_body_copy_is_quiet(server, monkeypatch, error):
             raise error('disconnected')
     handler.wfile = Disconnected()
     handler.do_GET()
+
+
+def test_tls_idle_timeout_is_30s():
+    from ventanal.serve import TLS_IDLE_TIMEOUT
+    assert TLS_IDLE_TIMEOUT == 30

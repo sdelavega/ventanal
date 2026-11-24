@@ -3,6 +3,7 @@
 #pragma once
 
 #include "../common/resume/resume.h"
+#include "../common/handshake_timeout.h"
 
 #include "build_config.h"
 #include "../common/release_key.h"
@@ -18,6 +19,8 @@
 #endif
 
 namespace lcd {
+
+using ::handshakeTimeoutSeconds;
 
 inline std::string hostAssetUrl(const char* origin, const char* path) {
     size_t length = strlen(origin);
@@ -121,7 +124,7 @@ public:
     HTTPClient http;
 
     // Prepares the next request on this connection; true when it may be sent.
-    bool begin(const char* origin, const String& path, const std::string& key) {
+    bool begin(const char* origin, const String& path, const std::string& key, uint32_t remainingMs) {
         const String url(hostAssetUrl(origin, path.c_str()).c_str());
         const bool secured = strncmp(origin, "https://", 8) == 0;
         if (secured) {
@@ -132,6 +135,11 @@ public:
         }
         // Never carry a connection over to a different origin.
         if (open_ && origin_ != hostAssetUrl(origin, "")) close();
+        if (open_ && millis() - lastFinished_ >= 8000) {
+            log("transport reconnect reason=idle idle_ms=%u\n", unsigned(millis() - lastFinished_));
+            close();
+        }
+        if (secured && !handshakeTimeoutSeconds(remainingMs)) return false;
         auto& client = clientFor(secured);
         reused_ = open_ && client.connected();
         if (open_ && !reused_) close();
@@ -141,7 +149,7 @@ public:
             // The trust bundle contains the current self-signed leaf and,
             // during rotation, may also contain the previous leaf.
             tls_.setPins(installation.certificate);
-            tls_.setHandshakeTimeout(5);
+            tls_.setHandshakeTimeout(handshakeTimeoutSeconds(remainingMs));
         }
 #endif
         if (!http.begin(client, url)) return false;
@@ -173,7 +181,7 @@ public:
     int get(const char* origin, const String& path, const std::string& key,
             Remaining remainingMs, Prepare prepare, Feed feed) {
         for (unsigned attempt = 0;; ++attempt) {
-            if (!begin(origin, path, key)) {
+            if (!begin(origin, path, key, remainingMs())) {
                 close();
                 return kNotBegun;
             }
@@ -202,6 +210,7 @@ public:
         http.setReuse(keep);
         http.end();
         if (!keep) close();
+        else lastFinished_ = millis();
     }
 
     void close() {
@@ -267,6 +276,7 @@ private:
         return lower.find("close") != std::string::npos;
     }
 
+    uint32_t lastFinished_ = 0;
     std::string origin_;
     bool open_ = false, reused_ = false, secured_ = false;
 };

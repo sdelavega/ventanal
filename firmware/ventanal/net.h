@@ -10,7 +10,7 @@ bool wifiConnect(uint32_t timeoutMs = 15000);
 time_t seedRtcTime();
 bool syncTime();
 struct ScreenInfo { char id[17]; char url[96]; ReadoutRect readout; };
-bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient = nullptr);
+bool fetchManifest(ScreenInfo& art, ScreenInfo& weather, bool* transient = nullptr, uint32_t budgetMs = 30000);
 
 struct ManifestExtras { ScreenInfo solar{}; ScreenInfo spares[3]{}; uint8_t count=0; ScreenInfo extraScreens[2]{}; char names[2][49]{}; Screen order[5]{}; uint8_t orderCount=0; };
 inline ManifestExtras manifestExtras;

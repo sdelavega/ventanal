@@ -964,7 +964,52 @@ void transport_fail_log_has_heap_and_no_identifiers() {
     }
 }
 
+void handshake_timeout_uses_remaining_budget() {
+    assert(lcd::handshakeTimeoutSeconds(25000) == 20);
+    assert(lcd::handshakeTimeoutSeconds(7500) == 7);
+    assert(lcd::handshakeTimeoutSeconds(999) == 0);
+}
+
+void idle_connection_not_reused_after_8s() {
+    resetFakes(); socketTestMode = true;
+    lcd::HostConnection connection;
+    auto remaining = [] { return uint32_t(60000); };
+    auto prepare = [](HTTPClient&) {};
+    auto feed = [] {};
+    assert(connection.get("http://host", String("/one"), "", remaining, prepare, feed) > 0);
+    connection.finish(true);
+    delay(7990);
+    assert(connection.get("http://host", String("/two"), "", remaining, prepare, feed) > 0);
+    assert(connection.reused());
+    connection.finish(true);
+    delay(8000);
+    assert(connection.get("http://host", String("/three"), "", remaining, prepare, feed) > 0);
+    assert(!connection.reused());
+    assert(Serial.output.find("transport reconnect reason=idle idle_ms=") != std::string::npos);
+}
+
+int delayedHostFailure() {
+    if (requestedUrls.size() == 2) delay(25000);
+    return HTTPC_ERROR_CONNECTION_LOST;
+}
+
+void restore_wait_bounded_by_budget() {
+    assert(lcd::restoreWaitMs(1000, 1500, 10000, 20000) == 9500);
+    assert(lcd::restoreWaitMs(1000, 11900, 10000, 20000) == 0);
+    assert(lcd::restoreWaitMs(1000, 1500, 30000, 20000) == 20000);
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    WiFi.failPinned = true; WiFi.failedPlainBegins = 100;
+    fakeGetResponse = delayedHostFailure;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    const auto started = millis();
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(WiFi.disconnects >= 1 && WiFi.plainBegins == 2);
+    assert(millis() - started <= lcd::TRANSFER_BUDGET_MS + 100);
+}
+
 int main() {
+    handshake_timeout_uses_remaining_budget();
     join_uses_strongest_scanned_ap();
     join_falls_back_when_bssid_join_fails();
     scan_log_has_no_identifiers();
@@ -973,7 +1018,7 @@ int main() {
     resetFakes();
     lcd::installation = {};
     lcd::HostConnection unpaired;
-    assert(!unpaired.begin("http://host", "/manifest", {}));
+    assert(!unpaired.begin("http://host", "/manifest", {}, 60000));
     strcpy(lcd::installation.deviceKey, std::string(64, 'a').c_str());
     strcpy(lcd::installation.pairing, "test-device");
     strcpy(lcd::installation.certificate, "fake certificate");
@@ -989,6 +1034,8 @@ int main() {
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
 #endif
+    idle_connection_not_reused_after_8s();
+    restore_wait_bounded_by_budget();
     manifest_failure_triggers_rejoin();
     pass_reuses_one_connection_for_manifest_and_ranges();
     reused_connection_failure_retries_fresh_once();

@@ -245,10 +245,14 @@ public:
             disconnected = WiFi.disconnect(false);
             ok = disconnected && joinWifi(watchdog, &scan, remaining - spent);
             if (disconnected && !ok) {
-                WiFi.begin(installation.ssid, installation.password);
                 const uint32_t restoreStarted = millis();
-                while (WiFi.status() != WL_CONNECTED && millis() - restoreStarted < WIFI_TIMEOUT_MS) {
-                    watchdog.feed(); delay(50);
+                const uint32_t restoreBudget = restoreWaitMs(passStarted_, restoreStarted,
+                                                               TRANSFER_BUDGET_MS, WIFI_TIMEOUT_MS);
+                if (restoreBudget) WiFi.begin(installation.ssid, installation.password);
+                while (WiFi.status() != WL_CONNECTED) {
+                    const uint32_t elapsed = millis() - restoreStarted;
+                    if (elapsed >= restoreBudget) break;
+                    watchdog.feed(); delay(std::min(uint32_t(50), restoreBudget - elapsed));
                 }
                 ok = WiFi.status() == WL_CONNECTED;
             }

@@ -889,7 +889,7 @@ void setup() {
                        otaBoot.attemptState.attempts.approval);
         state.owner.queue.query(manifestSkipQuery,sizeof manifestSkipQuery);
         bool transient=false;
-        manifestOk=online && fetchManifest(art,weather,&transient);
+        manifestOk=online && fetchManifest(art,weather,&transient,frameWakeRemainingMs(millis()-wakeStarted));
         if(otaPendingBoot && otaBoot.matching && !manifestOk && (!online || transient)) {
             // Deep sleep resets the CPU and the bootloader rejects a pending
             // image. A timed light-sleep wake keeps the same health deadline.
@@ -901,7 +901,7 @@ void setup() {
                 esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_TIMER);
                 online=wifiConnect();
                 timeSynced=syncTime();
-                manifestOk=online && fetchManifest(art,weather);
+                manifestOk=online && fetchManifest(art,weather,nullptr,frameWakeRemainingMs(millis()-wakeStarted));
             }
         }
         offline=!manifestOk;
