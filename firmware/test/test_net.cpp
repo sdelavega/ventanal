@@ -18,6 +18,11 @@ std::string replace(std::string s, const char* a, const char* b) {
     s.replace(s.find(a), std::strlen(a), b); return s;
 }
 int main() {
+#ifdef VENTANAL_OWNER_KEY_TEST
+    static_assert(!VENTANAL_TEST_RELEASE_KEY, "owner key must not enable bench mode");
+#else
+    static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
+#endif
     assert(syncTime()); // COMPLETED is consumed by the IDF getter.
     ScreenInfo a{},w{};
     auto art=replace(screen,"lcars","shade");

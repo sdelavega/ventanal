@@ -12,6 +12,7 @@
 
 #include "../lcd43b/sync.h"
 #include "../lcd43b/host_transport.h"
+#include "../lcd43b/host_request.h"
 #include "../lcd43b/inflate.h"
 #include "../common/resume/storage.h"
 #include "../lcd43b/installation.h"
@@ -672,6 +673,25 @@ void lost_sd_source_retries_unchanged_frame_on_flash() {
 }
 
 int main() {
+#ifdef VENTANAL_OWNER_KEY_TEST
+    static_assert(!VENTANAL_TEST_RELEASE_KEY, "owner key must not enable bench mode");
+    resetFakes();
+    lcd::installation = {};
+    lcd::HostRequest unpaired;
+    assert(!unpaired.begin("http://host", "/manifest", {}));
+    strcpy(lcd::installation.deviceKey, std::string(64, 'a').c_str());
+    strcpy(lcd::installation.pairing, "test-device");
+    strcpy(lcd::installation.certificate, "fake certificate");
+    char ids[lcd::SCREEN_SLOTS][17]{};
+    lcd::RefreshResult result;
+    CountingWatchdog watchdog;
+    refresh("https://host", "lcd43b", ids, result, watchdog);
+    assert(!requestedUrls.empty());
+    assert(requestedUrls[0].find("test_release_key=1") == std::string::npos);
+    return 0;
+#else
+    static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
+#endif
     spare_larger_than_free_psram_downloads();
     two_large_frames_in_one_pass();
     memory_shortage_is_no_progress();

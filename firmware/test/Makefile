@@ -8,6 +8,8 @@ SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 JPEG_CFLAGS ?= $(shell pkg-config --cflags libjpeg 2>/dev/null)
 JPEG_LIBS ?= $(shell pkg-config --libs libjpeg 2>/dev/null)
 CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
+# These existing suites exercise unpaired bench transport and test-key reporting.
+build/test_lcd43b_sync build/test_net build/test_release: CPPFLAGS += -DVENTANAL_HOST_TEST_FORCE_TEST_KEY=1
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean check_standalone_screens check_lcd43b_chrome check_lcd43b_pie check_lcd43b_display_owner check-arduinojson check-hardening
@@ -81,6 +83,7 @@ test: build/test_staleness build/test_https_get build/test_lcd43b_installation b
 	./build/test_cache
 	./build/test_cache_abort
 	./build/test_net
+	./build/test_net_owner
 	./build/test_overlay
 	./build/test_wake
 	./build/test_lcd43b_gesture
@@ -92,6 +95,7 @@ test: build/test_staleness build/test_https_get build/test_lcd43b_installation b
 	./build/test_lcd43b_screens
 	./build/test_lcd43b_touch
 	./build/test_lcd43b_sync
+	./build/test_lcd43b_sync_owner
 	./build/test_lcd43b_wifi_roam
 	./build/test_lcd43b_persist
 	./build/test_lcd43b_display_owner
@@ -455,3 +459,14 @@ test-review6-wake: build/test_wake
 	./build/test_wake zlib_frame_not_started_without_inflate_reserve
 	./build/test_wake zlib_frame_gets_remaining_less_reserve
 	./build/test_wake failed_scheduled_screen_is_not_retried
+
+# Exercise production owner-key decisions independently of the bench suite.
+build/test_lcd43b_sync_owner: test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/sync.cpp ../common/release_key.h build/miniz_tinfl.o Makefile | check-libjpeg
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
+
+build/test_net_owner: test_net.cpp ../ventanal/net.cpp ../common/release_key.h Makefile | check-arduinojson
+	mkdir -p build
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
+
+test: build/test_lcd43b_sync_owner build/test_net_owner

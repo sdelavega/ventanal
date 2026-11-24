@@ -7,6 +7,10 @@
 
 #include "../common/release.h"
 
+// The host override must be inert when compiling without VENTANAL_HOST_TEST.
+static_assert(VENTANAL_TEST_RELEASE_KEY == ventanal_release_key_detail::isTestKey(),
+              "host test override must not affect board builds");
+
 static const char* verdictName(ReleaseVerdict verdict) {
     switch (verdict) {
         case ReleaseVerdict::Ok: return "Ok";

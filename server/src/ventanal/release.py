@@ -18,7 +18,7 @@ SHA256 = re.compile(r"[0-9a-f]{64}")
 SIGNATURE = re.compile(r"[A-Za-z0-9+/]{86}==")
 
 # Active key. Install together with the firmware release public key.
-RELEASE_PUBLIC_KEY_HEX = "8e60d1c05ba577843e1df225fae9a39351ea69de2d53c8c6b70dbd89167fd3ed"
+RELEASE_PUBLIC_KEY_HEX = "7596df915a6f10164ac7e0067a92453fad1f00c7bf1fc0c3c1c3a75382d38d52"
 TEST_RELEASE_PUBLIC_KEY_HEX = "8e60d1c05ba577843e1df225fae9a39351ea69de2d53c8c6b70dbd89167fd3ed"
 RELEASE_PUBLIC_KEY = Ed25519PublicKey.from_public_bytes(bytes.fromhex(RELEASE_PUBLIC_KEY_HEX))
 TEST_RELEASE_KEY_ACTIVE = RELEASE_PUBLIC_KEY_HEX == TEST_RELEASE_PUBLIC_KEY_HEX
