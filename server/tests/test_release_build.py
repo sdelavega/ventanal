@@ -100,18 +100,27 @@ def test_inkplate_staged_ini_sets_app_descriptor_version(tmp_path):
     assert 'CONFIG_APP_PROJECT_VER="2.0.0"' in ini.read_text()
 
 
+LCD_SDKCONFIG = "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\nCONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y\n"
+
+
+def test_guard_rejects_lcd_tls_buffers_in_internal_ram():
+    with pytest.raises(ValueError, match="EXTERNAL_MEM_ALLOC"):
+        build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0",
+                          "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\nCONFIG_MBEDTLS_INTERNAL_MEM_ALLOC=y\n")
+
+
 def test_guard_rejects_wrong_flash_mode():
     with pytest.raises(ValueError, match="flash mode"):
-        build.guard_image(image(1, 4, "2.0.0"), "lcd43b", "2.0.0", "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\n")
+        build.guard_image(image(1, 4, "2.0.0"), "lcd43b", "2.0.0", LCD_SDKCONFIG)
 
 
 def test_guard_rejects_app_version_mismatch():
     with pytest.raises(ValueError, match="version"):
-        build.guard_image(image(2, 4, "1.2.0"), "lcd43b", "2.0.0", "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\n")
+        build.guard_image(image(2, 4, "1.2.0"), "lcd43b", "2.0.0", LCD_SDKCONFIG)
 
 
 def test_guard_accepts_matching_images():
-    build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0", "CONFIG_ESPTOOLPY_FLASHMODE_QIO=y\n")
+    build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0", LCD_SDKCONFIG)
     build.guard_image(image(3, 5, "2.0.0"), "inkplate13spectra", "2.0.0", "")
     with pytest.raises(ValueError, match="OCT_FLASH"):
-        build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0", "CONFIG_ESPTOOLPY_OCT_FLASH=y\n")
+        build.guard_image(image(2, 4, "2.0.0"), "lcd43b", "2.0.0", LCD_SDKCONFIG + "CONFIG_ESPTOOLPY_OCT_FLASH=y\n")

@@ -101,6 +101,8 @@ def guard_image(data, board, version, sdkconfig):
         raise ValueError(f"{board} image app descriptor version does not match {version}")
     if board == "lcd43b" and re.search(r"^CONFIG_ESPTOOLPY_OCT_FLASH=y\s*$", sdkconfig, re.MULTILINE):
         raise ValueError("lcd43b sdkconfig enables CONFIG_ESPTOOLPY_OCT_FLASH")
+    if board == "lcd43b" and not re.search(r"^CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC=y\s*$", sdkconfig, re.MULTILINE):
+        raise ValueError("lcd43b sdkconfig does not put TLS buffers in PSRAM (CONFIG_MBEDTLS_EXTERNAL_MEM_ALLOC)")
 
 
 def ensure_no_home_path(data, board):
@@ -198,7 +200,7 @@ def build(args):
                     config = pio_core / "packages/framework-arduinoespressif32-libs/esp32s3/sdkconfig"
                     sdkconfig = config.read_text(encoding="utf-8")
                     for line in sdkconfig.splitlines():
-                        if re.match(r"^(?:# )?CONFIG_ESPTOOLPY_(?:OCT_FLASH|FLASHMODE_QIO)(?:=| is not set)", line):
+                        if re.match(r"^(?:# )?CONFIG_(?:ESPTOOLPY_(?:OCT_FLASH|FLASHMODE_QIO)|MBEDTLS_(?:EXTERNAL|INTERNAL)_MEM_ALLOC)(?:=| is not set)", line):
                             print(f"{board} sdkconfig: {line}", flush=True)
                 write_assets(pio_build / "normal/firmware.bin", assets, board,
                              args.version, args.min_from_version, notes_url, sdkconfig)
