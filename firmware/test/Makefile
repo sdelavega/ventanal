@@ -8,8 +8,10 @@ SODIUM_LIBS ?= $(shell pkg-config --libs libsodium 2>/dev/null || echo -lsodium)
 JPEG_CFLAGS ?= $(shell pkg-config --cflags libjpeg 2>/dev/null)
 JPEG_LIBS ?= $(shell pkg-config --libs libjpeg 2>/dev/null)
 CPPFLAGS += -DVENTANAL_ALLOW_TEST_KEY=1
-# These existing suites exercise unpaired bench transport and test-key reporting.
-build/test_lcd43b_sync build/test_net build/test_release: CPPFLAGS += -DVENTANAL_HOST_TEST_FORCE_TEST_KEY=1
+# Applied only to bench compile commands, never inherited by shared objects.
+TEST_KEY_FLAG = -DVENTANAL_HOST_TEST_FORCE_TEST_KEY=1
+LCD_SYNC_TARGETS = build/test_lcd43b_sync build/test_lcd43b_sync_owner
+NET_TARGETS = build/test_net build/test_net_owner
 CXXFLAGS = -std=c++17 -Wall -Wextra -Werror -pedantic
 
 .PHONY: test clean check_standalone_screens check_lcd43b_chrome check_lcd43b_pie check_lcd43b_display_owner check-arduinojson check-hardening
@@ -100,7 +102,7 @@ test: build/test_staleness build/test_https_get build/test_lcd43b_installation b
 	./build/test_lcd43b_persist
 	./build/test_lcd43b_display_owner
 
-build/test_release build/test_net build/test_security build/test_secure_transport: | check-arduinojson
+build/test_release $(NET_TARGETS) build/test_security build/test_secure_transport: | check-arduinojson
 
 check-arduinojson:
 	@test -f "$(ARDUINOJSON)/ArduinoJson.h" || { \
@@ -120,7 +122,7 @@ build/test_ota: test_ota.cpp ../common/release_info.h $(wildcard ../common/resum
 
 build/test_release: test_release.cpp ../common/release_info.h ../common/release.h ../common/release_key.h Makefile
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG $(SODIUM_CFLAGS) -I"$(ARDUINOJSON)" test_release.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
+	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) -UNDEBUG $(SODIUM_CFLAGS) -I"$(ARDUINOJSON)" test_release.cpp $(LDFLAGS) $(SODIUM_LIBS) -o $@
 
 build/test_logic: test_logic.cpp ../ventanal/logic.cpp ../ventanal/logic.h Makefile
 	mkdir -p build
@@ -151,7 +153,7 @@ build/ventanal_tinfl.o: ../ventanal/tinfl.cpp $(wildcard ../lcd43b/src/miniz/*) 
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) -std=c++17 -w -c ../ventanal/tinfl.cpp -o $@
 build/test_cache build/test_cache_abort build/test_secure_transport: $(EPAPER_CACHE_STORAGE)
-build/test_cache build/test_cache_abort build/test_secure_transport build/test_net: ../ventanal/http.h ../ventanal/net.h $(wildcard ../common/resume/*.h)
+build/test_cache build/test_cache_abort build/test_secure_transport $(NET_TARGETS): ../ventanal/http.h ../ventanal/net.h $(wildcard ../common/resume/*.h)
 
 build/test_cache: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h ../ventanal/config.example.h ../ventanal/http.h ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -161,9 +163,11 @@ build/test_cache_abort: test_cache.cpp ../ventanal/cache.cpp ../ventanal/cache.h
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_ABORT_AFTER_BYTES=100000 -Wframe-larger-than=2048 -Ifakes test_cache.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(EPAPER_CACHE_STORAGE) $(LDFLAGS) -lz -o $@
 
-build/test_net: test_net.cpp ../ventanal/quiet.h ../ventanal/net.cpp ../ventanal/net.h ../ventanal/config.example.h ../ventanal/http.h $(wildcard fakes/*.h) Makefile
+NET_DEPS = test_net.cpp ../ventanal/quiet.h ../ventanal/net.cpp ../ventanal/net.h ../ventanal/config.example.h ../ventanal/http.h $(wildcard fakes/*.h) Makefile
+$(NET_TARGETS): $(NET_DEPS)
+build/test_net:
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
+	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
 
 build/test_overlay: ../common/staleness.h ../ventanal/shade.h ../ventanal/shade_tables.h test_overlay.cpp ../ventanal/overlay.cpp ../ventanal/overlay.h $(wildcard ../ventanal/fonts/*.h) $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -210,7 +214,7 @@ build/test_security: test_security.cpp ../ventanal/settings.h ../ventanal/securi
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" test_security.cpp $(LDFLAGS) -o $@
 
 # Shared transport headers also invalidate the net/cache builds.
-build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../ventanal/settings.h ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
+$(NET_TARGETS) build/test_cache build/test_cache_abort build/test_secure_transport: ../ventanal/settings.h ../ventanal/security.h ../ventanal/security_config.h ../ventanal/manifest_security.h
 
 build/test_secure_transport: fixtures/extras-server-manifest.json fixtures/manifest-controls.json test_secure_transport.cpp secure_config.h ../ventanal/security.h ../ventanal/manifest_security.h ../ventanal/net.cpp ../ventanal/cache.cpp ../ventanal/logic.cpp $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -222,7 +226,7 @@ build/test_battcal: test_battcal.cpp ../ventanal/battery.h ../ventanal/logic.cpp
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes test_battcal.cpp ../ventanal/logic.cpp $(LDFLAGS) -o $@
 
 # Calibration header participates in wake and transport builds.
-build/test_solar build/test_net build/test_secure_transport build/test_wake build/test_statelost build/test_spares build/test_stall build/test_pwren build/test_boottime build/test_bootconfirm build/test_ponretry build/test_ponretry_stall: ../ventanal/battery.h
+build/test_solar $(NET_TARGETS) build/test_secure_transport build/test_wake build/test_statelost build/test_spares build/test_stall build/test_pwren build/test_boottime build/test_bootconfirm build/test_ponretry build/test_ponretry_stall: ../ventanal/battery.h
 
 build/test_battcal_wake: test_battcal_wake.cpp test_wake.cpp ../ventanal/ventanal.cpp ../ventanal/battery.h ../ventanal/logic.cpp ../ventanal/owner.h ../ventanal/net.h ../ventanal/logic.h ../ventanal/cache.h ../ventanal/quiet.h ../ventanal/overlay.h $(wildcard fakes/*.h) Makefile
 	mkdir -p build
@@ -294,9 +298,11 @@ build/miniz_tinfl.o: $(MINIZ_DIR)/miniz_tinfl.c $(wildcard $(MINIZ_DIR)/*.h) Mak
 check-libjpeg:
 	@pkg-config --exists libjpeg || { echo "libjpeg not found by pkg-config" >&2; exit 1; }
 
-build/test_lcd43b_sync: test_lcd43b_sync.cpp fake_tjpgd.cpp fakes/rom/tjpgd.h ../lcd43b/host_jpeg.cpp ../lcd43b/frame_stream.h ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) $(wildcard ../common/resume/*.h) ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o Makefile | check-libjpeg
+LCD_SYNC_DEPS = test_lcd43b_sync.cpp fake_tjpgd.cpp fakes/rom/tjpgd.h ../lcd43b/host_jpeg.cpp ../lcd43b/frame_stream.h ../lcd43b/sync.cpp ../lcd43b/sync.h ../lcd43b/log.h ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/frame.h ../lcd43b/sha256.h ../lcd43b/screens.h $(wildcard fakes/*.h) $(wildcard ../common/resume/*.h) ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o Makefile
+$(LCD_SYNC_TARGETS): $(LCD_SYNC_DEPS) | check-libjpeg
+build/test_lcd43b_sync:
 	mkdir -p build
-	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
+	$(CXX) $(CPPFLAGS) $(TEST_KEY_FLAG) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
 
 # Persisted state (quiet hours, publish shape, cache ids, selection).
 build/test_lcd43b_persist: ../lcd43b/clock.h test_lcd43b_persist.cpp ../lcd43b/persist.h ../lcd43b/manifest.h ../lcd43b/screens.h ../lcd43b/frame.h ../lcd43b/sha256.h fakes/Preferences.h fakes/LittleFS.h fakes/Arduino.h Makefile
@@ -315,7 +321,7 @@ build/test_lcd43b_settings: test_lcd43b_settings.cpp $(wildcard ../lcd43b/*.h) $
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -Ifakes -I"$(ARDUINOJSON)" test_lcd43b_settings.cpp $(LDFLAGS) -o $@
 
-build/test_lcd43b_screens build/test_lcd43b_sync build/test_lcd43b_persist build/test_lcd43b_panel: ../lcd43b/settings.h
+build/test_lcd43b_screens $(LCD_SYNC_TARGETS) build/test_lcd43b_persist build/test_lcd43b_panel: ../lcd43b/settings.h
 
 build/test_lcd43b_settings_page: fixtures/lcd43b-settings-chrome.rle test_lcd43b_settings_page.cpp ../common/call_state.h $(wildcard ../lcd43b/*.h) Makefile
 	mkdir -p build
@@ -337,16 +343,16 @@ build/test_lcd43b_wifi_roam: test_lcd43b_wifi_roam.cpp ../lcd43b/wifi_roam.h Mak
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG test_lcd43b_wifi_roam.cpp $(LDFLAGS) -o $@
 
-build/test_lcd43b_sync: ../lcd43b/inflate.h ../lcd43b/deferred_save.h ../lcd43b/wifi_roam.h
+$(LCD_SYNC_TARGETS): ../lcd43b/inflate.h ../lcd43b/deferred_save.h ../lcd43b/wifi_roam.h
 build/test_lcd43b_persist: ../lcd43b/deferred_save.h
 build/test_lcd43b_owner: ../lcd43b/frame.h ../lcd43b/sha256.h
 
 build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h
 
 SECURITY_HEADERS = ../ventanal/security_protocol.h ../ventanal/manifest_signature.h
-build/test_security build/test_secure_transport build/test_lcd43b_sync: $(SECURITY_HEADERS)
-build/test_lcd43b_sync: ../lcd43b/build_config.h ../lcd43b/host_request.h ../lcd43b/host_transport.h ../lcd43b/installation.h ../lcd43b/transport.h
-build/test_security build/test_lcd43b_manifest build/test_lcd43b_sync build/test_lcd43b_persist: ../common/ota_state.h
+build/test_security build/test_secure_transport $(LCD_SYNC_TARGETS): $(SECURITY_HEADERS)
+$(LCD_SYNC_TARGETS): ../lcd43b/build_config.h ../lcd43b/host_request.h ../lcd43b/host_transport.h ../lcd43b/installation.h ../lcd43b/transport.h
+build/test_security build/test_lcd43b_manifest $(LCD_SYNC_TARGETS) build/test_lcd43b_persist: ../common/ota_state.h
 
 build/test_portal_form: test_portal_form.cpp ../common/setup_portal/form.h Makefile
 	mkdir -p build
@@ -393,14 +399,14 @@ build/test_lcd43b_installation: test_lcd43b_installation.cpp ../lcd43b/installat
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -Ifakes test_lcd43b_installation.cpp $(LDFLAGS) -o $@
 build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h
 
-build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h ../common/installation.h
+build/test_cache build/test_cache_abort $(NET_TARGETS) build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: fakes/freertos/FreeRTOS.h fakes/freertos/task.h ../ventanal/settings.h ../ventanal/config.example.h ../ventanal/security_config.h ../common/installation.h
 
-build/test_cache build/test_cache_abort build/test_net build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h ../common/release_key.h ../common/ota_state.h
+build/test_cache build/test_cache_abort $(NET_TARGETS) build/test_secure_transport build/test_owner build/test_budget build/test_extras build/test_longpress build/test_solar build/test_battcal_wake build/test_statelost build/test_spares build/test_ponretry_stall build/test_ponretry build/test_boottime build/test_bootconfirm build/test_pwren build/test_stall build/test_wake: ../ventanal/ota.h ../common/release_key.h ../common/ota_state.h
 
-build/test_settings build/test_security build/test_net build/test_cache build/test_cache_abort build/test_secure_transport: ../common/installation.h
+build/test_settings build/test_security $(NET_TARGETS) build/test_cache build/test_cache_abort build/test_secure_transport: ../common/installation.h
 
-build/test_lcd43b_installation build/test_lcd43b_sync: ../common/installation.h
-build/test_lcd43b_sync: ../common/release_key.h
+build/test_lcd43b_installation $(LCD_SYNC_TARGETS): ../common/installation.h
+$(LCD_SYNC_TARGETS): ../common/release_key.h
 
 check-hardening:
 	CXX="$(CXX)" ./check_hardening.sh
@@ -461,11 +467,11 @@ test-review6-wake: build/test_wake
 	./build/test_wake failed_scheduled_screen_is_not_retried
 
 # Exercise production owner-key decisions independently of the bench suite.
-build/test_lcd43b_sync_owner: test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/sync.cpp ../common/release_key.h build/miniz_tinfl.o Makefile | check-libjpeg
+build/test_lcd43b_sync_owner:
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -fsanitize=address -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" $(JPEG_CFLAGS) test_lcd43b_sync.cpp fake_tjpgd.cpp ../lcd43b/host_jpeg.cpp ../lcd43b/sync.cpp ../common/resume/fs_store.cpp ../common/resume/storage.cpp build/miniz_tinfl.o $(LDFLAGS) -fsanitize=address -lz $(JPEG_LIBS) -o $@
 
-build/test_net_owner: test_net.cpp ../ventanal/net.cpp ../common/release_key.h Makefile | check-arduinojson
+build/test_net_owner: | check-arduinojson
 	mkdir -p build
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -UNDEBUG -DVENTANAL_HOST_TEST -DVENTANAL_OWNER_KEY_TEST -Ifakes -I"$(ARDUINOJSON)" test_net.cpp ../ventanal/net.cpp $(LDFLAGS) -o $@
 

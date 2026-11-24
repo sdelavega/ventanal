@@ -30,6 +30,7 @@
 #include "Preferences.h"
 #include "WiFi.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
 #include <cstdlib>
@@ -687,7 +688,9 @@ int main() {
     CountingWatchdog watchdog;
     refresh("https://host", "lcd43b", ids, result, watchdog);
     assert(!requestedUrls.empty());
-    assert(requestedUrls[0].find("test_release_key=1") == std::string::npos);
+    assert(std::all_of(requestedUrls.begin(), requestedUrls.end(), [](const std::string& url) {
+        return url.find("test_release_key=1") == std::string::npos;
+    }));
     return 0;
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
