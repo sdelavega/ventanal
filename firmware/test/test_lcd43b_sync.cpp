@@ -158,6 +158,7 @@ std::string manifestBody(const Entry& art, const Entry& weather) {
 }
 
 void resetFakes() {
+    WiFi = FakeWiFi{};
     requestedUrls.clear();
     files.clear();
     preferences.clear();
@@ -673,7 +674,55 @@ void lost_sd_source_retries_unchanged_frame_on_flash() {
     sd.offline = false;
 }
 
+void join_uses_strongest_scanned_ap() {
+    resetFakes(); WiFi.connected = false;
+    WiFi.aps = {{-80, 1, {1,2,3,4,5,6}}, {-42, 11, {6,5,4,3,2,1}}};
+    CountingWatchdog watchdog;
+    assert(lcd::connectForUpdates(watchdog));
+    assert(WiFi.pinnedBegins == 1 && WiFi.plainBegins == 0);
+    assert(WiFi.selectedChannel == 11 && WiFi.selectedBssid == WiFi.aps[1].bssid);
+}
+
+void join_falls_back_when_bssid_join_fails() {
+    resetFakes(); WiFi.connected = false; WiFi.failPinned = true;
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    CountingWatchdog watchdog;
+    assert(lcd::connectForUpdates(watchdog));
+    assert(WiFi.pinnedBegins == 1 && WiFi.plainBegins == 1);
+}
+
+void scan_log_has_no_identifiers() {
+    resetFakes(); WiFi.connected = false;
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    CountingWatchdog watchdog;
+    assert(lcd::connectForUpdates(watchdog));
+    assert(Serial.output.find("wifi scan aps=1 best_dbm=-45 best_ch=6 joined_dbm=-45 joined_ch=6") != std::string::npos);
+    assert(Serial.output.find("01:02:03:04:05:06") == std::string::npos);
+}
+
+int hostFailureResponse() { return requestedUrls.size() == 1 ? 200 : -1; }
+void host_failures_trigger_one_rejoin_per_pass() {
+    resetFakes();
+    WiFi.aps = {{-45, 6, {1,2,3,4,5,6}}};
+    const auto frame = solidFrame(0xf800);
+    const auto art = makeEntry("art", frame), weather = makeEntry("weather", frame);
+    responseBody = manifestBody(art, weather); sizeFromResponse = true;
+    responseBody.insert(responseBody.size() - 1, ",\"spares\":[" + art.body + "]");
+    fakeGetResponse = hostFailureResponse;
+    char ids[lcd::SCREEN_SLOTS][17]{}; lcd::RefreshResult result; CountingWatchdog watchdog;
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && WiFi.disconnects == 1 && WiFi.pinnedBegins == 1);
+    assert(requestedUrls.size() == 4);
+    assert(Serial.output.find("wifi rejoin reason=host-unreachable") != std::string::npos);
+    requestedUrls.clear();
+    refresh("http://host", "lcd43b", ids, result, watchdog);
+    assert(result.manifestOk && WiFi.disconnects == 2 && WiFi.pinnedBegins == 2);
+}
+
 int main() {
+    join_uses_strongest_scanned_ap();
+    join_falls_back_when_bssid_join_fails();
+    scan_log_has_no_identifiers();
 #ifdef VENTANAL_OWNER_KEY_TEST
     static_assert(!VENTANAL_TEST_RELEASE_KEY, "owner key must not enable bench mode");
     resetFakes();
@@ -695,6 +744,7 @@ int main() {
 #else
     static_assert(VENTANAL_TEST_RELEASE_KEY, "bench tests require the host test key switch");
 #endif
+    host_failures_trigger_one_rejoin_per_pass();
     spare_larger_than_free_psram_downloads();
     two_large_frames_in_one_pass();
     memory_shortage_is_no_progress();

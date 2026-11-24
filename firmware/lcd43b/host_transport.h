@@ -14,8 +14,9 @@ namespace lcd {
 class HostRangeTransport : public RangeTransport {
 public:
     HostRangeTransport(const char* origin, const char* path, const std::string& key,
-                       Watchdog& watchdog, uint32_t passStarted, bool ota = false)
-        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted), ota_(ota) {}
+                       Watchdog& watchdog, uint32_t passStarted, bool ota = false,
+                       const std::function<void(int)>& hostResult = {})
+        : origin_(origin), path_(path), key_(key), watchdog_(watchdog), passStarted_(passStarted), ota_(ota), hostResult_(hostResult) {}
 
     uint32_t remainingMs() const {
         const uint32_t elapsed = millis() - passStarted_;
@@ -46,6 +47,10 @@ public:
         RangeResponse response{};
         status_ = response.status = http.GET();
         watchdog_.feed();
+        if (hostResult_) {
+            if (status_ <= 0) http.end();
+            hostResult_(status_);
+        }
 #ifdef VENTANAL_LCD_DIAG_PANEL
         if (!sampledHeap_) {
             constexpr auto internal = MALLOC_CAP_INTERNAL | MALLOC_CAP_8BIT;
@@ -161,6 +166,7 @@ private:
     const char* reason_ = nullptr;
     bool malformed_ = false;
     bool ota_;
+    std::function<void(int)> hostResult_;
 #ifdef VENTANAL_LCD_DIAG_PANEL
     bool sampledHeap_ = false;
 #endif

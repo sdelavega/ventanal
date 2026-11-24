@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 // Copyright (C) 2026 Stephen de la Vega
 #pragma once
+#include <functional>
 #include <WiFi.h>
 
 // The lcd43b refresh engine, host-tested (test_lcd43b_sync). A refresh
@@ -164,7 +165,7 @@ struct FrameDownload {
 // Receive and verify exactly the advertised wire bytes into the partial store.
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, FsStore& store, Watchdog& watchdog,
-                           uint32_t passStarted);
+                           uint32_t passStarted, const std::function<void(int)>& hostResult = {});
 
 // Keep queued sources visible to committed-file housekeeping.
 bool queuedFrameStage(FsStore& store, const char* target);

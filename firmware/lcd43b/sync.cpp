@@ -26,49 +26,83 @@ namespace lcd {
 
 namespace {
 
-bool joinWifi(Watchdog& watchdog) {
-    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
-    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
-    WiFi.begin(installation.ssid, installation.password);
-    const uint32_t started = millis();
-    while (WiFi.status() != WL_CONNECTED && millis() - started < WIFI_TIMEOUT_MS) {
-        watchdog.feed();
-        delay(50);
-    }
-    return WiFi.status() == WL_CONNECTED;
-}
+struct WifiScan {
+    int count = 0, best = -127, channel = 0;
+    uint8_t bssid[6]{};
+    bool found = false;
+};
 
-int strongestWifiRssi(Watchdog& watchdog) {
+WifiScan strongestWifi(Watchdog& watchdog, uint32_t budget = UINT32_MAX) {
     constexpr uint32_t ScanTimeoutMs = 4000;
     const uint32_t started = millis();
-    // Channel 0 scans every channel. Filter by SSID in the driver.
     int count = WiFi.scanNetworks(true, true, false, 120, 0, installation.ssid);
-    while (count == WIFI_SCAN_RUNNING && millis() - started < ScanTimeoutMs) {
-        watchdog.feed();
-        delay(25);
-        count = WiFi.scanComplete();
+    while (count == WIFI_SCAN_RUNNING && millis() - started < std::min(ScanTimeoutMs, budget)) {
+        watchdog.feed(); delay(25); count = WiFi.scanComplete();
     }
     if (count == WIFI_SCAN_RUNNING) esp_wifi_scan_stop();
-    int best = -127;
-    for (int i = 0; i < count; ++i) best = std::max(best, int(WiFi.RSSI(i)));
+    WifiScan scan;
+    scan.count = std::max(0, count);
+    for (int i = 0; i < count; ++i) {
+        const int signal = WiFi.RSSI(i);
+        if (!scan.found || signal > scan.best) {
+            const uint8_t* address = WiFi.BSSID(i);
+            if (!address) continue;
+            scan.found = true; scan.best = signal; scan.channel = WiFi.channel(i);
+            memcpy(scan.bssid, address, sizeof scan.bssid);
+        }
+    }
     WiFi.scanDelete();
-    return best;
+    return scan;
+}
+
+void logWifiScan(const WifiScan& scan) {
+    const bool connected = WiFi.status() == WL_CONNECTED;
+    log("wifi scan aps=%d best_dbm=%d best_ch=%d joined_dbm=%d joined_ch=%d\n",
+        scan.count, scan.best, scan.channel, connected ? int(WiFi.RSSI()) : -127,
+        connected ? int(WiFi.channel()) : 0);
+}
+
+bool joinWifi(Watchdog& watchdog, const WifiScan* previous = nullptr,
+              uint32_t budget = UINT32_MAX) {
+    const uint32_t started = millis();
+    WiFi.setScanMethod(WIFI_ALL_CHANNEL_SCAN);
+    WiFi.setSortMethod(WIFI_CONNECT_AP_BY_SIGNAL);
+    const WifiScan scan = previous ? *previous : strongestWifi(watchdog, budget);
+    auto remaining = [&] { const uint32_t elapsed = millis() - started;
+        return elapsed < budget ? budget - elapsed : 0; };
+    auto wait = [&] {
+        const uint32_t begin = millis();
+        while (WiFi.status() != WL_CONNECTED && millis() - begin < WIFI_TIMEOUT_MS && remaining()) {
+            watchdog.feed(); delay(50);
+        }
+        return WiFi.status() == WL_CONNECTED;
+    };
+    bool connected = false;
+    if (remaining() && scan.found) {
+        WiFi.begin(installation.ssid, installation.password, scan.channel, scan.bssid);
+        connected = wait();
+        if (!connected) WiFi.disconnect(false);
+    }
+    if (!connected && remaining()) {
+        WiFi.begin(installation.ssid, installation.password);
+        connected = wait();
+    }
+    logWifiScan(scan);
+    return connected;
 }
 
 bool wifiConnect(Watchdog& watchdog) {
     bool connected = WiFi.status() == WL_CONNECTED;
     if (connected) {
         const int current = WiFi.RSSI();
-        if (current < WifiRoamThresholdDbm) {
-            const int best = strongestWifiRssi(watchdog);
-            connected = WiFi.status() == WL_CONNECTED;
-            if (connected && shouldRoam(current, best)) {
-                const bool disconnected = WiFi.disconnect(false);
-                connected = disconnected && joinWifi(watchdog);
-                log("wifi roam from_dbm=%d to_dbm=%d ok=%d\n", current, best, int(connected));
-                if (disconnected && !connected) WiFi.disconnect(false);
-            }
-        }
+        const WifiScan scan = strongestWifi(watchdog);
+        connected = WiFi.status() == WL_CONNECTED;
+        if (connected && shouldRoam(current, scan.best)) {
+            const bool disconnected = WiFi.disconnect(false);
+            connected = disconnected && joinWifi(watchdog, &scan);
+            log("wifi roam from_dbm=%d to_dbm=%d ok=%d\n", current, scan.best, int(connected));
+            if (disconnected && !connected) WiFi.disconnect(false);
+        } else logWifiScan(scan);
     }
     if (!connected) {
         WiFi.mode(WIFI_STA);
@@ -356,10 +390,10 @@ FrameDecode decodeFrameFile(FrameEncoding encoding, fs::File& file, FsStore* sto
 
 FrameDownload receiveFrame(const char* hostUrl, const FrameInfo& info,
                            const char* slotName, FsStore& store, Watchdog& watchdog,
-                           uint32_t passStarted) {
+                           uint32_t passStarted, const std::function<void(int)>& hostResult) {
     const uint32_t started = millis();
     const auto key = decodeDeviceKey(installation.deviceKey);
-    HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted);
+    HostRangeTransport transport(hostUrl, info.url, key, watchdog, passStarted, false, hostResult);
     const auto target = std::string("frame-") + slotName;
     const auto result = [&](FetchOutcome outcome, const char* reason) {
         const auto size = store.size(target.c_str());
@@ -523,6 +557,27 @@ void runRefresh(const char* hostUrl, const char* deviceId,
     // Get the small, frequently updated pages onto the display before art.
     const uint32_t passStarted = millis();
     bool otherPending = false;
+    unsigned hostFailures = 0;
+    bool rejoined = false;
+    const auto hostResult = [&](int status) {
+        if (status <= 0) ++hostFailures;
+        else hostFailures = 0;
+        const uint32_t elapsed = millis() - passStarted;
+        if (hostFailures < 2 || rejoined || WiFi.status() != WL_CONNECTED ||
+            elapsed >= TRANSFER_BUDGET_MS) return;
+        rejoined = true;
+        const int from = WiFi.RSSI();
+        const uint32_t remaining = TRANSFER_BUDGET_MS - elapsed;
+        const uint32_t scanStarted = millis();
+        const WifiScan scan = strongestWifi(watchdog, remaining);
+        const uint32_t spent = millis() - scanStarted;
+        const bool disconnected = WiFi.disconnect(false);
+        const bool ok = disconnected && spent < remaining &&
+            joinWifi(watchdog, &scan, remaining - spent);
+        if (!disconnected || spent >= remaining) logWifiScan(scan);
+        log("wifi rejoin reason=host-unreachable from_dbm=%d to_dbm=%d ok=%d\n",
+            from, ok ? int(WiFi.RSSI()) : -127, int(ok));
+    };
     const bool trustedClock = time(nullptr) >= resume_detail::kValidEpoch;
     for (int slot : {1, 2, 0, 3, 4, 5}) {
         watchdog.feed();
@@ -567,7 +622,7 @@ void runRefresh(const char* hostUrl, const char* deviceId,
             }
             if (recovered) return FrameDownload{FetchOutcome::Complete, "recovered", 0, 0, 0, 0};
             ScanScope activity(ScanActivity::Receive);
-            auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted);
+            auto fetched = receiveFrame(hostUrl, *info, SLOT_NAMES[slot], store, watchdog, passStarted, hostResult);
             if (fetched.outcome == FetchOutcome::Complete &&
                 !store.moveCommitted(target.c_str(), version.c_str())) {
                 fetched.outcome = FetchOutcome::NoProgress;
